@@ -1,0 +1,33 @@
+# Agent Team Parity Snapshot
+
+This file tracks practical parity against Claude Code Agent Teams as of 2026-03-05.
+
+## Legend
+
+- `Implemented`: available in this repository now.
+- `Partial`: available but simplified compared to Claude Code behavior.
+- `Gap`: not implemented yet.
+
+## Capability Matrix
+
+| Capability | Status | Notes |
+|---|---|---|
+| Lead + teammate model | Implemented | `lead` plus three teammate roles run concurrently. |
+| Shared task board with dependencies | Implemented | `pending/blocked/in_progress/completed/failed` lifecycle. |
+| Task claim gating by role type | Implemented | `Task.allowed_agent_types` supports Task(agent_type)-style restriction. |
+| Inter-agent mailbox | Implemented | Pull-based inbox with targeted and broadcast messaging. |
+| Peer challenge loop | Implemented | Round1/round2/optional round3 with configurable wait and thresholds. |
+| Lead adjudication + re-adjudication | Implemented | Initial verdict plus evidence bonus and final verdict. |
+| Hook events for multi-agent workflows | Implemented | Emits `TeammateIdle` and `TaskCompleted` in `events.jsonl`. |
+| Provider abstraction | Implemented | `heuristic` plus OpenAI-compatible endpoint with strict/fallback modes. |
+| Teammate mode `in-process` | Implemented | Python threads in one process. |
+| Teammate mode `tmux` | Partial | Analyst task execution supports `tmux` transport with timeout controls and subprocess fallback (tmux-unavailable + tmux-error fallback). |
+| Dynamic task creation during run | Implemented | `dynamic_planning` can insert follow-up tasks and gate downstream dependencies at runtime. |
+| Resume/rewind state restoration | Partial | Checkpoint-based resume, history-index rewind, event-index rewind mapping, branch-output rewind with seeded event lineage, and replay reports are implemented (`checkpoint_replay.md` + `event_replay.md`); true event-level runtime state restoration is not. |
+| Real independent LLM teammate sessions | Partial | Optional provider-backed teammate replies with per-agent local memory are available, but true isolated teammate sessions are not. |
+
+## Near-Term Focus
+
+1. Stabilize native tmux transport (session lifecycle, timeout handling, and diagnostics) on hosts with tmux installed.
+2. Add true event-level state replay (not only event-index-to-checkpoint mapping).
+3. Expand tmux mode from analyst tasks to full teammate task execution with process-isolated shared state.
