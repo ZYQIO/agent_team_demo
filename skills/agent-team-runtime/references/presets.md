@@ -30,6 +30,16 @@
 
 ## Common Invocation Patterns
 
+Config-driven run:
+
+```bash
+python3 scripts/run_runtime.py \
+  --config agent_team_demo/examples/agent-team.config.json \
+  --host-kind codex \
+  --target . \
+  --output agent_team_demo/output_skill_config
+```
+
 Default run:
 
 ```bash

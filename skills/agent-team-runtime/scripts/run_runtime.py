@@ -75,6 +75,11 @@ def parse_args() -> argparse.Namespace:
         help="Output artifact directory.",
     )
     parser.add_argument(
+        "--config",
+        default="",
+        help="Optional JSON config file passed to runtime --config.",
+    )
+    parser.add_argument(
         "--provider",
         default="heuristic",
         choices=["heuristic", "openai"],
@@ -84,6 +89,21 @@ def parse_args() -> argparse.Namespace:
         "--model",
         default="heuristic-v1",
         help="Model passed to runtime (for OpenAI example: gpt-4.1-mini).",
+    )
+    parser.add_argument(
+        "--host-kind",
+        default="",
+        help="Optional host adapter kind passed to runtime --host-kind.",
+    )
+    parser.add_argument(
+        "--workflow-pack",
+        default="",
+        help="Optional workflow pack passed to runtime --workflow-pack.",
+    )
+    parser.add_argument(
+        "--workflow-preset",
+        default="",
+        help="Optional workflow preset label passed to runtime --workflow-preset.",
     )
     parser.add_argument(
         "--preset",
@@ -202,8 +222,16 @@ def build_runtime_command(args: argparse.Namespace, repo_root: pathlib.Path) -> 
         "--provider",
         args.provider,
     ]
+    if args.config:
+        cmd.extend(["--config", args.config])
     if args.model:
         cmd.extend(["--model", args.model])
+    if args.host_kind:
+        cmd.extend(["--host-kind", args.host_kind])
+    if args.workflow_pack:
+        cmd.extend(["--workflow-pack", args.workflow_pack])
+    if args.workflow_preset:
+        cmd.extend(["--workflow-preset", args.workflow_preset])
     if args.goal:
         cmd.extend(["--goal", args.goal])
     if args.resume_from:

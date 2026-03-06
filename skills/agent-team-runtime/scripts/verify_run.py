@@ -94,6 +94,8 @@ def main() -> int:
     summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
     provider = summary.get("provider", {})
     runtime_config = summary.get("runtime_config", {})
+    host = summary.get("host", {})
+    workflow = summary.get("workflow", {})
     print("[verify] PASS")
     print(f"[verify] output={output_dir}")
     print(f"[verify] tasks={len(tasks)}")
@@ -101,6 +103,14 @@ def main() -> int:
         f"[verify] provider={provider.get('provider')} model={provider.get('model')} "
         f"mode={provider.get('mode')}"
     )
+    if host:
+        print(
+            f"[verify] host={host.get('kind')} transport={host.get('session_transport')}"
+        )
+    if workflow:
+        print(
+            f"[verify] workflow={workflow.get('pack')} preset={workflow.get('preset')}"
+        )
     print(
         f"[verify] thresholds: accept={runtime_config.get('adjudication_accept_threshold')} "
         f"challenge={runtime_config.get('adjudication_challenge_threshold')}"

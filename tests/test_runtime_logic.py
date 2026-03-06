@@ -526,6 +526,116 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("# Checkpoint History Replay", text)
             self.assertIn("## Timeline", text)
 
+    def test_taskboard_fail_propagates_to_dependents(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="a",
+                        title="A",
+                        task_type="analysis",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                    ),
+                    runtime.Task(
+                        task_id="b",
+                        title="B",
+                        task_type="review",
+                        required_skills={"review"},
+                        dependencies=["a"],
+                        payload={},
+                        locked_paths=[],
+                    ),
+                ],
+                logger=logger,
+            )
+            task = board.claim_next(
+                agent_name="analyst_alpha",
+                agent_skills={"analysis"},
+                agent_type="analyst",
+            )
+            self.assertIsNotNone(task)
+            board.fail(task_id="a", owner="analyst_alpha", error="boom")
+            snapshot = board.snapshot()
+            statuses = {item["task_id"]: item["status"] for item in snapshot["tasks"]}
+            self.assertEqual(statuses["a"], "failed")
+            self.assertEqual(statuses["b"], "failed")
+
+    def test_build_profiles_accepts_custom_team_config(self) -> None:
+        custom_team = runtime.TeamConfig(
+            lead_name="lead",
+            agents=[
+                runtime.TeamAgentConfig(
+                    name="doc_analyst",
+                    skills=["analysis"],
+                    agent_type="analyst",
+                ),
+                runtime.TeamAgentConfig(
+                    name="doc_reviewer",
+                    skills=["review", "writer"],
+                    agent_type="reviewer",
+                ),
+            ],
+        )
+        profiles = runtime.build_profiles(team_config=custom_team)
+        self.assertEqual([profile.name for profile in profiles], ["doc_analyst", "doc_reviewer"])
+        self.assertEqual(profiles[0].agent_type, "analyst")
+        self.assertIn("analysis", profiles[0].skills)
+
+    def test_build_agent_team_config_from_args_loads_json_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = pathlib.Path(tmp) / "agent-team.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "host": {"kind": "codex"},
+                        "model": {"provider_name": "openai", "model": "gpt-4.1-mini"},
+                        "team": {
+                            "agents": [
+                                {
+                                    "name": "doc_analyst",
+                                    "agent_type": "analyst",
+                                    "skills": ["analysis"],
+                                }
+                            ]
+                        },
+                        "workflow": {"pack": "markdown-audit", "preset": "custom"},
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            args = type(
+                "Args",
+                (),
+                {
+                    "config": str(config_path),
+                    "host_kind": "",
+                    "workflow_pack": "",
+                    "workflow_preset": "",
+                    "provider": "heuristic",
+                    "model": "heuristic-v1",
+                    "openai_api_key_env": "OPENAI_API_KEY",
+                    "openai_base_url": "https://api.openai.com/v1",
+                    "require_llm": False,
+                    "provider_timeout_sec": 60,
+                },
+            )()
+            team_config = runtime.build_agent_team_config_from_args(
+                args=args,
+                runtime_config=runtime.RuntimeConfig(),
+            )
+            self.assertEqual(team_config.host.kind, "codex")
+            self.assertEqual(team_config.model.provider_name, "openai")
+            self.assertEqual(team_config.model.model, "gpt-4.1-mini")
+            self.assertEqual(team_config.workflow.preset, "custom")
+            self.assertEqual(team_config.team.agents[0].name, "doc_analyst")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,6 +14,7 @@ This document tracks repeatable checks for the local `agent_team_runtime.py` imp
 - Checkpoint persistence, history timeline, rewind/resume flow, rewind branching, and event-index rewind mapping
   (`run_checkpoint.json` + `_checkpoint_history` + `--resume-from` + `--rewind-to-history-index` + `--rewind-to-event-index` + `--rewind-branch`)
 - Artifact completeness and event traceability
+- Config-driven host/model/team/workflow loading via `--config`
 
 ## Automated Checks
 
@@ -80,6 +81,15 @@ python3 agent_team_demo/agent_team_runtime.py \
   --output agent_team_demo/output_smoke_static \
   --provider heuristic \
   --no-dynamic-tasks
+```
+
+Config-driven smoke check:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --config agent_team_demo/examples/agent-team.config.json \
+  --target . \
+  --output agent_team_demo/output_smoke_config
 ```
 
 Tmux-mode smoke check:

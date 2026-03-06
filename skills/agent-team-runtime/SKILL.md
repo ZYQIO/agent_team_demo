@@ -43,6 +43,16 @@ python3 scripts/run_runtime.py \
   --output agent_team_demo/output_skill_openai
 ```
 
+5. Prefer a JSON config file when the runtime must be embedded into different AI hosts or reused across repositories.
+
+```bash
+python3 scripts/run_runtime.py \
+  --config agent_team_demo/examples/agent-team.config.json \
+  --host-kind codex \
+  --target . \
+  --output agent_team_demo/output_skill_configured
+```
+
 ## Verify Artifacts
 
 Validate required files, task status, events, and report sections:
@@ -60,6 +70,9 @@ python3 scripts/verify_run.py --output agent_team_demo/output_skill_default
 ## Tune Runtime
 
 Tune these controls through runtime flags or presets:
+- externalized config: `--config`
+- host adapter metadata: `--host-kind`
+- workflow selection metadata: `--workflow-pack`, `--workflow-preset`
 - teammate mode: `--teammate-mode in-process|tmux`
 - tmux worker transport controls: `--tmux-worker-timeout-sec`, `--tmux-fallback-on-error` / `--no-tmux-fallback-on-error`
 - dynamic task insertion: `--dynamic-tasks` / `--no-dynamic-tasks`
@@ -82,6 +95,7 @@ Use `--extra-arg` in `run_runtime.py` for custom runtime options not covered by 
 ## Resources
 
 - `references/presets.md`: preset selection and tuning guidance.
+- `references/configuration.md`: host/model/team/workflow JSON config examples.
 - `scripts/run_runtime.py`: portable runtime launcher.
 - `scripts/verify_run.py`: deterministic artifact and event validator.
 

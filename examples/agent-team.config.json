@@ -1,0 +1,64 @@
+{
+  "runtime": {
+    "teammate_mode": "in-process",
+    "enable_dynamic_tasks": true,
+    "teammate_provider_replies": false,
+    "teammate_memory_turns": 4,
+    "tmux_worker_timeout_sec": 120,
+    "tmux_fallback_on_error": true,
+    "peer_wait_seconds": 4.0,
+    "evidence_wait_seconds": 4.0,
+    "auto_round3_on_challenge": true,
+    "adjudication_accept_threshold": 75,
+    "adjudication_challenge_threshold": 50,
+    "adjudication_weight_completeness": 0.45,
+    "adjudication_weight_rebuttal_coverage": 0.35,
+    "adjudication_weight_argument_depth": 0.2,
+    "re_adjudication_max_bonus": 15,
+    "re_adjudication_weight_coverage": 0.6,
+    "re_adjudication_weight_depth": 0.4
+  },
+  "host": {
+    "kind": "codex"
+  },
+  "model": {
+    "provider_name": "heuristic",
+    "model": "heuristic-v1",
+    "openai_api_key_env": "OPENAI_API_KEY",
+    "openai_base_url": "https://api.openai.com/v1",
+    "require_llm": false,
+    "timeout_sec": 60
+  },
+  "team": {
+    "lead_name": "lead",
+    "mailbox_model": "asynchronous pull-based inbox",
+    "agents": [
+      {
+        "name": "analyst_alpha",
+        "agent_type": "analyst",
+        "skills": ["inventory", "analysis"]
+      },
+      {
+        "name": "analyst_beta",
+        "agent_type": "analyst",
+        "skills": ["analysis"]
+      },
+      {
+        "name": "reviewer_gamma",
+        "agent_type": "reviewer",
+        "skills": ["review", "writer", "llm"]
+      }
+    ]
+  },
+  "workflow": {
+    "pack": "markdown-audit",
+    "preset": "default",
+    "options": {}
+  },
+  "policies": {
+    "teammate_plan_required": false,
+    "failure_mode": "fail-fast",
+    "isolation_strategy": "file-lock",
+    "allow_host_managed_context": true
+  }
+}

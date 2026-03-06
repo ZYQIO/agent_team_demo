@@ -20,6 +20,7 @@ This file tracks practical parity against Claude Code Agent Teams as of 2026-03-
 | Lead adjudication + re-adjudication | Implemented | Initial verdict plus evidence bonus and final verdict. |
 | Hook events for multi-agent workflows | Implemented | Emits `TeammateIdle` and `TaskCompleted` in `events.jsonl`. |
 | Provider abstraction | Implemented | `heuristic` plus OpenAI-compatible endpoint with strict/fallback modes. |
+| Host/model/workflow config separation | Implemented | Host, model, team, workflow, and policy config are now separated under `agent_team/config.py`. |
 | Teammate mode `in-process` | Implemented | Python threads in one process. |
 | Teammate mode `tmux` | Partial | Analyst task execution supports `tmux` transport with timeout controls and subprocess fallback (tmux-unavailable + tmux-error fallback). |
 | Dynamic task creation during run | Implemented | `dynamic_planning` can insert follow-up tasks and gate downstream dependencies at runtime. |

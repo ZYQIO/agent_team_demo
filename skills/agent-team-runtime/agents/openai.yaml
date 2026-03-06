@@ -1,4 +1,4 @@
 interface:
   display_name: "Agent Team Runtime"
-  short_description: "Run and tune local multi-agent team workflows"
-  default_prompt: "Use $agent-team-runtime to run, tune, and validate the local agent team runtime end-to-end."
+  short_description: "Run and tune configurable local multi-agent team workflows"
+  default_prompt: "Use $agent-team-runtime to run, tune, validate, or configure the local agent team runtime end-to-end."

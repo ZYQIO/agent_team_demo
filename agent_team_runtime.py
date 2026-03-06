@@ -25,16 +25,40 @@ import threading
 import time
 import traceback
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Sequence, Set
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
-from llm_provider import LLMProvider, ProviderMetadata, build_provider
+from agent_team.config import (
+    AgentTeamConfig,
+    RuntimeConfig,
+    TeamAgentConfig,
+    TeamConfig,
+    build_agent_team_config,
+    default_host_config,
+    default_team_config,
+    load_agent_team_config,
+)
+from agent_team.core import (
+    ACTIVE_TASK_STATES,
+    HOOK_EVENT_TASK_COMPLETED,
+    HOOK_EVENT_TEAMMATE_IDLE,
+    TEAMMATE_IDLE_HOOK_INTERVAL_SEC,
+    TERMINAL_TASK_STATES,
+    AgentProfile,
+    EventLogger,
+    FileLockRegistry,
+    Mailbox,
+    Message,
+    SharedState,
+    Task,
+    TaskBoard,
+    task_from_dict,
+    utc_now,
+)
+from agent_team.host import build_host_adapter
+from agent_team.models import LLMProvider, ProviderMetadata, build_provider
+from agent_team.workflows import build_workflow_tasks
 
 
-TERMINAL_TASK_STATES = {"completed", "failed"}
-ACTIVE_TASK_STATES = {"pending", "blocked", "in_progress"}
-HOOK_EVENT_TEAMMATE_IDLE = "TeammateIdle"
-HOOK_EVENT_TASK_COMPLETED = "TaskCompleted"
-TEAMMATE_IDLE_HOOK_INTERVAL_SEC = 1.0
 TMUX_ANALYST_TASK_TYPES = {
     "discover_markdown",
     "heading_audit",
@@ -45,489 +69,6 @@ TMUX_ANALYST_TASK_TYPES = {
 CHECKPOINT_VERSION = 1
 CHECKPOINT_FILENAME = "run_checkpoint.json"
 CHECKPOINT_HISTORY_DIRNAME = "_checkpoint_history"
-
-
-def utc_now() -> str:
-    return dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
-
-
-@dataclasses.dataclass
-class Task:
-    task_id: str
-    title: str
-    task_type: str
-    required_skills: Set[str]
-    dependencies: List[str]
-    payload: Dict[str, Any]
-    locked_paths: List[str]
-    allowed_agent_types: Set[str] = dataclasses.field(default_factory=set)
-    status: str = "pending"
-    owner: Optional[str] = None
-    result: Optional[Dict[str, Any]] = None
-    error: Optional[str] = None
-    created_at: str = dataclasses.field(default_factory=utc_now)
-    updated_at: str = dataclasses.field(default_factory=utc_now)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "task_id": self.task_id,
-            "title": self.title,
-            "task_type": self.task_type,
-            "required_skills": sorted(self.required_skills),
-            "dependencies": list(self.dependencies),
-            "payload": self.payload,
-            "locked_paths": list(self.locked_paths),
-            "allowed_agent_types": sorted(self.allowed_agent_types),
-            "status": self.status,
-            "owner": self.owner,
-            "result": self.result,
-            "error": self.error,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-        }
-
-
-def task_from_dict(payload: Dict[str, Any]) -> Task:
-    required_skills = {str(skill) for skill in payload.get("required_skills", [])}
-    dependencies = [str(dep) for dep in payload.get("dependencies", [])]
-    locked_paths = [str(path) for path in payload.get("locked_paths", [])]
-    allowed_agent_types = {str(name) for name in payload.get("allowed_agent_types", [])}
-    status = str(payload.get("status", "pending"))
-    owner = payload.get("owner")
-    if status in {"pending", "blocked", "failed"}:
-        owner = None
-    if status == "in_progress":
-        status = "pending"
-        owner = None
-    return Task(
-        task_id=str(payload.get("task_id", "")),
-        title=str(payload.get("title", "")),
-        task_type=str(payload.get("task_type", "")),
-        required_skills=required_skills,
-        dependencies=dependencies,
-        payload=dict(payload.get("payload", {})),
-        locked_paths=locked_paths,
-        allowed_agent_types=allowed_agent_types,
-        status=status,
-        owner=owner,
-        result=payload.get("result"),
-        error=payload.get("error"),
-        created_at=str(payload.get("created_at", utc_now())),
-        updated_at=str(payload.get("updated_at", utc_now())),
-    )
-
-
-@dataclasses.dataclass
-class Message:
-    message_id: str
-    sent_at: str
-    sender: str
-    recipient: str
-    subject: str
-    body: str
-    task_id: Optional[str] = None
-
-    def to_dict(self) -> Dict[str, Any]:
-        return dataclasses.asdict(self)
-
-
-@dataclasses.dataclass
-class AgentProfile:
-    name: str
-    skills: Set[str]
-    agent_type: str = "general"
-
-
-@dataclasses.dataclass
-class RuntimeConfig:
-    teammate_mode: str = "in-process"
-    enable_dynamic_tasks: bool = True
-    teammate_provider_replies: bool = False
-    teammate_memory_turns: int = 4
-    tmux_worker_timeout_sec: int = 120
-    tmux_fallback_on_error: bool = True
-    peer_wait_seconds: float = 4.0
-    evidence_wait_seconds: float = 4.0
-    auto_round3_on_challenge: bool = True
-    adjudication_accept_threshold: int = 75
-    adjudication_challenge_threshold: int = 50
-    adjudication_weight_completeness: float = 0.45
-    adjudication_weight_rebuttal_coverage: float = 0.35
-    adjudication_weight_argument_depth: float = 0.20
-    re_adjudication_max_bonus: int = 15
-    re_adjudication_weight_coverage: float = 0.60
-    re_adjudication_weight_depth: float = 0.40
-
-    def to_dict(self) -> Dict[str, Any]:
-        return dataclasses.asdict(self)
-
-
-class EventLogger:
-    def __init__(self, output_dir: pathlib.Path, truncate: bool = True) -> None:
-        self._output_dir = output_dir
-        self._output_dir.mkdir(parents=True, exist_ok=True)
-        self._path = self._output_dir / "events.jsonl"
-        self._lock = threading.Lock()
-        if truncate or not self._path.exists():
-            self._path.write_text("", encoding="utf-8")
-            self._next_index = 0
-        else:
-            self._next_index = self._recover_next_index()
-
-    @property
-    def path(self) -> pathlib.Path:
-        return self._path
-
-    def _recover_next_index(self) -> int:
-        next_index = 0
-        try:
-            with self._path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    next_index += 1
-                    try:
-                        payload = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(payload, dict):
-                        continue
-                    raw_idx = payload.get("event_index")
-                    if isinstance(raw_idx, int):
-                        next_index = max(next_index, raw_idx + 1)
-        except FileNotFoundError:
-            return 0
-        return next_index
-
-    def event_count(self) -> int:
-        with self._lock:
-            return int(self._next_index)
-
-    def log(self, event: str, **fields: Any) -> None:
-        with self._lock:
-            event_index = int(self._next_index)
-            self._next_index += 1
-            payload = {
-                "ts": utc_now(),
-                "event": event,
-                "event_index": event_index,
-                **fields,
-            }
-            with self._path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(payload, ensure_ascii=False) + "\n")
-
-
-class SharedState:
-    def __init__(self) -> None:
-        self._data: Dict[str, Any] = {}
-        self._lock = threading.Lock()
-
-    def set(self, key: str, value: Any) -> None:
-        with self._lock:
-            self._data[key] = value
-
-    def get(self, key: str, default: Any = None) -> Any:
-        with self._lock:
-            return self._data.get(key, default)
-
-    def snapshot(self) -> Dict[str, Any]:
-        with self._lock:
-            return json.loads(json.dumps(self._data, ensure_ascii=False))
-
-
-class Mailbox:
-    def __init__(self, participants: Sequence[str], logger: EventLogger) -> None:
-        self._queues: Dict[str, List[Message]] = {name: [] for name in participants}
-        self._lock = threading.Lock()
-        self._logger = logger
-
-    def send(
-        self,
-        sender: str,
-        recipient: str,
-        subject: str,
-        body: str,
-        task_id: Optional[str] = None,
-    ) -> None:
-        message = Message(
-            message_id=str(uuid.uuid4()),
-            sent_at=utc_now(),
-            sender=sender,
-            recipient=recipient,
-            subject=subject,
-            body=body,
-            task_id=task_id,
-        )
-        with self._lock:
-            self._queues.setdefault(recipient, []).append(message)
-        self._logger.log("mail_sent", **message.to_dict())
-
-    def broadcast(self, sender: str, subject: str, body: str) -> None:
-        with self._lock:
-            recipients = [name for name in self._queues if name != sender]
-        for recipient in recipients:
-            self.send(sender=sender, recipient=recipient, subject=subject, body=body)
-
-    def pull(self, recipient: str) -> List[Message]:
-        with self._lock:
-            pending = self._queues.get(recipient, [])
-            self._queues[recipient] = []
-        if pending:
-            self._logger.log(
-                "mail_pulled",
-                recipient=recipient,
-                count=len(pending),
-                message_ids=[message.message_id for message in pending],
-            )
-        return pending
-
-    def pull_matching(
-        self,
-        recipient: str,
-        matcher: Callable[[Message], bool],
-    ) -> List[Message]:
-        with self._lock:
-            queue = self._queues.get(recipient, [])
-            matched: List[Message] = []
-            rest: List[Message] = []
-            for message in queue:
-                if matcher(message):
-                    matched.append(message)
-                else:
-                    rest.append(message)
-            self._queues[recipient] = rest
-        if matched:
-            self._logger.log(
-                "mail_pulled_matching",
-                recipient=recipient,
-                count=len(matched),
-                message_ids=[message.message_id for message in matched],
-            )
-        return matched
-
-
-class FileLockRegistry:
-    def __init__(self, logger: EventLogger) -> None:
-        self._owners: Dict[str, str] = {}
-        self._lock = threading.Lock()
-        self._logger = logger
-
-    def acquire(self, agent_name: str, paths: Sequence[str]) -> bool:
-        normalized = [str(pathlib.Path(path).resolve()) for path in paths]
-        with self._lock:
-            for path in normalized:
-                owner = self._owners.get(path)
-                if owner is not None and owner != agent_name:
-                    return False
-            for path in normalized:
-                self._owners[path] = agent_name
-        self._logger.log("file_lock_acquired", agent=agent_name, paths=normalized)
-        return True
-
-    def release(self, agent_name: str, paths: Optional[Sequence[str]] = None) -> None:
-        with self._lock:
-            if paths is None:
-                release_paths = [path for path, owner in self._owners.items() if owner == agent_name]
-            else:
-                normalized = [str(pathlib.Path(path).resolve()) for path in paths]
-                release_paths = [path for path in normalized if self._owners.get(path) == agent_name]
-            for path in release_paths:
-                self._owners.pop(path, None)
-        if release_paths:
-            self._logger.log("file_lock_released", agent=agent_name, paths=release_paths)
-
-    def snapshot(self) -> Dict[str, str]:
-        with self._lock:
-            return dict(self._owners)
-
-
-class TaskBoard:
-    def __init__(self, tasks: Sequence[Task], logger: EventLogger) -> None:
-        self._tasks = {task.task_id: task for task in tasks}
-        self._ordered_ids = [task.task_id for task in tasks]
-        self._lock = threading.Lock()
-        self._logger = logger
-        self._refresh_blocked_states_locked()
-
-    def _deps_satisfied_locked(self, task: Task) -> bool:
-        for dep_id in task.dependencies:
-            dep = self._tasks.get(dep_id)
-            if dep is None or dep.status != "completed":
-                return False
-        return True
-
-    def _refresh_blocked_states_locked(self) -> None:
-        for task in self._tasks.values():
-            if task.status in TERMINAL_TASK_STATES or task.status == "in_progress":
-                continue
-            if self._deps_satisfied_locked(task):
-                if task.status == "blocked":
-                    task.status = "pending"
-                    task.updated_at = utc_now()
-            else:
-                if task.status == "pending":
-                    task.status = "blocked"
-                    task.updated_at = utc_now()
-
-    def _agent_type_allowed_locked(self, task: Task, agent_type: str) -> bool:
-        if not task.allowed_agent_types:
-            return True
-        return agent_type in task.allowed_agent_types
-
-    def claim_next(self, agent_name: str, agent_skills: Set[str], agent_type: str) -> Optional[Task]:
-        with self._lock:
-            self._refresh_blocked_states_locked()
-            for task_id in self._ordered_ids:
-                task = self._tasks[task_id]
-                if task.status != "pending":
-                    continue
-                if task.required_skills and not task.required_skills.issubset(agent_skills):
-                    continue
-                if not self._agent_type_allowed_locked(task=task, agent_type=agent_type):
-                    continue
-                task.status = "in_progress"
-                task.owner = agent_name
-                task.updated_at = utc_now()
-                self._logger.log(
-                    "task_claimed",
-                    task_id=task.task_id,
-                    title=task.title,
-                    agent=agent_name,
-                    required_skills=sorted(task.required_skills),
-                    allowed_agent_types=sorted(task.allowed_agent_types),
-                )
-                return dataclasses.replace(task)
-        return None
-
-    def claim_specific(
-        self,
-        task_id: str,
-        agent_name: str,
-        agent_skills: Set[str],
-        agent_type: str,
-    ) -> Optional[Task]:
-        with self._lock:
-            self._refresh_blocked_states_locked()
-            task = self._tasks.get(task_id)
-            if task is None or task.status != "pending":
-                return None
-            if task.required_skills and not task.required_skills.issubset(agent_skills):
-                return None
-            if not self._agent_type_allowed_locked(task=task, agent_type=agent_type):
-                return None
-            task.status = "in_progress"
-            task.owner = agent_name
-            task.updated_at = utc_now()
-            self._logger.log(
-                "task_claimed",
-                task_id=task.task_id,
-                title=task.title,
-                agent=agent_name,
-                required_skills=sorted(task.required_skills),
-                allowed_agent_types=sorted(task.allowed_agent_types),
-            )
-            return dataclasses.replace(task)
-
-    def defer(self, task_id: str, owner: str, reason: str) -> None:
-        with self._lock:
-            task = self._tasks[task_id]
-            if task.owner != owner or task.status != "in_progress":
-                return
-            task.status = "pending"
-            task.owner = None
-            task.updated_at = utc_now()
-            self._logger.log("task_deferred", task_id=task_id, owner=owner, reason=reason)
-
-    def complete(self, task_id: str, owner: str, result: Dict[str, Any]) -> None:
-        with self._lock:
-            task = self._tasks[task_id]
-            if task.owner != owner or task.status != "in_progress":
-                raise RuntimeError(f"invalid completion state for task={task_id} owner={owner}")
-            task.status = "completed"
-            task.result = result
-            task.error = None
-            task.updated_at = utc_now()
-            self._refresh_blocked_states_locked()
-        self._logger.log("task_completed", task_id=task_id, owner=owner)
-        self._logger.log(HOOK_EVENT_TASK_COMPLETED, task_id=task_id, owner=owner)
-
-    def fail(self, task_id: str, owner: str, error: str) -> None:
-        with self._lock:
-            task = self._tasks[task_id]
-            if task.owner != owner or task.status != "in_progress":
-                raise RuntimeError(f"invalid failure state for task={task_id} owner={owner}")
-            task.status = "failed"
-            task.error = error
-            task.updated_at = utc_now()
-            self._refresh_blocked_states_locked()
-        self._logger.log("task_failed", task_id=task_id, owner=owner, error=error)
-
-    def all_terminal(self) -> bool:
-        with self._lock:
-            return all(task.status in TERMINAL_TASK_STATES for task in self._tasks.values())
-
-    def has_active_tasks(self) -> bool:
-        with self._lock:
-            return any(task.status in ACTIVE_TASK_STATES for task in self._tasks.values())
-
-    def get_task_result(self, task_id: str) -> Optional[Dict[str, Any]]:
-        with self._lock:
-            task = self._tasks.get(task_id)
-            return None if task is None else task.result
-
-    def has_task(self, task_id: str) -> bool:
-        with self._lock:
-            return task_id in self._tasks
-
-    def add_tasks(self, tasks: Sequence[Task], inserted_by: str) -> List[str]:
-        inserted_ids: List[str] = []
-        with self._lock:
-            for task in tasks:
-                if task.task_id in self._tasks:
-                    continue
-                self._tasks[task.task_id] = task
-                self._ordered_ids.append(task.task_id)
-                inserted_ids.append(task.task_id)
-                self._logger.log(
-                    "task_inserted",
-                    task_id=task.task_id,
-                    title=task.title,
-                    inserted_by=inserted_by,
-                    required_skills=sorted(task.required_skills),
-                    allowed_agent_types=sorted(task.allowed_agent_types),
-                    dependencies=list(task.dependencies),
-                )
-            self._refresh_blocked_states_locked()
-        return inserted_ids
-
-    def add_dependency(self, task_id: str, dependency_id: str, updated_by: str) -> bool:
-        with self._lock:
-            task = self._tasks.get(task_id)
-            dependency = self._tasks.get(dependency_id)
-            if task is None or dependency is None:
-                return False
-            if dependency_id in task.dependencies:
-                return False
-            if task.status in TERMINAL_TASK_STATES or task.status == "in_progress":
-                return False
-            task.dependencies.append(dependency_id)
-            task.updated_at = utc_now()
-            self._refresh_blocked_states_locked()
-        self._logger.log(
-            "task_dependency_added",
-            task_id=task_id,
-            dependency_id=dependency_id,
-            updated_by=updated_by,
-        )
-        return True
-
-    def snapshot(self) -> Dict[str, Any]:
-        with self._lock:
-            return {
-                "generated_at": utc_now(),
-                "tasks": [self._tasks[task_id].to_dict() for task_id in self._ordered_ids],
-            }
 
 
 @dataclasses.dataclass
@@ -695,6 +236,43 @@ def build_targeted_evidence_question(
     if peer_objection:
         ask_lines.append(f"Peer objection snippet: {peer_objection[:220]}")
     return "\n".join(ask_lines)
+
+
+def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
+    raw_profiles = context.shared_state.get("team_profiles", [])
+    if not isinstance(raw_profiles, list):
+        return []
+    profiles: List[Dict[str, Any]] = []
+    for item in raw_profiles:
+        if isinstance(item, dict):
+            profiles.append(item)
+    return profiles
+
+
+def get_team_member_names(
+    context: AgentContext,
+    agent_type: str = "",
+    exclude: Optional[Sequence[str]] = None,
+) -> List[str]:
+    excluded = {name for name in (exclude or [])}
+    names: List[str] = []
+    for profile in get_team_profiles(context):
+        name = str(profile.get("name", "") or "")
+        if not name or name in excluded:
+            continue
+        if agent_type and str(profile.get("agent_type", "")) != agent_type:
+            continue
+        names.append(name)
+    return names
+
+
+def profile_has_skill(profile: AgentProfile, skill: str) -> bool:
+    return skill in profile.skills
+
+
+def get_lead_name(context: AgentContext) -> str:
+    lead_name = str(context.shared_state.get("lead_name", "lead") or "lead")
+    return lead_name
 
 
 def _worker_discover_markdown(target_dir: pathlib.Path, output_dir: pathlib.Path) -> Dict[str, Any]:
@@ -1025,7 +603,12 @@ def handle_peer_challenge(context: AgentContext, task: Task) -> Dict[str, Any]:
         "Identify one weak assumption in the current markdown audits and propose one concrete fix."
     )
     question_round2 = "Critique the other analyst's proposal and suggest one improvement."
-    request_targets = ["analyst_alpha", "analyst_beta"]
+    request_targets = get_team_member_names(context=context, agent_type="analyst")
+    if not request_targets:
+        request_targets = get_team_member_names(
+            context=context,
+            exclude=[context.profile.name],
+        )
     timeout_sec = float(task.payload.get("wait_seconds", context.runtime_config.peer_wait_seconds))
 
     def collect_replies(expected_subject: str, max_wait_sec: float) -> Dict[str, str]:
@@ -1188,7 +771,8 @@ def handle_evidence_pack(context: AgentContext, task: Task) -> Dict[str, Any]:
     initial_adjudication = context.board.get_task_result("lead_adjudication") or {}
     peer_challenge = context.board.get_task_result("peer_challenge") or {}
     initial_verdict = str(initial_adjudication.get("verdict", ""))
-    targets = list(initial_adjudication.get("targets", ["analyst_alpha", "analyst_beta"]))
+    default_targets = get_team_member_names(context=context, agent_type="analyst")
+    targets = list(initial_adjudication.get("targets", default_targets))
     focus_areas = derive_evidence_focus_areas(initial_adjudication)
     if initial_verdict != "challenge":
         result = {
@@ -1688,7 +1272,7 @@ class TeammateAgent(threading.Thread):
         )
         self.context.mailbox.send(
             sender=self.context.profile.name,
-            recipient="lead",
+            recipient=get_lead_name(self.context),
             subject="task_started",
             body=f"{self.context.profile.name} started {task.task_id}",
             task_id=task.task_id,
@@ -1699,7 +1283,7 @@ class TeammateAgent(threading.Thread):
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
             self.context.mailbox.send(
                 sender=self.context.profile.name,
-                recipient="lead",
+                recipient=get_lead_name(self.context),
                 subject="task_failed",
                 body=error,
                 task_id=task.task_id,
@@ -1713,7 +1297,7 @@ class TeammateAgent(threading.Thread):
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
             self.context.mailbox.send(
                 sender=self.context.profile.name,
-                recipient="lead",
+                recipient=get_lead_name(self.context),
                 subject="task_completed",
                 body=f"{task.task_id} done",
                 task_id=task.task_id,
@@ -1723,7 +1307,7 @@ class TeammateAgent(threading.Thread):
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
             self.context.mailbox.send(
                 sender=self.context.profile.name,
-                recipient="lead",
+                recipient=get_lead_name(self.context),
                 subject="task_failed",
                 body=error,
                 task_id=task.task_id,
@@ -1755,14 +1339,18 @@ class TeammateAgent(threading.Thread):
 
         heading_issues = self.context.shared_state.get("heading_issues", [])
         length_issues = self.context.shared_state.get("length_issues", [])
+        is_heading_specialist = profile_has_skill(self.context.profile, "inventory")
+        is_length_specialist = (
+            self.context.profile.agent_type == "analyst" and not is_heading_specialist
+        )
         if round_id == 1:
-            if self.context.profile.name == "analyst_alpha":
+            if is_heading_specialist:
                 reply = (
                     f"Concern on question '{question}': heading audit may miss files with non-standard markdown "
                     f"heading style. Suggest adding regex fallback and markdown lint rules. "
                     f"Current heading-gap files={len(heading_issues)}."
                 )
-            elif self.context.profile.name == "analyst_beta":
+            elif is_length_specialist:
                 reply = (
                     f"Concern on question '{question}': line-count threshold is static and may over/under flag files. "
                     f"Suggest percentile-based threshold plus topic density score. "
@@ -1775,13 +1363,13 @@ class TeammateAgent(threading.Thread):
             response_subject = "peer_challenge_round1_reply"
         else:
             if round_id == 2:
-                if self.context.profile.name == "analyst_alpha":
+                if is_heading_specialist:
                     reply = (
                         f"Rebuttal to {peer_name}: static-threshold concern is valid, but complexity can be controlled by "
                         f"starting with two-tier thresholds. Improvement: use heading density as second signal. "
                         f"Peer said: {peer_reply[:220]}"
                     )
-                elif self.context.profile.name == "analyst_beta":
+                elif is_length_specialist:
                     reply = (
                         f"Rebuttal to {peer_name}: heading-style concern is valid, but regex-only rules can create false "
                         f"positives. Improvement: combine parser-based checks with lint config baselines. "
@@ -1793,13 +1381,13 @@ class TeammateAgent(threading.Thread):
                     )
                 response_subject = "peer_challenge_round2_reply"
             else:
-                if self.context.profile.name == "analyst_alpha":
+                if is_heading_specialist:
                     reply = (
                         f"Final proposal for '{question}': implement heading parser + lint fallback, "
                         f"acceptance check = 100% files with at least one heading, rollout in 2 phases. "
                         f"Resolved critique from {peer_name}: {peer_reply[:180]}"
                     )
-                elif self.context.profile.name == "analyst_beta":
+                elif is_length_specialist:
                     reply = (
                         f"Final proposal for '{question}': switch to percentile thresholds (P85 line count) plus "
                         f"topic-density signal, acceptance check = <5% false positives in pilot. "
@@ -1863,12 +1451,16 @@ class TeammateAgent(threading.Thread):
             focus_areas = ["depth"]
 
         role_note = ""
-        if self.context.profile.name == "analyst_alpha":
+        is_heading_specialist = profile_has_skill(self.context.profile, "inventory")
+        is_length_specialist = (
+            self.context.profile.agent_type == "analyst" and not is_heading_specialist
+        )
+        if is_heading_specialist:
             role_note = (
                 f"Domain: heading quality. Current heading issues={len(heading_issues)} "
                 f"(source score={source_score})."
             )
-        elif self.context.profile.name == "analyst_beta":
+        elif is_length_specialist:
             role_note = (
                 f"Domain: file length governance. Current long files={len(length_issues)} "
                 f"(source score={source_score})."
@@ -1892,11 +1484,11 @@ class TeammateAgent(threading.Thread):
             segments.append(
                 "Depth evidence: provide phased rollout timeline, monitoring KPIs, and rollback trigger."
             )
-        if self.context.profile.name == "analyst_alpha":
+        if is_heading_specialist:
             segments.append(
                 "Plan: parser+linter dual validation; KPI=100% files with top-level heading; rollback if lint noise >20%."
             )
-        elif self.context.profile.name == "analyst_beta":
+        elif is_length_specialist:
             segments.append(
                 "Plan: percentile threshold (P85) pilot; KPI=false positives <5%; rollback if >10%."
             )
@@ -1934,7 +1526,7 @@ class TeammateAgent(threading.Thread):
     def run(self) -> None:
         self.context.mailbox.send(
             sender=self.context.profile.name,
-            recipient="lead",
+            recipient=get_lead_name(self.context),
             subject="agent_ready",
             body=f"{self.context.profile.name} online with skills {sorted(self.context.profile.skills)}",
         )
@@ -1978,7 +1570,7 @@ class TeammateAgent(threading.Thread):
         self.context.file_locks.release(self.context.profile.name)
         self.context.mailbox.send(
             sender=self.context.profile.name,
-            recipient="lead",
+            recipient=get_lead_name(self.context),
             subject="agent_stopped",
             body=f"{self.context.profile.name} stopped",
         )
@@ -2248,7 +1840,7 @@ def run_tmux_analyst_task_once(
         )
         lead_context.mailbox.send(
             sender=profile.name,
-            recipient="lead",
+            recipient=lead_context.profile.name,
             subject="task_started",
             body=f"{profile.name} started {task.task_id}",
             task_id=task.task_id,
@@ -2258,7 +1850,7 @@ def run_tmux_analyst_task_once(
             lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
             lead_context.mailbox.send(
                 sender=profile.name,
-                recipient="lead",
+                recipient=lead_context.profile.name,
                 subject="task_failed",
                 body=error,
                 task_id=task.task_id,
@@ -2294,7 +1886,7 @@ def run_tmux_analyst_task_once(
             lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
             lead_context.mailbox.send(
                 sender=profile.name,
-                recipient="lead",
+                recipient=lead_context.profile.name,
                 subject="task_failed",
                 body=error,
                 task_id=task.task_id,
@@ -2321,7 +1913,7 @@ def run_tmux_analyst_task_once(
         lead_context.board.complete(task_id=task.task_id, owner=profile.name, result=result)
         lead_context.mailbox.send(
             sender=profile.name,
-            recipient="lead",
+            recipient=lead_context.profile.name,
             subject="task_completed",
             body=f"{task.task_id} done",
             task_id=task.task_id,
@@ -2338,124 +1930,23 @@ def run_tmux_analyst_task_once(
     return False
 
 
-def build_tasks(output_dir: pathlib.Path, runtime_config: RuntimeConfig) -> List[Task]:
-    return [
-        Task(
-            task_id="discover_markdown",
-            title="Discover markdown files",
-            task_type="discover_markdown",
-            required_skills={"inventory"},
-            dependencies=[],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"analyst"},
-        ),
-        Task(
-            task_id="heading_audit",
-            title="Audit heading coverage",
-            task_type="heading_audit",
-            required_skills={"analysis"},
-            dependencies=["discover_markdown"],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"analyst"},
-        ),
-        Task(
-            task_id="length_audit",
-            title="Audit long markdown files",
-            task_type="length_audit",
-            required_skills={"analysis"},
-            dependencies=["discover_markdown"],
-            payload={"line_threshold": 180},
-            locked_paths=[],
-            allowed_agent_types={"analyst"},
-        ),
-        Task(
-            task_id="dynamic_planning",
-            title="Plan runtime follow-up tasks",
-            task_type="dynamic_planning",
-            required_skills={"review"},
-            dependencies=["heading_audit", "length_audit"],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"reviewer"},
-        ),
-        Task(
-            task_id="peer_challenge",
-            title="Run teammate challenge round",
-            task_type="peer_challenge",
-            required_skills={"review"},
-            dependencies=["dynamic_planning"],
-            payload={
-                "wait_seconds": runtime_config.peer_wait_seconds,
-                "auto_round3_on_challenge": runtime_config.auto_round3_on_challenge,
-            },
-            locked_paths=[],
-            allowed_agent_types={"reviewer"},
-        ),
-        Task(
-            task_id="lead_adjudication",
-            title="Lead adjudicates debate quality",
-            task_type="lead_adjudication",
-            required_skills={"lead"},
-            dependencies=["peer_challenge"],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"lead"},
-        ),
-        Task(
-            task_id="evidence_pack",
-            title="Collect supplemental evidence when challenged",
-            task_type="evidence_pack",
-            required_skills={"review"},
-            dependencies=["lead_adjudication"],
-            payload={"wait_seconds": runtime_config.evidence_wait_seconds},
-            locked_paths=[],
-            allowed_agent_types={"reviewer"},
-        ),
-        Task(
-            task_id="lead_re_adjudication",
-            title="Lead re-adjudicates after evidence pack",
-            task_type="lead_re_adjudication",
-            required_skills={"lead"},
-            dependencies=["evidence_pack"],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"lead"},
-        ),
-        Task(
-            task_id="llm_synthesis",
-            title="Synthesize findings with provider",
-            task_type="llm_synthesis",
-            required_skills={"review", "llm"},
-            dependencies=["heading_audit", "length_audit", "peer_challenge", "lead_re_adjudication"],
-            payload={},
-            locked_paths=[],
-            allowed_agent_types={"reviewer"},
-        ),
-        Task(
-            task_id="recommendation_pack",
-            title="Write recommendation report",
-            task_type="recommendation_pack",
-            required_skills={"review", "writer"},
-            dependencies=["llm_synthesis"],
-            payload={},
-            locked_paths=[str((output_dir / "final_report.md").resolve())],
-            allowed_agent_types={"reviewer"},
-        ),
-    ]
+def build_tasks(
+    output_dir: pathlib.Path,
+    runtime_config: RuntimeConfig,
+    workflow_pack: str = "markdown-audit",
+    workflow_options: Optional[Dict[str, Any]] = None,
+) -> List[Task]:
+    return build_workflow_tasks(
+        workflow_pack=workflow_pack,
+        output_dir=output_dir,
+        runtime_config=runtime_config,
+        workflow_options=workflow_options,
+    )
 
 
-def build_profiles() -> List[AgentProfile]:
-    return [
-        AgentProfile(name="analyst_alpha", skills={"inventory", "analysis"}, agent_type="analyst"),
-        AgentProfile(name="analyst_beta", skills={"analysis"}, agent_type="analyst"),
-        AgentProfile(
-            name="reviewer_gamma",
-            skills={"review", "writer", "llm"},
-            agent_type="reviewer",
-        ),
-    ]
+def build_profiles(team_config: Optional[TeamConfig] = None) -> List[AgentProfile]:
+    effective_team = team_config or default_team_config()
+    return effective_team.to_profiles()
 
 
 def checkpoint_history_dir(output_dir: pathlib.Path) -> pathlib.Path:
@@ -2989,14 +2480,16 @@ def write_artifacts(
     rewind_seed_event_count: int = 0,
 ) -> None:
     board_path = output_dir / "task_board.json"
+    board_snapshot = board.snapshot()
     board_path.write_text(
-        json.dumps(board.snapshot(), ensure_ascii=False, indent=2),
+        json.dumps(board_snapshot, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
     state_path = output_dir / "shared_state.json"
+    state_snapshot = shared_state.snapshot()
     state_path.write_text(
-        json.dumps(shared_state.snapshot(), ensure_ascii=False, indent=2),
+        json.dumps(state_snapshot, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
 
@@ -3014,9 +2507,19 @@ def write_artifacts(
         "shared_state_path": str(state_path),
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
-        "mailbox_model": "asynchronous pull-based inbox",
+        "mailbox_model": state_snapshot.get("team", {}).get(
+            "mailbox_model",
+            "asynchronous pull-based inbox",
+        ),
         "provider": provider_meta.to_dict(),
         "runtime_config": runtime_config.to_dict(),
+        "host": state_snapshot.get("host", {}),
+        "team": state_snapshot.get("team", {}),
+        "workflow": state_snapshot.get("workflow", {}),
+        "policies": state_snapshot.get("policies", {}),
+        "agent_team_config": state_snapshot.get("agent_team_config", {}),
+        "config_source": state_snapshot.get("agent_team_config", {}).get("source_path", ""),
+        "task_count": len(board_snapshot.get("tasks", [])),
         "checkpoint_path": str(checkpoint_path) if checkpoint_path else "",
         "checkpoint_history_dir": str(checkpoint_history_dir(output_dir)),
         "resume_from": str(resume_from) if resume_from else "",
@@ -3215,9 +2718,19 @@ def run_team(
     rewind_source_output_dir: Optional[pathlib.Path] = None,
     rewind_source_checkpoint: Optional[pathlib.Path] = None,
     branch_run_id: str = "",
+    agent_team_config: Optional[AgentTeamConfig] = None,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / CHECKPOINT_FILENAME
+    effective_agent_team_config = agent_team_config or build_agent_team_config(
+        runtime_config=runtime_config,
+        provider_name=provider_name,
+        model=model,
+        openai_api_key_env=openai_api_key_env,
+        openai_base_url=openai_base_url,
+        require_llm=require_llm,
+        provider_timeout_sec=provider_timeout_sec,
+    )
     resume_payload: Dict[str, Any] = {}
     if resume_from is not None:
         resume_payload = load_checkpoint(resume_from)
@@ -3292,14 +2805,15 @@ def run_team(
     if branch_event_seed.get("seeded"):
         truncate_events = False
     logger = EventLogger(output_dir=output_dir, truncate=truncate_events)
+    host_adapter = build_host_adapter(effective_agent_team_config.host)
 
     provider, provider_meta = build_provider(
-        provider_name=provider_name,
-        model=model,
-        openai_api_key_env=openai_api_key_env,
-        openai_base_url=openai_base_url,
-        require_llm=require_llm,
-        timeout_sec=provider_timeout_sec,
+        provider_name=effective_agent_team_config.model.provider_name,
+        model=effective_agent_team_config.model.model,
+        openai_api_key_env=effective_agent_team_config.model.openai_api_key_env,
+        openai_base_url=effective_agent_team_config.model.openai_base_url,
+        require_llm=effective_agent_team_config.model.require_llm,
+        timeout_sec=effective_agent_team_config.model.timeout_sec,
     )
     if resume_from is not None:
         logger.log(
@@ -3344,6 +2858,11 @@ def run_team(
         target_dir=str(target_dir),
         output_dir=str(output_dir),
         provider=provider_meta.to_dict(),
+        host=host_adapter.runtime_metadata(),
+        workflow=effective_agent_team_config.workflow.to_dict(),
+        team=effective_agent_team_config.team.to_dict(),
+        policies=effective_agent_team_config.policies.to_dict(),
+        config_source=effective_agent_team_config.source_path,
         runtime_config=runtime_config.to_dict(),
         resume_from=str(resume_from) if resume_from else "",
         rewind_history_index=(
@@ -3369,16 +2888,29 @@ def run_team(
     tasks = (
         restore_tasks_from_checkpoint_payload(resume_payload)
         if resume_payload
-        else build_tasks(output_dir=output_dir, runtime_config=runtime_config)
+        else build_tasks(
+            output_dir=output_dir,
+            runtime_config=runtime_config,
+            workflow_pack=effective_agent_team_config.workflow.pack,
+            workflow_options=effective_agent_team_config.workflow.options,
+        )
     )
     board = TaskBoard(tasks=tasks, logger=logger)
-    profiles = build_profiles()
+    profiles = build_profiles(team_config=effective_agent_team_config.team)
     analyst_profiles = [profile for profile in profiles if profile.agent_type == "analyst"]
-    participants = ["lead"] + [profile.name for profile in profiles]
+    lead_name = str(effective_agent_team_config.team.lead_name or "lead")
+    participants = [lead_name] + [profile.name for profile in profiles]
     mailbox = Mailbox(participants=participants, logger=logger)
     shared_state = SharedState()
     if resume_payload:
         restore_shared_state_from_checkpoint_payload(shared_state=shared_state, checkpoint_payload=resume_payload)
+    shared_state.set("lead_name", lead_name)
+    shared_state.set("agent_team_config", effective_agent_team_config.to_dict())
+    shared_state.set("host", host_adapter.runtime_metadata())
+    shared_state.set("team", effective_agent_team_config.team.to_dict())
+    shared_state.set("workflow", effective_agent_team_config.workflow.to_dict())
+    shared_state.set("policies", effective_agent_team_config.policies.to_dict())
+    shared_state.set("team_profiles", [profile.to_dict() for profile in profiles])
     shared_state.set("runtime_config", runtime_config.to_dict())
     shared_state.set("run_resume_from", str(resume_from) if resume_from else "")
     shared_state.set(
@@ -3406,7 +2938,7 @@ def run_team(
     shared_state.set("run_rewind_seed_event_count", effective_rewind_seed_event_count)
     file_locks = FileLockRegistry(logger=logger)
     lead_context = AgentContext(
-        profile=AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+        profile=AgentProfile(name=lead_name, skills={"lead"}, agent_type="lead"),
         target_dir=target_dir,
         output_dir=output_dir,
         goal=goal,
@@ -3492,7 +3024,7 @@ def run_team(
             ran_lead_initial = run_lead_task_once(lead_context=lead_context, task_id="lead_adjudication")
             ran_lead_re = run_lead_task_once(lead_context=lead_context, task_id="lead_re_adjudication")
             ran_lead_task = ran_lead_initial or ran_lead_re or ran_tmux_task
-            messages = mailbox.pull("lead")
+            messages = mailbox.pull(lead_context.profile.name)
             for message in messages:
                 logger.log(
                     "lead_mail_seen",
@@ -3502,7 +3034,7 @@ def run_team(
                 )
                 if message.subject == "task_failed":
                     mailbox.broadcast(
-                        sender="lead",
+                        sender=lead_context.profile.name,
                         subject="halt_notice",
                         body=f"Task failed: {message.task_id}. Continuing to completion checks.",
                     )
@@ -3657,6 +3189,16 @@ def run_team(
     print(
         f"[lead] provider: {provider_meta.provider} model={provider_meta.model} mode={provider_meta.mode}"
     )
+    print(
+        f"[lead] host: {effective_agent_team_config.host.kind} "
+        f"transport={effective_agent_team_config.host.session_transport}"
+    )
+    print(
+        f"[lead] workflow: {effective_agent_team_config.workflow.pack} "
+        f"preset={effective_agent_team_config.workflow.preset}"
+    )
+    if effective_agent_team_config.source_path:
+        print(f"[lead] config: {effective_agent_team_config.source_path}")
     if provider_meta.note:
         print(f"[lead] provider_note: {provider_meta.note}")
     print(
@@ -3692,6 +3234,26 @@ def parse_args() -> argparse.Namespace:
         "--output",
         default="agent_team_demo/output",
         help="Output directory for artifacts.",
+    )
+    parser.add_argument(
+        "--config",
+        default="",
+        help="Optional JSON config file for host/model/team/workflow defaults.",
+    )
+    parser.add_argument(
+        "--host-kind",
+        default="",
+        help="Host adapter metadata used to describe runtime capabilities.",
+    )
+    parser.add_argument(
+        "--workflow-pack",
+        default="",
+        help="Workflow pack to run. Current built-in option: markdown-audit.",
+    )
+    parser.add_argument(
+        "--workflow-preset",
+        default="",
+        help="Workflow preset label stored in artifacts for skill/host integration.",
     )
     parser.add_argument(
         "--resume-from",
@@ -3995,7 +3557,7 @@ def build_runtime_config_from_args(args: argparse.Namespace) -> RuntimeConfig:
     if sum(re_weight_values) <= 0:
         raise ValueError("sum of re-adjudication weights must be > 0")
 
-    return RuntimeConfig(
+    runtime_config = RuntimeConfig(
         teammate_mode=str(args.teammate_mode),
         enable_dynamic_tasks=bool(args.enable_dynamic_tasks),
         teammate_provider_replies=bool(args.teammate_provider_replies),
@@ -4013,6 +3575,117 @@ def build_runtime_config_from_args(args: argparse.Namespace) -> RuntimeConfig:
         re_adjudication_max_bonus=args.re_adjudication_max_bonus,
         re_adjudication_weight_coverage=args.re_adjudication_weight_coverage,
         re_adjudication_weight_depth=args.re_adjudication_weight_depth,
+    )
+    validate_runtime_config(runtime_config)
+    return runtime_config
+
+
+def validate_runtime_config(runtime_config: RuntimeConfig) -> None:
+    if runtime_config.peer_wait_seconds <= 0:
+        raise ValueError("--peer-wait-seconds must be > 0")
+    if runtime_config.evidence_wait_seconds <= 0:
+        raise ValueError("--evidence-wait-seconds must be > 0")
+    if not (0 <= runtime_config.adjudication_challenge_threshold <= 100):
+        raise ValueError("--adjudication-challenge-threshold must be in [0, 100]")
+    if not (0 <= runtime_config.adjudication_accept_threshold <= 100):
+        raise ValueError("--adjudication-accept-threshold must be in [0, 100]")
+    if runtime_config.adjudication_accept_threshold <= runtime_config.adjudication_challenge_threshold:
+        raise ValueError("--adjudication-accept-threshold must be greater than challenge threshold")
+    weight_values = [
+        runtime_config.adjudication_weight_completeness,
+        runtime_config.adjudication_weight_rebuttal_coverage,
+        runtime_config.adjudication_weight_argument_depth,
+    ]
+    if any(weight < 0 for weight in weight_values):
+        raise ValueError("adjudication weights must be >= 0")
+    if sum(weight_values) <= 0:
+        raise ValueError("sum of adjudication weights must be > 0")
+    if runtime_config.re_adjudication_max_bonus < 0:
+        raise ValueError("--re-adjudication-max-bonus must be >= 0")
+    if runtime_config.teammate_memory_turns <= 0:
+        raise ValueError("--teammate-memory-turns must be > 0")
+    if runtime_config.tmux_worker_timeout_sec <= 0:
+        raise ValueError("--tmux-worker-timeout-sec must be > 0")
+    re_weight_values = [
+        runtime_config.re_adjudication_weight_coverage,
+        runtime_config.re_adjudication_weight_depth,
+    ]
+    if any(weight < 0 for weight in re_weight_values):
+        raise ValueError("re-adjudication weights must be >= 0")
+    if sum(re_weight_values) <= 0:
+        raise ValueError("sum of re-adjudication weights must be > 0")
+
+
+def build_agent_team_config_from_args(
+    args: argparse.Namespace,
+    runtime_config: RuntimeConfig,
+) -> AgentTeamConfig:
+    if args.config:
+        config_path = pathlib.Path(args.config).resolve()
+        loaded = load_agent_team_config(config_path)
+        default_runtime = RuntimeConfig()
+        runtime_overrides = {
+            field: getattr(runtime_config, field)
+            for field in RuntimeConfig.__annotations__
+            if getattr(runtime_config, field) != getattr(default_runtime, field)
+        }
+        effective_runtime = dataclasses.replace(loaded.runtime, **runtime_overrides)
+        validate_runtime_config(effective_runtime)
+
+        effective_host = loaded.host
+        if args.host_kind:
+            effective_host = default_host_config(args.host_kind)
+
+        effective_workflow = loaded.workflow
+        if args.workflow_pack:
+            effective_workflow = dataclasses.replace(effective_workflow, pack=str(args.workflow_pack))
+        if args.workflow_preset:
+            effective_workflow = dataclasses.replace(effective_workflow, preset=str(args.workflow_preset))
+
+        effective_model = loaded.model
+        if args.provider != "heuristic":
+            effective_model = dataclasses.replace(effective_model, provider_name=str(args.provider))
+        if args.model != "heuristic-v1":
+            effective_model = dataclasses.replace(effective_model, model=str(args.model))
+        if args.openai_api_key_env != "OPENAI_API_KEY":
+            effective_model = dataclasses.replace(
+                effective_model,
+                openai_api_key_env=str(args.openai_api_key_env),
+            )
+        if args.openai_base_url != "https://api.openai.com/v1":
+            effective_model = dataclasses.replace(
+                effective_model,
+                openai_base_url=str(args.openai_base_url),
+            )
+        if args.require_llm:
+            effective_model = dataclasses.replace(effective_model, require_llm=True)
+        if args.provider_timeout_sec != 60:
+            effective_model = dataclasses.replace(
+                effective_model,
+                timeout_sec=int(args.provider_timeout_sec),
+            )
+
+        return AgentTeamConfig(
+            runtime=effective_runtime,
+            host=effective_host,
+            model=effective_model,
+            team=loaded.team,
+            workflow=effective_workflow,
+            policies=loaded.policies,
+            source_path=loaded.source_path,
+        )
+
+    return build_agent_team_config(
+        runtime_config=runtime_config,
+        provider_name=str(args.provider),
+        model=str(args.model),
+        openai_api_key_env=str(args.openai_api_key_env),
+        openai_base_url=str(args.openai_base_url),
+        require_llm=bool(args.require_llm),
+        provider_timeout_sec=int(args.provider_timeout_sec),
+        workflow_pack=str(args.workflow_pack or "markdown-audit"),
+        workflow_preset=str(args.workflow_preset or "default"),
+        host_kind=str(args.host_kind or "generic-cli"),
     )
 
 
@@ -4063,6 +3736,7 @@ if __name__ == "__main__":
                 f"mismatches={report_meta['mismatch_count']}"
             )
             raise SystemExit(0)
+        agent_team_config = build_agent_team_config_from_args(args=args, runtime_config=runtime_config)
 
         rewind_history_index: Optional[int] = None
         rewind_event_index: Optional[int] = None
@@ -4122,13 +3796,13 @@ if __name__ == "__main__":
             goal=args.goal,
             target_dir=pathlib.Path(args.target).resolve(),
             output_dir=run_output_dir,
-            runtime_config=runtime_config,
-            provider_name=args.provider,
-            model=args.model,
-            openai_api_key_env=args.openai_api_key_env,
-            openai_base_url=args.openai_base_url,
-            require_llm=args.require_llm,
-            provider_timeout_sec=args.provider_timeout_sec,
+            runtime_config=agent_team_config.runtime,
+            provider_name=agent_team_config.model.provider_name,
+            model=agent_team_config.model.model,
+            openai_api_key_env=agent_team_config.model.openai_api_key_env,
+            openai_base_url=agent_team_config.model.openai_base_url,
+            require_llm=agent_team_config.model.require_llm,
+            provider_timeout_sec=agent_team_config.model.timeout_sec,
             resume_from=resume_from_path,
             max_completed_tasks=args.max_completed_tasks,
             rewind_history_index=rewind_history_index,
@@ -4137,6 +3811,7 @@ if __name__ == "__main__":
             rewind_source_output_dir=rewind_source_output_dir,
             rewind_source_checkpoint=rewind_source_checkpoint,
             branch_run_id=branch_run_id,
+            agent_team_config=agent_team_config,
         )
     except Exception as exc:
         print(f"[lead] startup_error: {type(exc).__name__}: {exc}", file=sys.stderr)
