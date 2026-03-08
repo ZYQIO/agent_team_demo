@@ -403,6 +403,27 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 leases_path.resolve(),
             )
 
+            verify_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "skills" / "agent-team-runtime" / "scripts" / "verify_run.py"),
+                "--output",
+                str(output_dir),
+            ]
+            verified = subprocess.run(
+                verify_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(
+                verified.returncode,
+                0,
+                msg=f"stdout:\n{verified.stdout}\n\nstderr:\n{verified.stderr}",
+            )
+            self.assertIn("[verify] PASS", verified.stdout)
+
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

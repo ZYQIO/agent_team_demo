@@ -58,6 +58,7 @@ The intended architecture is now:
 | tmux cleanup sweep artifact | Completed | retained-session cleanup summaries now persist as a standalone artifact and are referenced from `run_summary.json`. |
 | tmux explicit lease ledger | Completed | preferred-session reuse is now authorized from a runtime-managed lease ledger that also persists worker lease state into artifacts. |
 | tmux resume-aware lease recovery | Completed | resumed tmux runs now reconcile retained lease state up front and persist recovery summaries into runtime artifacts. |
+| tmux artifact verification hardening | Completed | verifier now checks tmux recovery, cleanup, lease, and diagnostics artifacts for tmux-mode runs. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -252,6 +253,14 @@ Completed:
 - Added recovery outcomes for retained, missing, inactive, and tmux-unavailable lease states, with `tmux_worker_session_recovery_sweep` and per-worker lease updates
 - Added persisted [tmux_session_recovery_summary.json](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_recovery_tmux/tmux_session_recovery_summary.json) artifact plus `run_summary.json` reference for recovery inspection
 - Extended tests to cover retained-session recovery, missing-session invalidation, engine-level recovery callback wiring, and tmux end-to-end recovery artifacts
+
+### Phase N7: tmux Artifact Verification Hardening
+
+Completed:
+
+- Enhanced [verify_run.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py) so tmux-mode runs now require diagnostics plus recovery, cleanup, and lease artifact paths in `run_summary.json`
+- Added end-to-end coverage to assert verifier success against current tmux output artifacts
+- Re-verified both standard tmux output and resumed tmux recovery output with the hardened verifier
 
 ### Phase O: Second Workflow Pack
 
@@ -502,6 +511,7 @@ Completed slice:
 - Added persisted cleanup sweep artifact so retained-session reconciliation is visible outside `events.jsonl` and `shared_state.json`
 - Added explicit lease-authorized reuse semantics and persisted `tmux_session_leases.json` state so exact-session reuse is driven by runtime state instead of implicit session discovery
 - Added resume-aware lease recovery so tmux runs can reconcile persisted retained-session state before dispatch and persist recovery summaries as first-class artifacts
+- Hardened verifier expectations so tmux-mode artifact integrity now includes diagnostics, recovery, cleanup, and lease outputs
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

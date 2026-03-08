@@ -40,6 +40,13 @@ def load_events(path: pathlib.Path) -> List[Dict]:
     return events
 
 
+def load_json(path: pathlib.Path) -> Dict:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object in {path}")
+    return payload
+
+
 def fail(message: str) -> int:
     print(f"[verify] FAIL: {message}")
     return 1
@@ -55,7 +62,7 @@ def main() -> int:
     if missing:
         return fail(f"Missing required files: {missing}")
 
-    task_board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+    task_board = load_json(output_dir / "task_board.json")
     tasks = task_board.get("tasks", [])
     failed_tasks = [task for task in tasks if task.get("status") == "failed"]
     incomplete = [task for task in tasks if task.get("status") != "completed"]
@@ -91,11 +98,40 @@ def main() -> int:
         if section not in report:
             return fail(f"Missing report section: {section}")
 
-    summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+    summary = load_json(output_dir / "run_summary.json")
     provider = summary.get("provider", {})
     runtime_config = summary.get("runtime_config", {})
     host = summary.get("host", {})
     workflow = summary.get("workflow", {})
+    if runtime_config.get("teammate_mode") == "tmux":
+        diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+        if not diagnostics_path.exists():
+            return fail("Missing tmux worker diagnostics artifact")
+        diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
+        if not diagnostics_lines:
+            return fail("tmux_worker_diagnostics.jsonl is empty")
+
+        required_tmux_summary_paths = {
+            "tmux_session_recovery_summary_path": {"workers", "recovered", "missing", "inactive", "failed", "skipped"},
+            "tmux_session_cleanup_summary_path": {"sessions", "cleaned", "already_exited", "failed", "skipped"},
+            "tmux_session_leases_path": set(),
+        }
+        for summary_key, required_keys in required_tmux_summary_paths.items():
+            raw_path = str(summary.get(summary_key, "") or "")
+            if not raw_path:
+                return fail(f"Missing tmux summary path in run_summary.json: {summary_key}")
+            artifact_path = pathlib.Path(raw_path).resolve()
+            if not artifact_path.exists():
+                return fail(f"Referenced tmux artifact does not exist: {artifact_path}")
+            payload = load_json(artifact_path)
+            if required_keys and not required_keys.issubset(set(payload.keys())):
+                return fail(
+                    f"tmux artifact missing required keys: {artifact_path.name} "
+                    f"missing={sorted(required_keys - set(payload.keys()))}"
+                )
+            if summary_key == "tmux_session_leases_path" and not payload:
+                return fail("tmux_session_leases.json should not be empty for tmux runs")
+
     print("[verify] PASS")
     print(f"[verify] output={output_dir}")
     print(f"[verify] tasks={len(tasks)}")
