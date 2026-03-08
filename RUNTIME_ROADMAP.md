@@ -54,6 +54,7 @@ The intended architecture is now:
 | tmux orphan-session preflight cleanup | Completed | worker launches now clean prior same-prefix orphan tmux sessions before spawning new work. |
 | tmux stable session identity | Completed | worker launches now prefer stable session names, retry same-name recovery, and track reuse strategy in diagnostics. |
 | tmux preferred-session reuse recovery | Completed | worker launches now reuse exact existing preferred sessions via `respawn-pane` before falling back to cleanup/retry. |
+| tmux session lease strategy | Completed | preferred worker sessions can now be retained across likely future analyst tasks and swept at the end of the run. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -221,6 +222,15 @@ Completed:
 - Added reuse diagnostics fields, including `tmux_preferred_session_found_preflight`, `tmux_preferred_session_reuse_attempted`, `tmux_preferred_session_reuse_result`, and `tmux_preferred_session_reused_existing`
 - Extended tests to cover exact preferred-session reuse recovery and the adjusted orphan-cleanup semantics
 
+### Phase N4: tmux Session Lease Strategy
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so analyst dispatch can retain exact preferred sessions when more tmux-compatible analyst work is still pending
+- Added lease retention diagnostics fields, including `tmux_reuse_retention_requested` and `tmux_session_retained_for_reuse`
+- Added end-of-run preferred-session cleanup sweep so retained analyst sessions are reconciled before artifacts are finalized
+- Extended tests to cover preferred-session lease retention, cleanup sweep behavior, and engine-level cleanup callback execution
+
 ### Phase O: Second Workflow Pack
 
 Completed:
@@ -276,6 +286,7 @@ Key runtime artifact added during M8:
 - `tmux_worker_diagnostics.jsonl` now also includes stale-session recovery retry metadata for failed cleanup paths
 - `tmux_worker_diagnostics.jsonl` now also includes active-session cleanup recovery retry metadata for worker session cleanup paths
 - `tmux_worker_diagnostics.jsonl` now also includes orphan-session preflight cleanup metadata for interruption recovery paths
+- `tmux_worker_diagnostics.jsonl` now also includes cross-task preferred-session lease retention metadata
 
 ## 6. Validation Status
 
@@ -291,7 +302,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `48/48` tests passed
+- `53/53` tests passed
 
 ### Smoke Runs
 
@@ -310,7 +321,7 @@ tmux smoke run:
 python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
   --preset tmux \
   --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m8_orphan_cleanup_tmux \
+  --output agent_team_demo/output_analysis_m8_lease_tmux \
   --extra-arg=--peer-wait-seconds \
   --extra-arg=1 \
   --extra-arg=--evidence-wait-seconds \
@@ -352,7 +363,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m7_fast
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m8_orphan_cleanup_tmux
+  --output agent_team_demo/output_analysis_m8_lease_tmux
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m9_repo_audit
@@ -374,6 +385,7 @@ Verified output directories:
 - [output_analysis_m8_orphan_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_orphan_cleanup_tmux)
 - [output_analysis_m8_stable_session_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stable_session_tmux)
 - [output_analysis_m8_reuse_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_reuse_tmux)
+- [output_analysis_m8_lease_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_tmux)
 - [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
 - [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
 
@@ -458,6 +470,7 @@ Completed slice:
 - Added tmux orphan-session preflight cleanup and diagnostics for interruption recovery
 - Added stable preferred session naming, same-name recovery retry, and exact-name orphan cleanup for stronger interruption recovery
 - Added preferred-session reuse via `respawn-pane` so exact existing worker sessions can recover without forced cleanup first
+- Added preferred-session lease hints so tmux workers can retain reusable sessions when more analyst work is pending, plus an end-of-run cleanup sweep to reconcile retained sessions
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

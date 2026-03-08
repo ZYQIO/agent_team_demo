@@ -61,6 +61,7 @@ TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
 TaskHandlers = Mapping[str, TaskHandler]
 TeammateFactory = Callable[..., threading.Thread]
 TmuxRunner = Callable[[AgentContext, Sequence[AgentProfile], pathlib.Path, int], bool]
+TmuxCleanupRunner = Callable[[AgentContext, Sequence[AgentProfile]], Any]
 
 
 def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
@@ -240,6 +241,7 @@ def run_team(
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
+    cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
     runtime_script: Optional[pathlib.Path] = None,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -636,6 +638,17 @@ def run_team(
         stop_event.set()
         for worker in workers:
             worker.join(timeout=2.0)
+        if runtime_config.teammate_mode == "tmux" and cleanup_tmux_analyst_sessions_fn is not None:
+            try:
+                cleanup_tmux_analyst_sessions_fn(
+                    lead_context=lead_context,
+                    analyst_profiles=analyst_profiles,
+                )
+            except Exception as exc:  # pragma: no cover - defensive path
+                logger.log(
+                    "tmux_worker_session_cleanup_failed",
+                    error=f"{type(exc).__name__}: {exc}",
+                )
 
     write_checkpoint(
         checkpoint_path=checkpoint_path,

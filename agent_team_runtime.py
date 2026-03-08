@@ -139,12 +139,14 @@ def _execute_worker_tmux(
     workdir: pathlib.Path,
     session_prefix: str,
     timeout_sec: int,
+    retain_session_for_reuse: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return tmux_transport.execute_worker_tmux(
         command=command,
         workdir=workdir,
         session_prefix=session_prefix,
         timeout_sec=timeout_sec,
+        retain_session_for_reuse=retain_session_for_reuse,
     )
 
 
@@ -156,6 +158,7 @@ def _run_tmux_worker_task(
     worker_name: str,
     logger: EventLogger,
     timeout_sec: int = 120,
+    retain_session_for_reuse: bool = False,
 ) -> Dict[str, Any]:
     return tmux_transport.run_tmux_worker_task(
         runtime_script=runtime_script,
@@ -165,9 +168,20 @@ def _run_tmux_worker_task(
         worker_name=worker_name,
         logger=logger,
         timeout_sec=timeout_sec,
+        retain_session_for_reuse=retain_session_for_reuse,
         execute_worker_tmux_fn=_execute_worker_tmux,
         execute_worker_subprocess_fn=_execute_worker_subprocess,
         which_fn=shutil.which,
+    )
+
+
+def cleanup_tmux_analyst_sessions(
+    lead_context: AgentContext,
+    analyst_profiles: Sequence[AgentProfile],
+) -> Dict[str, Any]:
+    return tmux_transport.cleanup_tmux_analyst_sessions(
+        lead_context=lead_context,
+        analyst_profiles=analyst_profiles,
     )
 
 
@@ -253,6 +267,7 @@ def run_team(
         agent_team_config=agent_team_config,
         teammate_agent_factory=TeammateAgent,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
+        cleanup_tmux_analyst_sessions_fn=cleanup_tmux_analyst_sessions,
         runtime_script=pathlib.Path(__file__).resolve(),
     )
 

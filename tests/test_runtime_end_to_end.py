@@ -339,6 +339,8 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("tmux_preferred_session_reuse_result", first_record)
             self.assertIn("tmux_preferred_session_reuse_error", first_record)
             self.assertIn("tmux_preferred_session_reused_existing", first_record)
+            self.assertIn("tmux_reuse_retention_requested", first_record)
+            self.assertIn("tmux_session_retained_for_reuse", first_record)
             self.assertIn("tmux_cleanup_result", first_record)
             self.assertIn("execution_timed_out", first_record)
             self.assertIn("timeout_phase", first_record)

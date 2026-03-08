@@ -881,6 +881,285 @@ class RuntimeLogicTests(unittest.TestCase):
                 ],
             )
 
+    def test_execute_worker_tmux_retains_preferred_session_for_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = session_prefix
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr="no server running on /tmp/tmux-501/default",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("worker ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                    retain_session_for_reuse=True,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertTrue(lifecycle.get("tmux_reuse_retention_requested"))
+            self.assertTrue(lifecycle.get("tmux_session_retained_for_reuse"))
+            self.assertEqual(lifecycle.get("tmux_cleanup_result"), "leased_for_reuse")
+            self.assertTrue(lifecycle.get("tmux_session_exists_after_cleanup"))
+            self.assertFalse(stdout_file.exists())
+            self.assertFalse(stderr_file.exists())
+            self.assertFalse(status_file.exists())
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    ["tmux", "new-session", "-d", "-s", session_name, mock.ANY],
+                ],
+            )
+
+    def test_run_tmux_analyst_task_once_sets_reuse_hint_when_future_tasks_exist(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="heading_audit",
+                        title="Heading audit",
+                        task_type="heading_audit",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                    runtime.Task(
+                        task_id="length_audit",
+                        title="Length audit",
+                        task_type="length_audit",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={"line_threshold": 10},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "analyst_alpha"], logger=logger)
+            shared_state = runtime.SharedState()
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            analyst_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            ]
+            retain_flags = []
+
+            def fake_run_worker_task(**kwargs):
+                retain_flags.append(bool(kwargs.get("retain_session_for_reuse", False)))
+                return {
+                    "ok": True,
+                    "transport": "tmux",
+                    "payload": {"result": {"ok": True}, "state_updates": {}},
+                    "diagnostics": {"tmux_session_retained_for_reuse": kwargs.get("retain_session_for_reuse", False)},
+                }
+
+            ran = runtime.tmux_transport.run_tmux_analyst_task_once(
+                lead_context=lead_context,
+                analyst_profiles=analyst_profiles,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                run_worker_task_fn=fake_run_worker_task,
+                supported_task_types=runtime.TMUX_ANALYST_TASK_TYPES,
+                worker_timeout_sec=10,
+            )
+
+            self.assertTrue(ran)
+            self.assertEqual(retain_flags, [True])
+
+    def test_cleanup_tmux_analyst_sessions_sweeps_preferred_sessions(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            shared_state = runtime.SharedState()
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=mock.Mock(),
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=mock.Mock(),
+                mailbox=mock.Mock(),
+                file_locks=mock.Mock(),
+                shared_state=shared_state,
+                logger=logger,
+            )
+            analyst_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
+                runtime.AgentProfile(name="analyst_beta", skills={"analysis"}, agent_type="analyst"),
+            ]
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command == ["tmux", "kill-session", "-t", "agent_analyst_alpha"]:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command == ["tmux", "kill-session", "-t", "agent_analyst_beta"]:
+                    return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="can't find session")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.shutil, "which", return_value="/usr/bin/tmux"), mock.patch.object(
+                runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
+            ):
+                summary = runtime.cleanup_tmux_analyst_sessions(
+                    lead_context=lead_context,
+                    analyst_profiles=analyst_profiles,
+                )
+
+            self.assertEqual(summary["cleaned"], 1)
+            self.assertEqual(summary["already_exited"], 1)
+            self.assertEqual(summary["failed"], [])
+            self.assertEqual(
+                shared_state.get("tmux_session_cleanup_summary"),
+                summary,
+            )
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "kill-session", "-t", "agent_analyst_alpha"],
+                    ["tmux", "kill-session", "-t", "agent_analyst_beta"],
+                ],
+            )
+
+    def test_run_team_tmux_invokes_cleanup_callback_on_shutdown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            workflow_pack = mock.Mock()
+            workflow_pack.build_handlers.return_value = {}
+            workflow_pack.build_tasks.return_value = []
+            workflow_pack.runtime_metadata = mock.Mock(lead_task_order=(), report_task_ids=())
+            cleanup_calls = []
+
+            def fake_worker_factory(**_kwargs):
+                return threading.Thread(target=lambda: None)
+
+            def fake_cleanup(lead_context, analyst_profiles):
+                cleanup_calls.append(
+                    {
+                        "lead": lead_context.profile.name,
+                        "analysts": [profile.name for profile in analyst_profiles],
+                    }
+                )
+                return {"cleaned": len(analyst_profiles)}
+
+            with mock.patch("agent_team.runtime.engine.resolve_workflow_pack", return_value=workflow_pack):
+                exit_code = runtime.run_team_impl(
+                    goal="test",
+                    target_dir=target_dir,
+                    output_dir=output_dir,
+                    runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                    provider_name="heuristic",
+                    model="heuristic-v1",
+                    openai_api_key_env="OPENAI_API_KEY",
+                    openai_base_url="https://api.openai.com/v1",
+                    require_llm=False,
+                    provider_timeout_sec=5,
+                    teammate_agent_factory=fake_worker_factory,
+                    run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
+                    cleanup_tmux_analyst_sessions_fn=fake_cleanup,
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                cleanup_calls,
+                [{"lead": "lead", "analysts": ["analyst_alpha", "analyst_beta"]}],
+            )
+
+    def test_run_team_tmux_logs_cleanup_callback_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            workflow_pack = mock.Mock()
+            workflow_pack.build_handlers.return_value = {}
+            workflow_pack.build_tasks.return_value = []
+            workflow_pack.runtime_metadata = mock.Mock(lead_task_order=(), report_task_ids=())
+
+            def fake_worker_factory(**_kwargs):
+                return threading.Thread(target=lambda: None)
+
+            def fake_cleanup(_lead_context, _analyst_profiles):
+                raise RuntimeError("cleanup boom")
+
+            with mock.patch("agent_team.runtime.engine.resolve_workflow_pack", return_value=workflow_pack):
+                exit_code = runtime.run_team_impl(
+                    goal="test",
+                    target_dir=target_dir,
+                    output_dir=output_dir,
+                    runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                    provider_name="heuristic",
+                    model="heuristic-v1",
+                    openai_api_key_env="OPENAI_API_KEY",
+                    openai_base_url="https://api.openai.com/v1",
+                    require_llm=False,
+                    provider_timeout_sec=5,
+                    teammate_agent_factory=fake_worker_factory,
+                    run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
+                    cleanup_tmux_analyst_sessions_fn=fake_cleanup,
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            event_names = []
+            with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    payload = json.loads(line)
+                    event_names.append(payload.get("event"))
+            self.assertIn("tmux_worker_session_cleanup_failed", event_names)
+
     def test_cleanup_stale_tmux_session_retries_when_session_still_exists(self) -> None:
         calls = []
 

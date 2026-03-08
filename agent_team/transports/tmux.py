@@ -32,6 +32,10 @@ TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
 TMUX_SESSION_SPAWN_MAX_ATTEMPTS = 3
 
 
+def preferred_tmux_session_name(worker_name: str) -> str:
+    return f"agent_{worker_name}"
+
+
 def tmux_worker_diagnostics_file(output_dir: pathlib.Path) -> pathlib.Path:
     return output_dir / TMUX_WORKER_DIAGNOSTICS_FILENAME
 
@@ -890,6 +894,7 @@ def execute_worker_tmux(
     workdir: pathlib.Path,
     session_prefix: str,
     timeout_sec: int,
+    retain_session_for_reuse: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     ipc_dir = workdir / "_tmux_worker_ipc"
     ipc_dir.mkdir(parents=True, exist_ok=True)
@@ -904,6 +909,8 @@ def execute_worker_tmux(
         "tmux_preferred_session_reuse_result": "",
         "tmux_preferred_session_reuse_error": "",
         "tmux_preferred_session_reused_existing": False,
+        "tmux_reuse_retention_requested": retain_session_for_reuse,
+        "tmux_session_retained_for_reuse": False,
         "tmux_session_started": False,
         "tmux_orphan_cleanup_attempted": False,
         "tmux_orphan_server_running": False,
@@ -1030,15 +1037,15 @@ def execute_worker_tmux(
         time.sleep(TMUX_SESSION_POLL_INTERVAL_SEC)
 
     lifecycle["tmux_status_observed"] = status_file.exists()
-    cleanup = _cleanup_active_tmux_session(session_name)
-    lifecycle["tmux_cleanup_result"] = cleanup["result"]
-    lifecycle["tmux_cleanup_error"] = cleanup["error"]
-    lifecycle["tmux_cleanup_retry_attempted"] = bool(cleanup["retry_attempted"])
-    lifecycle["tmux_cleanup_retry_result"] = str(cleanup["retry_result"])
-    lifecycle["tmux_cleanup_retry_error"] = str(cleanup["retry_error"])
-    lifecycle["tmux_session_exists_after_cleanup"] = bool(cleanup["session_exists_after_cleanup"])
-    lifecycle["tmux_cleanup_verification_error"] = str(cleanup["verification_error"])
     if not status_file.exists():
+        cleanup = _cleanup_active_tmux_session(session_name)
+        lifecycle["tmux_cleanup_result"] = cleanup["result"]
+        lifecycle["tmux_cleanup_error"] = cleanup["error"]
+        lifecycle["tmux_cleanup_retry_attempted"] = bool(cleanup["retry_attempted"])
+        lifecycle["tmux_cleanup_retry_result"] = str(cleanup["retry_result"])
+        lifecycle["tmux_cleanup_retry_error"] = str(cleanup["retry_error"])
+        lifecycle["tmux_session_exists_after_cleanup"] = bool(cleanup["session_exists_after_cleanup"])
+        lifecycle["tmux_cleanup_verification_error"] = str(cleanup["verification_error"])
         lifecycle["tmux_timed_out"] = True
         stdout = stdout_file.read_text(encoding="utf-8", errors="ignore") if stdout_file.exists() else ""
         stderr = stderr_file.read_text(encoding="utf-8", errors="ignore") if stderr_file.exists() else ""
@@ -1064,6 +1071,29 @@ def execute_worker_tmux(
         returncode = 1
     stdout = stdout_file.read_text(encoding="utf-8", errors="ignore") if stdout_file.exists() else ""
     stderr = stderr_file.read_text(encoding="utf-8", errors="ignore") if stderr_file.exists() else ""
+    if (
+        returncode == 0
+        and retain_session_for_reuse
+        and session_name == str(spawn_result.get("preferred_session_name", ""))
+        and str(spawn_result.get("session_name_strategy", "")) in {"preferred", "preferred_reused_existing"}
+    ):
+        lifecycle["tmux_cleanup_result"] = "leased_for_reuse"
+        lifecycle["tmux_cleanup_error"] = ""
+        lifecycle["tmux_cleanup_retry_attempted"] = False
+        lifecycle["tmux_cleanup_retry_result"] = ""
+        lifecycle["tmux_cleanup_retry_error"] = ""
+        lifecycle["tmux_session_exists_after_cleanup"] = True
+        lifecycle["tmux_cleanup_verification_error"] = ""
+        lifecycle["tmux_session_retained_for_reuse"] = True
+    else:
+        cleanup = _cleanup_active_tmux_session(session_name)
+        lifecycle["tmux_cleanup_result"] = cleanup["result"]
+        lifecycle["tmux_cleanup_error"] = cleanup["error"]
+        lifecycle["tmux_cleanup_retry_attempted"] = bool(cleanup["retry_attempted"])
+        lifecycle["tmux_cleanup_retry_result"] = str(cleanup["retry_result"])
+        lifecycle["tmux_cleanup_retry_error"] = str(cleanup["retry_error"])
+        lifecycle["tmux_session_exists_after_cleanup"] = bool(cleanup["session_exists_after_cleanup"])
+        lifecycle["tmux_cleanup_verification_error"] = str(cleanup["verification_error"])
     ipc_cleanup = _cleanup_tmux_ipc_files(ipc_files)
     lifecycle["tmux_ipc_cleanup_result"] = ipc_cleanup["result"]
     lifecycle["tmux_ipc_cleanup_error"] = ipc_cleanup["error"]
@@ -1092,6 +1122,8 @@ def _merge_tmux_lifecycle_into_diagnostics(
         "tmux_preferred_session_reuse_result",
         "tmux_preferred_session_reuse_error",
         "tmux_preferred_session_reused_existing",
+        "tmux_reuse_retention_requested",
+        "tmux_session_retained_for_reuse",
         "tmux_session_started",
         "tmux_orphan_cleanup_attempted",
         "tmux_orphan_server_running",
@@ -1155,8 +1187,9 @@ def run_tmux_worker_task(
     worker_name: str,
     logger: EventLogger,
     timeout_sec: int = 120,
+    retain_session_for_reuse: bool = False,
     execute_worker_tmux_fn: Callable[
-        [List[str], pathlib.Path, str, int], subprocess.CompletedProcess[str]
+        [List[str], pathlib.Path, str, int, bool], subprocess.CompletedProcess[str]
     ] = execute_worker_tmux,
     execute_worker_subprocess_fn: Callable[
         [List[str], int], subprocess.CompletedProcess[str]
@@ -1208,6 +1241,8 @@ def run_tmux_worker_task(
         "tmux_preferred_session_reuse_result": "",
         "tmux_preferred_session_reuse_error": "",
         "tmux_preferred_session_reused_existing": False,
+        "tmux_reuse_retention_requested": retain_session_for_reuse,
+        "tmux_session_retained_for_reuse": False,
         "tmux_session_started": False,
         "tmux_orphan_cleanup_attempted": False,
         "tmux_orphan_server_running": False,
@@ -1312,8 +1347,9 @@ def run_tmux_worker_task(
                 completed = execute_worker_tmux_fn(
                     command=command,
                     workdir=output_dir,
-                    session_prefix=f"agent_{worker_name}",
+                    session_prefix=preferred_tmux_session_name(worker_name),
                     timeout_sec=timeout_sec,
+                    retain_session_for_reuse=retain_session_for_reuse,
                 )
             else:
                 fallback_reason = "tmux binary not found"
@@ -1365,6 +1401,8 @@ def run_tmux_worker_task(
             tmux_preferred_session_reused_existing=bool(
                 lifecycle.get("tmux_preferred_session_reused_existing", False)
             ),
+            tmux_reuse_retention_requested=bool(lifecycle.get("tmux_reuse_retention_requested", False)),
+            tmux_session_retained_for_reuse=bool(lifecycle.get("tmux_session_retained_for_reuse", False)),
             tmux_cleanup_result=str(lifecycle.get("tmux_cleanup_result", "")),
             tmux_orphan_sessions_found=int(lifecycle.get("tmux_orphan_sessions_found", 0) or 0),
             tmux_orphan_sessions_cleaned=int(lifecycle.get("tmux_orphan_sessions_cleaned", 0) or 0),
@@ -1600,11 +1638,19 @@ def run_tmux_analyst_task_once(
             "output_dir": str(lead_context.output_dir),
             "shared_state": lead_context.shared_state.snapshot(),
         }
+        board_snapshot = lead_context.board.snapshot()
+        retain_session_for_reuse = any(
+            str(item.get("task_id", "")) != task.task_id
+            and str(item.get("task_type", "")) in supported_task_types
+            and str(item.get("status", "")) in {"pending", "blocked"}
+            for item in board_snapshot.get("tasks", [])
+        )
         lead_context.logger.log(
             "tmux_worker_task_dispatched",
             worker=profile.name,
             task_id=task.task_id,
             task_type=task.task_type,
+            retain_session_for_reuse=retain_session_for_reuse,
         )
         execution = run_worker_task_fn(
             runtime_script=runtime_script,
@@ -1614,6 +1660,7 @@ def run_tmux_analyst_task_once(
             worker_name=profile.name,
             logger=lead_context.logger,
             timeout_sec=worker_timeout_sec,
+            retain_session_for_reuse=retain_session_for_reuse,
         )
         if not execution.get("ok"):
             error = str(execution.get("error", "unknown worker error"))
@@ -1655,6 +1702,9 @@ def run_tmux_analyst_task_once(
                 ),
                 tmux_preferred_session_reused_existing=bool(
                     execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+                ),
+                tmux_session_retained_for_reuse=bool(
+                    execution_diagnostics.get("tmux_session_retained_for_reuse", False)
                 ),
                 tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
                 tmux_orphan_sessions_cleaned=int(
@@ -1728,6 +1778,9 @@ def run_tmux_analyst_task_once(
             tmux_preferred_session_reused_existing=bool(
                 execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
             ),
+            tmux_session_retained_for_reuse=bool(
+                execution_diagnostics.get("tmux_session_retained_for_reuse", False)
+            ),
             tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
             tmux_orphan_sessions_cleaned=int(execution_diagnostics.get("tmux_orphan_sessions_cleaned", 0) or 0),
             tmux_spawn_attempts=int(execution_diagnostics.get("tmux_spawn_attempts", 0) or 0),
@@ -1752,3 +1805,54 @@ def run_tmux_analyst_task_once(
             lead_context.file_locks.release(profile.name, lock_paths)
         return True
     return False
+
+
+def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[AgentProfile]) -> Dict[str, Any]:
+    session_names = [preferred_tmux_session_name(profile.name) for profile in analyst_profiles]
+    if shutil.which("tmux") is None:
+        summary = {
+            "sessions": session_names,
+            "cleaned": 0,
+            "already_exited": 0,
+            "failed": [],
+            "skipped": "tmux_unavailable",
+        }
+        lead_context.logger.log(
+            "tmux_worker_session_cleanup_sweep",
+            sessions=session_names,
+            cleaned=0,
+            already_exited=0,
+            failed=[],
+            skipped="tmux_unavailable",
+        )
+        lead_context.shared_state.set("tmux_session_cleanup_summary", summary)
+        return summary
+    cleaned = 0
+    already_exited = 0
+    failed: List[str] = []
+    for session_name in session_names:
+        cleanup = _cleanup_tmux_session_with_recovery(session_name)
+        result = str(cleanup.get("result", ""))
+        if result in {"killed", "recovered_after_retry"}:
+            cleaned += 1
+        elif result == "already_exited":
+            already_exited += 1
+        else:
+            failed.append(session_name)
+    summary = {
+        "sessions": session_names,
+        "cleaned": cleaned,
+        "already_exited": already_exited,
+        "failed": failed,
+        "skipped": "",
+    }
+    lead_context.logger.log(
+        "tmux_worker_session_cleanup_sweep",
+        sessions=session_names,
+        cleaned=cleaned,
+        already_exited=already_exited,
+        failed=failed,
+        skipped="",
+    )
+    lead_context.shared_state.set("tmux_session_cleanup_summary", summary)
+    return summary
