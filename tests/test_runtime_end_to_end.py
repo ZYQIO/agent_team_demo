@@ -321,6 +321,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("teammate_mode_tmux_enabled", event_names)
             self.assertIn("tmux_worker_task_dispatched", event_names)
             self.assertIn("tmux_worker_task_completed", event_names)
+            self.assertIn("tmux_worker_session_cleanup_sweep", event_names)
 
             diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
             self.assertTrue(diagnostics_path.exists())
@@ -354,6 +355,21 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("tmux_cleanup_retry_result", first_record)
             self.assertIn("tmux_orphan_sessions_found", first_record)
             self.assertIn("tmux_orphan_sessions_cleaned", first_record)
+
+            cleanup_summary_path = output_dir / "tmux_session_cleanup_summary.json"
+            self.assertTrue(cleanup_summary_path.exists())
+            cleanup_summary = json.loads(cleanup_summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(cleanup_summary.get("sessions"), ["agent_analyst_alpha", "agent_analyst_beta"])
+            self.assertIn("cleaned", cleanup_summary)
+            self.assertIn("already_exited", cleanup_summary)
+            self.assertIn("failed", cleanup_summary)
+            self.assertIn(cleanup_summary.get("skipped", ""), {"", "tmux_unavailable"})
+
+            summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                pathlib.Path(summary.get("tmux_session_cleanup_summary_path", "")).resolve(),
+                cleanup_summary_path.resolve(),
+            )
 
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

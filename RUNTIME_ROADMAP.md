@@ -55,6 +55,7 @@ The intended architecture is now:
 | tmux stable session identity | Completed | worker launches now prefer stable session names, retry same-name recovery, and track reuse strategy in diagnostics. |
 | tmux preferred-session reuse recovery | Completed | worker launches now reuse exact existing preferred sessions via `respawn-pane` before falling back to cleanup/retry. |
 | tmux session lease strategy | Completed | preferred worker sessions can now be retained across likely future analyst tasks and swept at the end of the run. |
+| tmux cleanup sweep artifact | Completed | retained-session cleanup summaries now persist as a standalone artifact and are referenced from `run_summary.json`. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -229,6 +230,7 @@ Completed:
 - Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so analyst dispatch can retain exact preferred sessions when more tmux-compatible analyst work is still pending
 - Added lease retention diagnostics fields, including `tmux_reuse_retention_requested` and `tmux_session_retained_for_reuse`
 - Added end-of-run preferred-session cleanup sweep so retained analyst sessions are reconciled before artifacts are finalized
+- Added persisted `tmux_session_cleanup_summary.json` artifact plus `run_summary.json` reference for cleanup sweep results
 - Extended tests to cover preferred-session lease retention, cleanup sweep behavior, and engine-level cleanup callback execution
 
 ### Phase O: Second Workflow Pack
@@ -287,6 +289,7 @@ Key runtime artifact added during M8:
 - `tmux_worker_diagnostics.jsonl` now also includes active-session cleanup recovery retry metadata for worker session cleanup paths
 - `tmux_worker_diagnostics.jsonl` now also includes orphan-session preflight cleanup metadata for interruption recovery paths
 - `tmux_worker_diagnostics.jsonl` now also includes cross-task preferred-session lease retention metadata
+- `tmux_session_cleanup_summary.json` now persists the end-of-run cleanup sweep summary for retained tmux sessions
 
 ## 6. Validation Status
 
@@ -471,6 +474,7 @@ Completed slice:
 - Added stable preferred session naming, same-name recovery retry, and exact-name orphan cleanup for stronger interruption recovery
 - Added preferred-session reuse via `respawn-pane` so exact existing worker sessions can recover without forced cleanup first
 - Added preferred-session lease hints so tmux workers can retain reusable sessions when more analyst work is pending, plus an end-of-run cleanup sweep to reconcile retained sessions
+- Added persisted cleanup sweep artifact so retained-session reconciliation is visible outside `events.jsonl` and `shared_state.json`
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

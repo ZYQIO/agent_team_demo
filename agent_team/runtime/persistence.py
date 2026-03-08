@@ -581,6 +581,16 @@ def write_artifacts(
         encoding="utf-8",
     )
 
+    tmux_cleanup_summary_path = output_dir / "tmux_session_cleanup_summary.json"
+    tmux_cleanup_summary = state_snapshot.get("tmux_session_cleanup_summary", {})
+    tmux_cleanup_summary_path_str = ""
+    if isinstance(tmux_cleanup_summary, dict) and tmux_cleanup_summary:
+        tmux_cleanup_summary_path.write_text(
+            json.dumps(tmux_cleanup_summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmux_cleanup_summary_path_str = str(tmux_cleanup_summary_path)
+
     lock_path = output_dir / "file_locks.json"
     lock_path.write_text(
         json.dumps(file_locks.snapshot(), ensure_ascii=False, indent=2),
@@ -595,6 +605,7 @@ def write_artifacts(
         "shared_state_path": str(state_path),
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
+        "tmux_session_cleanup_summary_path": tmux_cleanup_summary_path_str,
         "mailbox_model": state_snapshot.get("team", {}).get(
             "mailbox_model",
             "asynchronous pull-based inbox",
