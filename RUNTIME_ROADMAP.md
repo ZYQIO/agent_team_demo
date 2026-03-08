@@ -52,6 +52,7 @@ The intended architecture is now:
 | tmux stale-session recovery retry | Completed | failed stale-session cleanup now verifies lingering sessions and retries cleanup with structured recovery metadata. |
 | tmux active-session cleanup recovery | Completed | worker-session cleanup now verifies lingering sessions and retries cleanup when `kill-session` fails. |
 | tmux orphan-session preflight cleanup | Completed | worker launches now clean prior same-prefix orphan tmux sessions before spawning new work. |
+| tmux stable session identity | Completed | worker launches now prefer stable session names, retry same-name recovery, and track reuse strategy in diagnostics. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -199,6 +200,16 @@ Completed:
 - Added orphan-session preflight metadata into `tmux_worker_diagnostics.jsonl`, including `tmux_orphan_sessions_found`, `tmux_orphan_sessions_cleaned`, and `tmux_orphan_sessions_failed`
 - Enriched tmux transport and task events with orphan-session cleanup metadata
 - Extended tests to cover direct orphan-session preflight cleanup and diagnostics propagation through worker fallback paths
+
+### Phase N2: tmux Stable Session Identity
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so worker launches now prefer a stable session name per worker before falling back to suffixed session names
+- Duplicate-session recovery now retries the preferred session name after cleanup before generating a new suffixed session name
+- Orphan-session preflight cleanup now also matches exact preferred session names, not only suffixed sessions
+- Added preferred-session diagnostics fields, including `tmux_preferred_session_name`, `tmux_session_name_strategy`, `tmux_preferred_session_retried`, and `tmux_preferred_session_reused`
+- Extended tests to cover stable-name retry behavior and exact-name orphan cleanup
 
 ### Phase O: Second Workflow Pack
 
@@ -351,6 +362,7 @@ Verified output directories:
 - [output_analysis_m8_stale_recovery_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stale_recovery_tmux)
 - [output_analysis_m8_active_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_active_cleanup_tmux)
 - [output_analysis_m8_orphan_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_orphan_cleanup_tmux)
+- [output_analysis_m8_stable_session_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stable_session_tmux)
 - [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
 - [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
 
@@ -433,6 +445,7 @@ Completed slice:
 - Added tmux stale-session recovery retry and verification diagnostics for failed cleanup paths
 - Added tmux active-session cleanup recovery retry and verification diagnostics for worker session cleanup
 - Added tmux orphan-session preflight cleanup and diagnostics for interruption recovery
+- Added stable preferred session naming, same-name recovery retry, and exact-name orphan cleanup for stronger interruption recovery
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:
