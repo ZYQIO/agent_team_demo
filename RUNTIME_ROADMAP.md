@@ -44,7 +44,15 @@ The intended architecture is now:
 | Lead orchestration generalization | Completed | Workflow packs now declare lead task order and engine consumes that metadata. |
 | Handler module split | Completed | Markdown workflow handlers are now split into shared, analysis, challenge, and reporting modules. |
 | Workflow contract expansion | Completed | Workflow packs now declare runtime metadata beyond task graph and handlers. |
-| Workflow plugin maturity | Pending | Only `markdown-audit` is fully implemented. |
+| tmux diagnostics hardening | Completed | tmux worker runs now emit structured diagnostics artifact with transport and fallback details. |
+| tmux session lifecycle hardening | Completed | tmux worker runs now record timeout/cleanup lifecycle metadata and clean IPC files after execution. |
+| transport timeout resilience | Completed | subprocess timeout paths now degrade into structured failures instead of uncaught exceptions. |
+| tmux spawn retry recovery | Completed | duplicate-session spawn failures now retry with fresh session names and emit structured retry metadata. |
+| tmux stale-session cleanup | Completed | duplicate-session recovery now attempts stale-session cleanup and records cleanup metadata. |
+| tmux stale-session recovery retry | Completed | failed stale-session cleanup now verifies lingering sessions and retries cleanup with structured recovery metadata. |
+| tmux active-session cleanup recovery | Completed | worker-session cleanup now verifies lingering sessions and retries cleanup when `kill-session` fails. |
+| tmux orphan-session preflight cleanup | Completed | worker launches now clean prior same-prefix orphan tmux sessions before spawning new work. |
+| Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -120,6 +128,92 @@ Completed:
 - Updated [engine.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/runtime/engine.py) to resolve and consume workflow pack objects directly
 - Added regression coverage in [test_runtime_logic.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/tests/test_runtime_logic.py)
 
+### Phase G: tmux Diagnostics Hardening
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to record structured diagnostics for every worker execution
+- Added `tmux_worker_diagnostics.jsonl` artifact with transport, fallback, return code, and output preview fields
+- Enriched tmux completion/failure events with fallback metadata
+- Extended both logic and end-to-end tests to validate the diagnostics path
+
+### Phase H: tmux Session Lifecycle Hardening
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to attach lifecycle metadata to tmux worker executions
+- Added explicit timeout, cleanup, and IPC cleanup fields into `tmux_worker_diagnostics.jsonl`
+- tmux worker IPC files are now cleaned up after success, timeout, or spawn failure paths
+- Extended tests to cover direct tmux timeout cleanup behavior and lifecycle metadata propagation
+
+### Phase I: Transport Timeout Resilience
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to convert subprocess `TimeoutExpired` exceptions into structured worker failures
+- Added timeout metadata fields into `tmux_worker_diagnostics.jsonl`, including `execution_timed_out`, `timeout_transport`, and `timeout_phase`
+- Enriched tmux transport events with timeout metadata so failures are visible in both diagnostics and `events.jsonl`
+- Extended tests to cover direct subprocess timeout handling and tmux-to-subprocess fallback timeout handling
+
+### Phase J: tmux Spawn Retry Recovery
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to retry tmux session creation when `new-session` fails with duplicate-session style errors
+- Added spawn retry metadata fields into `tmux_worker_diagnostics.jsonl`, including `tmux_spawn_attempts`, `tmux_spawn_retried`, and `tmux_spawn_retry_reason`
+- Enriched tmux transport events with spawn retry metadata so session recovery behavior is visible in `events.jsonl`
+- Extended tests to cover duplicate-session retry recovery and diagnostics propagation
+
+### Phase K: tmux Stale-Session Cleanup
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to attempt stale-session cleanup when tmux spawn fails with duplicate-session style errors
+- Added stale-session cleanup metadata into `tmux_worker_diagnostics.jsonl`, including `tmux_stale_session_cleanup_attempted`, `tmux_stale_session_name`, and `tmux_stale_session_cleanup_result`
+- Enriched tmux transport and task events with stale-session cleanup metadata
+- Extended tests to assert stale-session cleanup is attempted before duplicate-session retry recovery completes
+
+### Phase L: tmux Stale-Session Recovery Retry
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so failed stale-session cleanup now verifies whether the session still exists and retries cleanup when needed
+- Added stale-session recovery retry metadata into `tmux_worker_diagnostics.jsonl`, including `tmux_stale_session_cleanup_retry_attempted`, `tmux_stale_session_cleanup_retry_result`, and `tmux_stale_session_exists_after_cleanup`
+- Enriched tmux transport and task events with stale-session recovery retry metadata
+- Extended tests to cover direct stale-session recovery retry and diagnostics propagation through worker fallback paths
+
+### Phase M: tmux Active-Session Cleanup Recovery
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so active worker-session cleanup now verifies whether the tmux session still exists and retries cleanup when needed
+- Added active cleanup recovery metadata into `tmux_worker_diagnostics.jsonl`, including `tmux_cleanup_retry_attempted`, `tmux_cleanup_retry_result`, and `tmux_session_exists_after_cleanup`
+- Enriched tmux transport and task events with active cleanup recovery metadata
+- Extended tests to cover direct active cleanup recovery retry and diagnostics propagation through worker fallback paths
+
+### Phase N: tmux Orphan-Session Preflight Cleanup
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) to list and clean same-prefix orphan tmux sessions before spawning a new worker session
+- Added orphan-session preflight metadata into `tmux_worker_diagnostics.jsonl`, including `tmux_orphan_sessions_found`, `tmux_orphan_sessions_cleaned`, and `tmux_orphan_sessions_failed`
+- Enriched tmux transport and task events with orphan-session cleanup metadata
+- Extended tests to cover direct orphan-session preflight cleanup and diagnostics propagation through worker fallback paths
+
+### Phase O: Second Workflow Pack
+
+Completed:
+
+- Added [repo_audit.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/repo_audit.py)
+- Added [repo_audit_analysis.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/repo_audit_analysis.py)
+- Added [repo_audit_reporting.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/repo_audit_reporting.py)
+- Added [repo_audit_handlers.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/repo_audit_handlers.py)
+- Added [shared_challenge.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/shared_challenge.py) so workflow packs can reuse peer challenge, evidence, and re-adjudication logic
+- Added [team_shared.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/team_shared.py) so workflow packs can reuse team roster helpers
+- Registered `repo-audit` in [workflows/__init__.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/workflows/__init__.py) without changing [engine.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/runtime/engine.py)
+- Extended [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so tmux/subprocess analyst execution also supports repository discovery and follow-up tasks
+- Added logic and end-to-end coverage for the second workflow pack
+
 ## 5. Current File Layout
 
 Key files after the refactor:
@@ -151,6 +245,17 @@ Current size snapshot:
 
 This is already better than a single monolithic runtime file. The next obvious structural hotspot is now [engine.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/runtime/engine.py).
 
+Key runtime artifact added during M8:
+
+- `tmux_worker_diagnostics.jsonl` written into output directories when tmux/subprocess worker execution paths run
+- `tmux_worker_diagnostics.jsonl` now includes timeout/cleanup lifecycle metadata for tmux-backed executions
+- `tmux_worker_diagnostics.jsonl` now also includes structured subprocess timeout metadata for direct and fallback execution paths
+- `tmux_worker_diagnostics.jsonl` now also includes tmux spawn retry metadata for duplicate-session recovery paths
+- `tmux_worker_diagnostics.jsonl` now also includes stale-session cleanup metadata for duplicate-session recovery paths
+- `tmux_worker_diagnostics.jsonl` now also includes stale-session recovery retry metadata for failed cleanup paths
+- `tmux_worker_diagnostics.jsonl` now also includes active-session cleanup recovery retry metadata for worker session cleanup paths
+- `tmux_worker_diagnostics.jsonl` now also includes orphan-session preflight cleanup metadata for interruption recovery paths
+
 ## 6. Validation Status
 
 Latest verified on `2026-03-08`.
@@ -165,7 +270,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `37/37` tests passed
+- `47/47` tests passed
 
 ### Smoke Runs
 
@@ -184,7 +289,34 @@ tmux smoke run:
 python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
   --preset tmux \
   --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m5_tmux \
+  --output agent_team_demo/output_analysis_m8_orphan_cleanup_tmux \
+  --extra-arg=--peer-wait-seconds \
+  --extra-arg=1 \
+  --extra-arg=--evidence-wait-seconds \
+  --extra-arg=1 \
+  --extra-arg=--no-auto-round3-on-challenge
+```
+
+Second workflow smoke run:
+
+```bash
+python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
+  --preset fast \
+  --target agent_team_demo \
+  --output agent_team_demo/output_analysis_m9_repo_audit \
+  --extra-arg=--workflow-pack \
+  --extra-arg=repo-audit
+```
+
+Second workflow tmux smoke run:
+
+```bash
+python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
+  --preset tmux \
+  --target agent_team_demo \
+  --output agent_team_demo/output_analysis_m9_repo_audit_tmux \
+  --extra-arg=--workflow-pack \
+  --extra-arg=repo-audit \
   --extra-arg=--peer-wait-seconds \
   --extra-arg=1 \
   --extra-arg=--evidence-wait-seconds \
@@ -199,23 +331,37 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m7_fast
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m5_tmux
+  --output agent_team_demo/output_analysis_m8_orphan_cleanup_tmux
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
+  --output agent_team_demo/output_analysis_m9_repo_audit
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
+  --output agent_team_demo/output_analysis_m9_repo_audit_tmux
 ```
 
 Verified output directories:
 
 - [output_analysis_m7_fast](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m7_fast)
-- [output_analysis_m5_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m5_tmux)
+- [output_analysis_m8_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_tmux)
+- [output_analysis_m8_lifecycle_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lifecycle_tmux)
+- [output_analysis_m8_timeout_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_timeout_tmux)
+- [output_analysis_m8_spawn_retry_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_spawn_retry_tmux)
+- [output_analysis_m8_stale_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stale_cleanup_tmux)
+- [output_analysis_m8_stale_recovery_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stale_recovery_tmux)
+- [output_analysis_m8_active_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_active_cleanup_tmux)
+- [output_analysis_m8_orphan_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_orphan_cleanup_tmux)
+- [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
+- [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
 
 ## 7. Recommended Next Tasks
 
 Priority order for the next work:
 
-1. Improve tmux parity from `Partial` toward `Implemented`
-   Goal: stabilize lifecycle, errors, and diagnostics, then expand coverage beyond the current analyst path.
-
-2. Add a second workflow pack
-   Goal: prove the runtime is not tightly coupled to `markdown-audit`.
+1. Continue tmux parity from `Partial` toward `Implemented`
+   Goal: move beyond current lifecycle/diagnostics/timeout/spawn-retry/stale-cleanup/stale-recovery/active-cleanup/orphan-cleanup coverage into stronger execution isolation, session reuse strategy, and interruption recovery.
+2. Add true event-level state replay
+   Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 
 ## 8. Proposed Next Milestones
 
@@ -274,11 +420,22 @@ Validation summary:
 
 ### M8: Claude Parity Work
 
-Definition:
+Status: `In progress`
 
-- Continue items marked `Partial` in [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md)
+Completed slice:
 
-Focus:
+- Added structured tmux worker diagnostics artifact and fallback metadata logging
+- Improved visibility into tmux-unavailable and tmux-error fallback paths
+- Added tmux session timeout/cleanup lifecycle metadata and IPC cleanup
+- Added structured subprocess timeout recovery for direct and fallback execution paths
+- Added tmux duplicate-session spawn retry recovery and retry diagnostics
+- Added tmux stale-session cleanup attempts and cleanup diagnostics for duplicate-session recovery
+- Added tmux stale-session recovery retry and verification diagnostics for failed cleanup paths
+- Added tmux active-session cleanup recovery retry and verification diagnostics for worker session cleanup
+- Added tmux orphan-session preflight cleanup and diagnostics for interruption recovery
+- Verified tmux mode still passes smoke and artifact validation
+
+Remaining focus:
 
 - stronger tmux execution isolation
 - better interruption/recovery semantics
@@ -286,15 +443,21 @@ Focus:
 
 ### M9: Second Workflow Pack
 
-Definition:
+Status: `Completed on 2026-03-08`
 
-- Add a second workflow pack to prove the runtime is no longer `markdown-audit` specific
+Completed outcomes:
 
-Done when:
+- Added `repo-audit` as the second built-in workflow pack
+- Reused the same engine, lead scheduling metadata, challenge/evidence loop, verifier, and report artifact contract
+- Added tmux/subprocess analyst support for the new workflow's analyst task types
+- Added end-to-end coverage for both in-process and tmux-compatible repo-audit runs
 
-- a second workflow pack runs on the same engine
-- no engine edits are required for that workflow to run
-- tests or smoke coverage exist for both workflow packs
+Validation summary:
+
+- `47/47` tests passed
+- `repo-audit` smoke run passed
+- `repo-audit + tmux` smoke run passed
+- both verifier runs passed
 
 ## 9. Resume Checklist
 

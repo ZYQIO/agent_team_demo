@@ -8,6 +8,8 @@ from ..config import RuntimeConfig
 from ..core import Task
 from .markdown_audit import build_markdown_audit_tasks
 from .markdown_audit_handlers import build_markdown_audit_handlers
+from .repo_audit import build_repo_audit_tasks
+from .repo_audit_handlers import build_repo_audit_handlers
 
 
 HandlerMap = Dict[str, Callable[[Any, Task], Dict[str, Any]]]
@@ -38,6 +40,16 @@ WORKFLOW_PACKS: Dict[str, WorkflowPack] = {
         runtime_metadata=WorkflowRuntimeMetadata(
             lead_task_order=("lead_adjudication", "lead_re_adjudication"),
             report_task_ids=("recommendation_pack",),
+        ),
+    ),
+    "repo-audit": WorkflowPack(
+        name="repo-audit",
+        description="Audit repository structure and oversized files with the shared lead/challenge runtime.",
+        build_tasks=build_repo_audit_tasks,
+        build_handlers=build_repo_audit_handlers,
+        runtime_metadata=WorkflowRuntimeMetadata(
+            lead_task_order=("lead_adjudication", "lead_re_adjudication"),
+            report_task_ids=("repo_recommendation_pack",),
         ),
     ),
 }

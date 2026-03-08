@@ -64,3 +64,4 @@ Use a JSON config file when the agent-team runtime must be embedded into differe
   - `claude-code`
 - Workflow packs:
   - `markdown-audit`
+  - `repo-audit`

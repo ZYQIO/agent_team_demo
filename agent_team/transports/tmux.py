@@ -8,19 +8,405 @@ import subprocess
 import sys
 import time
 import uuid
-from typing import Any, Callable, Collection, Dict, List, Sequence
+from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 from ..config import RuntimeConfig
-from ..core import AgentProfile, EventLogger
+from ..core import AgentProfile, EventLogger, utc_now
 
 
 TMUX_ANALYST_TASK_TYPES = {
     "discover_markdown",
+    "discover_repository",
     "heading_audit",
     "length_audit",
+    "extension_audit",
+    "large_file_audit",
     "heading_structure_followup",
     "length_risk_followup",
+    "extension_hotspot_followup",
+    "directory_hotspot_followup",
 }
+TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
+TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
+TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
+TMUX_SESSION_SPAWN_MAX_ATTEMPTS = 3
+
+
+def tmux_worker_diagnostics_file(output_dir: pathlib.Path) -> pathlib.Path:
+    return output_dir / TMUX_WORKER_DIAGNOSTICS_FILENAME
+
+
+def _output_preview(text: str, limit: int = TMUX_WORKER_OUTPUT_PREVIEW_LIMIT) -> str:
+    compact = " ".join(str(text or "").split())
+    return compact[:limit]
+
+
+def _append_tmux_worker_diagnostics(output_dir: pathlib.Path, record: Dict[str, Any]) -> None:
+    diagnostics_path = tmux_worker_diagnostics_file(output_dir)
+    diagnostics_path.parent.mkdir(parents=True, exist_ok=True)
+    with diagnostics_path.open("a", encoding="utf-8") as fh:
+        fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _attach_tmux_lifecycle(
+    completed: subprocess.CompletedProcess[str],
+    lifecycle: Dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    completed.tmux_lifecycle = dict(lifecycle)
+    return completed
+
+
+def _extract_tmux_lifecycle(completed: subprocess.CompletedProcess[str]) -> Dict[str, Any]:
+    lifecycle = getattr(completed, "tmux_lifecycle", {})
+    if isinstance(lifecycle, dict):
+        return dict(lifecycle)
+    return {}
+
+
+def _attach_transport_timeout(
+    completed: subprocess.CompletedProcess[str],
+    timeout_metadata: Dict[str, Any],
+) -> subprocess.CompletedProcess[str]:
+    completed.transport_timeout = dict(timeout_metadata)
+    return completed
+
+
+def _extract_transport_timeout(completed: subprocess.CompletedProcess[str]) -> Dict[str, Any]:
+    timeout_metadata = getattr(completed, "transport_timeout", {})
+    if isinstance(timeout_metadata, dict):
+        return dict(timeout_metadata)
+    return {}
+
+
+def _normalize_timeout_output(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="ignore")
+    return str(value)
+
+
+def _completed_process_from_timeout(
+    command: List[str],
+    timeout_exc: subprocess.TimeoutExpired,
+    transport: str,
+    phase: str,
+) -> subprocess.CompletedProcess[str]:
+    stdout = _normalize_timeout_output(getattr(timeout_exc, "stdout", None))
+    if not stdout:
+        stdout = _normalize_timeout_output(getattr(timeout_exc, "output", None))
+    stderr = _normalize_timeout_output(getattr(timeout_exc, "stderr", None))
+    timeout_seconds = int(getattr(timeout_exc, "timeout", 0) or 0)
+    if not stderr:
+        stderr = f"{transport} worker timed out after {timeout_seconds}s"
+    completed = subprocess.CompletedProcess(
+        args=command,
+        returncode=124,
+        stdout=stdout,
+        stderr=stderr,
+    )
+    return _attach_transport_timeout(
+        completed,
+        {
+            "execution_timed_out": True,
+            "timeout_transport": transport,
+            "timeout_phase": phase,
+            "timeout_message": stderr[:400],
+        },
+    )
+
+
+def _is_duplicate_tmux_session_error(stderr: str) -> bool:
+    message = str(stderr or "").casefold()
+    return "duplicate session" in message or "session already exists" in message
+
+
+def _is_no_tmux_server_error(message: str) -> bool:
+    text = str(message or "").casefold()
+    return "no server running" in text or "failed to connect to server" in text
+
+
+def _build_tmux_ipc_paths(
+    ipc_dir: pathlib.Path,
+    session_name: str,
+) -> Tuple[pathlib.Path, pathlib.Path, pathlib.Path]:
+    return (
+        ipc_dir / f"{session_name}.stdout.txt",
+        ipc_dir / f"{session_name}.stderr.txt",
+        ipc_dir / f"{session_name}.status.txt",
+    )
+
+
+def _spawn_tmux_session(
+    command: List[str],
+    ipc_dir: pathlib.Path,
+    session_prefix: str,
+) -> Dict[str, Any]:
+    attempts = 0
+    retry_reason = ""
+    last_error = ""
+    last_spawn: Optional[subprocess.CompletedProcess[str]] = None
+    session_name = ""
+    stdout_file = ipc_dir / "stdout.txt"
+    stderr_file = ipc_dir / "stderr.txt"
+    status_file = ipc_dir / "status.txt"
+    stale_cleanup_attempted = False
+    stale_cleanup_session_name = ""
+    stale_cleanup_result = ""
+    stale_cleanup_error = ""
+    stale_cleanup_retry_attempted = False
+    stale_cleanup_retry_result = ""
+    stale_cleanup_retry_error = ""
+    stale_session_exists_after_cleanup = False
+    stale_cleanup_verification_error = ""
+
+    while attempts < TMUX_SESSION_SPAWN_MAX_ATTEMPTS:
+        attempts += 1
+        session_name = f"{session_prefix}_{uuid.uuid4().hex[:8]}"
+        stdout_file, stderr_file, status_file = _build_tmux_ipc_paths(ipc_dir=ipc_dir, session_name=session_name)
+        shell_cmd = (
+            f"{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
+            f"2> {shlex.quote(str(stderr_file))}; "
+            f"echo $? > {shlex.quote(str(status_file))}"
+        )
+        last_spawn = subprocess.run(
+            ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        if last_spawn.returncode == 0:
+            return {
+                "ok": True,
+                "session_name": session_name,
+                "stdout_file": stdout_file,
+                "stderr_file": stderr_file,
+                "status_file": status_file,
+                "spawn": last_spawn,
+                "attempts": attempts,
+                "retried": attempts > 1,
+                "retry_reason": retry_reason[:400],
+                "spawn_error": "",
+                "stale_cleanup_attempted": stale_cleanup_attempted,
+                "stale_cleanup_session_name": stale_cleanup_session_name,
+                "stale_cleanup_result": stale_cleanup_result[:400],
+                "stale_cleanup_error": stale_cleanup_error[:400],
+                "stale_cleanup_retry_attempted": stale_cleanup_retry_attempted,
+                "stale_cleanup_retry_result": stale_cleanup_retry_result[:400],
+                "stale_cleanup_retry_error": stale_cleanup_retry_error[:400],
+                "stale_session_exists_after_cleanup": stale_session_exists_after_cleanup,
+                "stale_cleanup_verification_error": stale_cleanup_verification_error[:400],
+            }
+
+        last_error = (last_spawn.stderr or "").strip()
+        if _is_duplicate_tmux_session_error(last_error) and attempts < TMUX_SESSION_SPAWN_MAX_ATTEMPTS:
+            retry_reason = last_error
+            stale_cleanup = _cleanup_stale_tmux_session(session_name=session_name)
+            stale_cleanup_attempted = bool(stale_cleanup["attempted"])
+            stale_cleanup_session_name = str(stale_cleanup["session_name"])
+            stale_cleanup_result = str(stale_cleanup["result"])
+            stale_cleanup_error = str(stale_cleanup["error"])
+            stale_cleanup_retry_attempted = bool(stale_cleanup["retry_attempted"])
+            stale_cleanup_retry_result = str(stale_cleanup["retry_result"])
+            stale_cleanup_retry_error = str(stale_cleanup["retry_error"])
+            stale_session_exists_after_cleanup = bool(stale_cleanup["session_exists_after_cleanup"])
+            stale_cleanup_verification_error = str(stale_cleanup["verification_error"])
+            continue
+        break
+
+    return {
+        "ok": False,
+        "session_name": session_name,
+        "stdout_file": stdout_file,
+        "stderr_file": stderr_file,
+        "status_file": status_file,
+        "spawn": last_spawn,
+        "attempts": attempts,
+        "retried": attempts > 1,
+        "retry_reason": retry_reason[:400],
+        "spawn_error": last_error[:400],
+        "stale_cleanup_attempted": stale_cleanup_attempted,
+        "stale_cleanup_session_name": stale_cleanup_session_name,
+        "stale_cleanup_result": stale_cleanup_result[:400],
+        "stale_cleanup_error": stale_cleanup_error[:400],
+        "stale_cleanup_retry_attempted": stale_cleanup_retry_attempted,
+        "stale_cleanup_retry_result": stale_cleanup_retry_result[:400],
+        "stale_cleanup_retry_error": stale_cleanup_retry_error[:400],
+        "stale_session_exists_after_cleanup": stale_session_exists_after_cleanup,
+        "stale_cleanup_verification_error": stale_cleanup_verification_error[:400],
+    }
+
+
+def _kill_tmux_session(session_name: str) -> Dict[str, Any]:
+    kill = subprocess.run(
+        ["tmux", "kill-session", "-t", session_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    stderr = (kill.stderr or "").strip()
+    if kill.returncode == 0:
+        result = "killed"
+    elif "can't find session" in stderr.casefold():
+        result = "already_exited"
+    else:
+        result = "failed"
+    return {
+        "result": result,
+        "returncode": kill.returncode,
+        "error": stderr[:400],
+    }
+
+
+def _list_tmux_sessions() -> Dict[str, Any]:
+    listed = subprocess.run(
+        ["tmux", "list-sessions", "-F", "#{session_name}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    stderr = (listed.stderr or "").strip()
+    stdout = (listed.stdout or "").strip()
+    if listed.returncode == 0:
+        sessions = [line.strip() for line in stdout.splitlines() if line.strip()]
+        return {
+            "sessions": sessions,
+            "error": "",
+            "server_running": True,
+        }
+    if _is_no_tmux_server_error(stderr or stdout):
+        return {
+            "sessions": [],
+            "error": "",
+            "server_running": False,
+        }
+    return {
+        "sessions": [],
+        "error": (stderr or stdout)[:400],
+        "server_running": True,
+    }
+
+
+def _cleanup_tmux_session_with_recovery(session_name: str) -> Dict[str, Any]:
+    cleanup = _kill_tmux_session(session_name)
+    retry_attempted = False
+    retry_result = ""
+    retry_error = ""
+    session_exists_after_cleanup = False
+    verification_error = ""
+
+    if cleanup["result"] not in {"killed", "already_exited"}:
+        existence = subprocess.run(
+            ["tmux", "has-session", "-t", session_name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        stderr = (existence.stderr or "").strip()
+        stdout = (existence.stdout or "").strip()
+        message = stderr or stdout
+        if existence.returncode == 0:
+            session_exists_after_cleanup = True
+        elif existence.returncode == 1 or "can't find session" in message.casefold():
+            session_exists_after_cleanup = False
+        else:
+            verification_error = message[:400]
+
+        if session_exists_after_cleanup:
+            retry_attempted = True
+            retry = _kill_tmux_session(session_name)
+            retry_result = retry["result"]
+            retry_error = retry["error"]
+            if retry["result"] in {"killed", "already_exited"}:
+                cleanup = {
+                    "result": "recovered_after_retry",
+                    "returncode": retry["returncode"],
+                    "error": retry["error"],
+                }
+            else:
+                cleanup = {
+                    "result": "cleanup_retry_failed",
+                    "returncode": retry["returncode"],
+                    "error": retry["error"] or cleanup["error"],
+                }
+
+    return {
+        "session_name": session_name,
+        "result": cleanup["result"],
+        "error": cleanup["error"],
+        "retry_attempted": retry_attempted,
+        "retry_result": retry_result,
+        "retry_error": retry_error,
+        "session_exists_after_cleanup": session_exists_after_cleanup,
+        "verification_error": verification_error,
+    }
+
+
+def _cleanup_stale_tmux_session(session_name: str) -> Dict[str, Any]:
+    cleanup = _cleanup_tmux_session_with_recovery(session_name)
+    cleanup["attempted"] = True
+    return cleanup
+
+
+def _cleanup_active_tmux_session(session_name: str) -> Dict[str, Any]:
+    cleanup = _cleanup_tmux_session_with_recovery(session_name)
+    cleanup["attempted"] = True
+    return cleanup
+
+
+def _cleanup_orphan_tmux_sessions(session_prefix: str) -> Dict[str, Any]:
+    listed = _list_tmux_sessions()
+    prefix = f"{session_prefix}_"
+    matched = [name for name in listed["sessions"] if str(name).startswith(prefix)]
+    cleaned = 0
+    failed: List[str] = []
+
+    for session_name in matched:
+        cleanup = _cleanup_tmux_session_with_recovery(session_name)
+        if cleanup["result"] in {"killed", "already_exited", "recovered_after_retry"}:
+            cleaned += 1
+        else:
+            failed.append(session_name)
+
+    return {
+        "attempted": True,
+        "server_running": bool(listed["server_running"]),
+        "sessions_found": len(matched),
+        "sessions_cleaned": cleaned,
+        "sessions_failed": len(failed),
+        "failed_sessions": failed,
+        "error": str(listed["error"]),
+    }
+
+
+def _cleanup_tmux_ipc_files(paths: Sequence[pathlib.Path]) -> Dict[str, Any]:
+    removed = 0
+    errors: List[str] = []
+    for path in paths:
+        existed = path.exists()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            errors.append(f"{path.name}: {exc}")
+            continue
+        if existed:
+            removed += 1
+
+    if errors:
+        result = "partial_failed" if removed else "failed"
+    elif removed > 0:
+        result = "removed"
+    else:
+        result = "already_absent"
+    return {
+        "result": result,
+        "removed": removed,
+        "error": "; ".join(errors)[:400],
+    }
 
 
 def _worker_discover_markdown(target_dir: pathlib.Path, output_dir: pathlib.Path) -> Dict[str, Any]:
@@ -46,6 +432,33 @@ def _worker_discover_markdown(target_dir: pathlib.Path, output_dir: pathlib.Path
     }
 
 
+def _worker_discover_repository(target_dir: pathlib.Path, output_dir: pathlib.Path) -> Dict[str, Any]:
+    inventory: List[Dict[str, Any]] = []
+    ignore_prefix = str(output_dir.resolve())
+    for path in sorted(p for p in target_dir.rglob("*") if p.is_file()):
+        absolute = str(path.resolve())
+        if absolute.startswith(ignore_prefix):
+            continue
+        relative_path = path.relative_to(target_dir)
+        if ".git" in relative_path.parts:
+            continue
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        lines = text.splitlines()
+        inventory.append(
+            {
+                "path": str(relative_path),
+                "extension": path.suffix.strip().lower() or "<no_ext>",
+                "line_count": len(lines),
+                "byte_count": path.stat().st_size,
+                "top_level_dir": relative_path.parts[0] if len(relative_path.parts) > 1 else ".",
+            }
+        )
+    return {
+        "result": {"repository_files": len(inventory), "sample": inventory[:3]},
+        "state_updates": {"repository_inventory": inventory},
+    }
+
+
 def _worker_heading_audit(inventory: List[Dict[str, Any]]) -> Dict[str, Any]:
     missing = [item for item in inventory if int(item.get("heading_count", 0)) == 0]
     return {
@@ -66,6 +479,66 @@ def _worker_length_audit(inventory: List[Dict[str, Any]], threshold: int) -> Dic
             "examples": [str(item.get("path", "")) for item in long_files[:10]],
         },
         "state_updates": {"length_issues": long_files},
+    }
+
+
+def _worker_extension_audit(inventory: List[Dict[str, Any]]) -> Dict[str, Any]:
+    totals: Dict[str, Dict[str, Any]] = {}
+    for item in inventory:
+        extension = str(item.get("extension", "<no_ext>") or "<no_ext>")
+        bucket = totals.setdefault(
+            extension,
+            {
+                "extension": extension,
+                "file_count": 0,
+                "total_lines": 0,
+                "total_bytes": 0,
+            },
+        )
+        bucket["file_count"] += 1
+        bucket["total_lines"] += int(item.get("line_count", 0))
+        bucket["total_bytes"] += int(item.get("byte_count", 0))
+    ranked = sorted(
+        totals.values(),
+        key=lambda row: (int(row["file_count"]), int(row["total_lines"]), str(row["extension"])),
+        reverse=True,
+    )
+    result = {
+        "total_files": len(inventory),
+        "unique_extensions": len(totals),
+        "files_without_extension": int(totals.get("<no_ext>", {}).get("file_count", 0)),
+        "top_extensions": ranked[:6],
+    }
+    return {
+        "result": result,
+        "state_updates": {"repository_extension_summary": result},
+    }
+
+
+def _worker_large_file_audit(
+    inventory: List[Dict[str, Any]],
+    line_threshold: int,
+    byte_threshold: int,
+) -> Dict[str, Any]:
+    oversized = [
+        item
+        for item in inventory
+        if int(item.get("line_count", 0)) >= line_threshold
+        or int(item.get("byte_count", 0)) >= byte_threshold
+    ]
+    ranked = sorted(
+        oversized,
+        key=lambda row: (int(row.get("line_count", 0)), int(row.get("byte_count", 0)), str(row.get("path", ""))),
+        reverse=True,
+    )
+    return {
+        "result": {
+            "line_threshold": line_threshold,
+            "byte_threshold": byte_threshold,
+            "oversized_files": len(ranked),
+            "examples": [str(item.get("path", "")) for item in ranked[:10]],
+        },
+        "state_updates": {"repository_large_files": ranked},
     }
 
 
@@ -126,6 +599,62 @@ def _worker_length_followup(inventory: List[Dict[str, Any]], threshold: int, top
     }
 
 
+def _worker_extension_hotspot_followup(inventory: List[Dict[str, Any]], top_n: int) -> Dict[str, Any]:
+    totals: Dict[str, Dict[str, Any]] = {}
+    for item in inventory:
+        extension = str(item.get("extension", "<no_ext>") or "<no_ext>")
+        bucket = totals.setdefault(
+            extension,
+            {
+                "extension": extension,
+                "file_count": 0,
+                "total_lines": 0,
+                "total_bytes": 0,
+            },
+        )
+        bucket["file_count"] += 1
+        bucket["total_lines"] += int(item.get("line_count", 0))
+        bucket["total_bytes"] += int(item.get("byte_count", 0))
+    hotspots = sorted(
+        totals.values(),
+        key=lambda row: (int(row["total_lines"]), int(row["file_count"]), str(row["extension"])),
+        reverse=True,
+    )[:top_n]
+    result = {"top_n": top_n, "extension_hotspots": hotspots}
+    return {
+        "result": result,
+        "state_updates": {"repo_extension_hotspots": result},
+    }
+
+
+def _worker_directory_hotspot_followup(inventory: List[Dict[str, Any]], top_n: int) -> Dict[str, Any]:
+    totals: Dict[str, Dict[str, Any]] = {}
+    for item in inventory:
+        top_level_dir = str(item.get("top_level_dir", ".") or ".")
+        bucket = totals.setdefault(
+            top_level_dir,
+            {
+                "top_level_dir": top_level_dir,
+                "file_count": 0,
+                "total_lines": 0,
+                "total_bytes": 0,
+            },
+        )
+        bucket["file_count"] += 1
+        bucket["total_lines"] += int(item.get("line_count", 0))
+        bucket["total_bytes"] += int(item.get("byte_count", 0))
+    busiest = sorted(
+        totals.values(),
+        key=lambda row: (int(row["total_lines"]), int(row["file_count"]), str(row["top_level_dir"])),
+        reverse=True,
+    )[:top_n]
+    result = {"top_n": top_n, "busiest_directories": busiest}
+    return {
+        "result": result,
+        "state_updates": {"repo_directory_hotspots": result},
+    }
+
+
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     task_type = str(payload.get("task_type", "")).strip()
     task_payload = payload.get("task_payload", {})
@@ -139,16 +668,33 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         target_dir = pathlib.Path(str(payload.get("target_dir", "."))).resolve()
         output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()
         return _worker_discover_markdown(target_dir=target_dir, output_dir=output_dir)
+    if task_type == "discover_repository":
+        target_dir = pathlib.Path(str(payload.get("target_dir", "."))).resolve()
+        output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()
+        return _worker_discover_repository(target_dir=target_dir, output_dir=output_dir)
 
     inventory = shared_state.get("markdown_inventory", [])
     if not isinstance(inventory, list):
         inventory = []
+    repository_inventory = shared_state.get("repository_inventory", [])
+    if not isinstance(repository_inventory, list):
+        repository_inventory = []
 
     if task_type == "heading_audit":
         return _worker_heading_audit(inventory=inventory)
     if task_type == "length_audit":
         threshold = int(task_payload.get("line_threshold", 200))
         return _worker_length_audit(inventory=inventory, threshold=threshold)
+    if task_type == "extension_audit":
+        return _worker_extension_audit(inventory=repository_inventory)
+    if task_type == "large_file_audit":
+        line_threshold = int(task_payload.get("line_threshold", 320))
+        byte_threshold = int(task_payload.get("byte_threshold", 20000))
+        return _worker_large_file_audit(
+            inventory=repository_inventory,
+            line_threshold=line_threshold,
+            byte_threshold=byte_threshold,
+        )
     if task_type == "heading_structure_followup":
         top_n = int(task_payload.get("top_n", 8))
         return _worker_heading_followup(inventory=inventory, top_n=top_n)
@@ -156,6 +702,12 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         top_n = int(task_payload.get("top_n", 8))
         threshold = int(task_payload.get("line_threshold", 180))
         return _worker_length_followup(inventory=inventory, threshold=threshold, top_n=top_n)
+    if task_type == "extension_hotspot_followup":
+        top_n = int(task_payload.get("top_n", 6))
+        return _worker_extension_hotspot_followup(inventory=repository_inventory, top_n=top_n)
+    if task_type == "directory_hotspot_followup":
+        top_n = int(task_payload.get("top_n", 6))
+        return _worker_directory_hotspot_followup(inventory=repository_inventory, top_n=top_n)
 
     raise ValueError(f"unsupported tmux worker task type: {task_type}")
 
@@ -195,52 +747,139 @@ def execute_worker_tmux(
 ) -> subprocess.CompletedProcess[str]:
     ipc_dir = workdir / "_tmux_worker_ipc"
     ipc_dir.mkdir(parents=True, exist_ok=True)
-    nonce = uuid.uuid4().hex
-    session_name = f"{session_prefix}_{nonce[:8]}"
-    stdout_file = ipc_dir / f"{session_name}.stdout.txt"
-    stderr_file = ipc_dir / f"{session_name}.stderr.txt"
-    status_file = ipc_dir / f"{session_name}.status.txt"
+    lifecycle: Dict[str, Any] = {
+        "tmux_session_name": "",
+        "tmux_session_started": False,
+        "tmux_orphan_cleanup_attempted": False,
+        "tmux_orphan_server_running": False,
+        "tmux_orphan_sessions_found": 0,
+        "tmux_orphan_sessions_cleaned": 0,
+        "tmux_orphan_sessions_failed": 0,
+        "tmux_orphan_failed_sessions": [],
+        "tmux_orphan_cleanup_error": "",
+        "tmux_spawn_attempts": 0,
+        "tmux_spawn_retried": False,
+        "tmux_spawn_retry_reason": "",
+        "tmux_spawn_error": "",
+        "tmux_stale_session_cleanup_attempted": False,
+        "tmux_stale_session_name": "",
+        "tmux_stale_session_cleanup_result": "",
+        "tmux_stale_session_cleanup_error": "",
+        "tmux_stale_session_cleanup_retry_attempted": False,
+        "tmux_stale_session_cleanup_retry_result": "",
+        "tmux_stale_session_cleanup_retry_error": "",
+        "tmux_stale_session_exists_after_cleanup": False,
+        "tmux_stale_session_cleanup_verification_error": "",
+        "tmux_cleanup_retry_attempted": False,
+        "tmux_cleanup_retry_result": "",
+        "tmux_cleanup_retry_error": "",
+        "tmux_session_exists_after_cleanup": False,
+        "tmux_cleanup_verification_error": "",
+        "tmux_status_observed": False,
+        "tmux_timed_out": False,
+        "tmux_cleanup_result": "",
+        "tmux_cleanup_error": "",
+        "tmux_ipc_cleanup_result": "",
+        "tmux_ipc_cleanup_error": "",
+        "tmux_ipc_files_removed": 0,
+    }
 
-    shell_cmd = (
-        f"{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
-        f"2> {shlex.quote(str(stderr_file))}; "
-        f"echo $? > {shlex.quote(str(status_file))}"
+    orphan_cleanup = _cleanup_orphan_tmux_sessions(session_prefix=session_prefix)
+    lifecycle["tmux_orphan_cleanup_attempted"] = bool(orphan_cleanup["attempted"])
+    lifecycle["tmux_orphan_server_running"] = bool(orphan_cleanup["server_running"])
+    lifecycle["tmux_orphan_sessions_found"] = int(orphan_cleanup["sessions_found"])
+    lifecycle["tmux_orphan_sessions_cleaned"] = int(orphan_cleanup["sessions_cleaned"])
+    lifecycle["tmux_orphan_sessions_failed"] = int(orphan_cleanup["sessions_failed"])
+    lifecycle["tmux_orphan_failed_sessions"] = list(orphan_cleanup["failed_sessions"])
+    lifecycle["tmux_orphan_cleanup_error"] = str(orphan_cleanup["error"])
+
+    spawn_result = _spawn_tmux_session(
+        command=command,
+        ipc_dir=ipc_dir,
+        session_prefix=session_prefix,
     )
-    spawn = subprocess.run(
-        ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
+    session_name = str(spawn_result.get("session_name", ""))
+    stdout_file = pathlib.Path(spawn_result.get("stdout_file"))
+    stderr_file = pathlib.Path(spawn_result.get("stderr_file"))
+    status_file = pathlib.Path(spawn_result.get("status_file"))
+    ipc_files = [stdout_file, stderr_file, status_file]
+    spawn = spawn_result.get("spawn")
+    if not isinstance(spawn, subprocess.CompletedProcess):
+        spawn = subprocess.CompletedProcess(args=["tmux"], returncode=1, stdout="", stderr="tmux spawn failed")
+
+    lifecycle["tmux_session_name"] = session_name
+    lifecycle["tmux_session_started"] = spawn.returncode == 0
+    lifecycle["tmux_spawn_attempts"] = int(spawn_result.get("attempts", 0))
+    lifecycle["tmux_spawn_retried"] = bool(spawn_result.get("retried", False))
+    lifecycle["tmux_spawn_retry_reason"] = str(spawn_result.get("retry_reason", ""))
+    lifecycle["tmux_spawn_error"] = str(spawn_result.get("spawn_error", ""))
+    lifecycle["tmux_stale_session_cleanup_attempted"] = bool(spawn_result.get("stale_cleanup_attempted", False))
+    lifecycle["tmux_stale_session_name"] = str(spawn_result.get("stale_cleanup_session_name", ""))
+    lifecycle["tmux_stale_session_cleanup_result"] = str(spawn_result.get("stale_cleanup_result", ""))
+    lifecycle["tmux_stale_session_cleanup_error"] = str(spawn_result.get("stale_cleanup_error", ""))
+    lifecycle["tmux_stale_session_cleanup_retry_attempted"] = bool(
+        spawn_result.get("stale_cleanup_retry_attempted", False)
+    )
+    lifecycle["tmux_stale_session_cleanup_retry_result"] = str(
+        spawn_result.get("stale_cleanup_retry_result", "")
+    )
+    lifecycle["tmux_stale_session_cleanup_retry_error"] = str(
+        spawn_result.get("stale_cleanup_retry_error", "")
+    )
+    lifecycle["tmux_stale_session_exists_after_cleanup"] = bool(
+        spawn_result.get("stale_session_exists_after_cleanup", False)
+    )
+    lifecycle["tmux_stale_session_cleanup_verification_error"] = str(
+        spawn_result.get("stale_cleanup_verification_error", "")
     )
     if spawn.returncode != 0:
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=spawn.returncode,
-            stdout="",
-            stderr=f"tmux spawn failed: {spawn.stderr.strip()}",
+        cleanup = _cleanup_tmux_ipc_files(ipc_files)
+        lifecycle["tmux_cleanup_result"] = "spawn_failed"
+        lifecycle["tmux_cleanup_error"] = str(spawn_result.get("spawn_error", "") or (spawn.stderr or "").strip())[:400]
+        lifecycle["tmux_ipc_cleanup_result"] = cleanup["result"]
+        lifecycle["tmux_ipc_cleanup_error"] = cleanup["error"]
+        lifecycle["tmux_ipc_files_removed"] = cleanup["removed"]
+        return _attach_tmux_lifecycle(
+            subprocess.CompletedProcess(
+                args=command,
+                returncode=spawn.returncode,
+                stdout="",
+                stderr=f"tmux spawn failed: {spawn.stderr.strip()}",
+            ),
+            lifecycle,
         )
 
     deadline = time.time() + timeout_sec
     while time.time() < deadline and not status_file.exists():
-        time.sleep(0.1)
+        time.sleep(TMUX_SESSION_POLL_INTERVAL_SEC)
 
-    subprocess.run(
-        ["tmux", "kill-session", "-t", session_name],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        check=False,
-    )
+    lifecycle["tmux_status_observed"] = status_file.exists()
+    cleanup = _cleanup_active_tmux_session(session_name)
+    lifecycle["tmux_cleanup_result"] = cleanup["result"]
+    lifecycle["tmux_cleanup_error"] = cleanup["error"]
+    lifecycle["tmux_cleanup_retry_attempted"] = bool(cleanup["retry_attempted"])
+    lifecycle["tmux_cleanup_retry_result"] = str(cleanup["retry_result"])
+    lifecycle["tmux_cleanup_retry_error"] = str(cleanup["retry_error"])
+    lifecycle["tmux_session_exists_after_cleanup"] = bool(cleanup["session_exists_after_cleanup"])
+    lifecycle["tmux_cleanup_verification_error"] = str(cleanup["verification_error"])
     if not status_file.exists():
-        return subprocess.CompletedProcess(
-            args=command,
-            returncode=124,
-            stdout=stdout_file.read_text(encoding="utf-8", errors="ignore")
-            if stdout_file.exists()
-            else "",
-            stderr=stderr_file.read_text(encoding="utf-8", errors="ignore")
-            if stderr_file.exists()
-            else "tmux worker timed out",
+        lifecycle["tmux_timed_out"] = True
+        stdout = stdout_file.read_text(encoding="utf-8", errors="ignore") if stdout_file.exists() else ""
+        stderr = stderr_file.read_text(encoding="utf-8", errors="ignore") if stderr_file.exists() else ""
+        if not stderr:
+            stderr = "tmux worker timed out"
+        ipc_cleanup = _cleanup_tmux_ipc_files(ipc_files)
+        lifecycle["tmux_ipc_cleanup_result"] = ipc_cleanup["result"]
+        lifecycle["tmux_ipc_cleanup_error"] = ipc_cleanup["error"]
+        lifecycle["tmux_ipc_files_removed"] = ipc_cleanup["removed"]
+        return _attach_tmux_lifecycle(
+            subprocess.CompletedProcess(
+                args=command,
+                returncode=124,
+                stdout=stdout,
+                stderr=stderr,
+            ),
+            lifecycle,
         )
 
     try:
@@ -249,7 +888,78 @@ def execute_worker_tmux(
         returncode = 1
     stdout = stdout_file.read_text(encoding="utf-8", errors="ignore") if stdout_file.exists() else ""
     stderr = stderr_file.read_text(encoding="utf-8", errors="ignore") if stderr_file.exists() else ""
-    return subprocess.CompletedProcess(args=command, returncode=returncode, stdout=stdout, stderr=stderr)
+    ipc_cleanup = _cleanup_tmux_ipc_files(ipc_files)
+    lifecycle["tmux_ipc_cleanup_result"] = ipc_cleanup["result"]
+    lifecycle["tmux_ipc_cleanup_error"] = ipc_cleanup["error"]
+    lifecycle["tmux_ipc_files_removed"] = ipc_cleanup["removed"]
+    return _attach_tmux_lifecycle(
+        subprocess.CompletedProcess(args=command, returncode=returncode, stdout=stdout, stderr=stderr),
+        lifecycle,
+    )
+
+
+def _merge_tmux_lifecycle_into_diagnostics(
+    diagnostics: Dict[str, Any],
+    completed: subprocess.CompletedProcess[str],
+) -> Dict[str, Any]:
+    lifecycle = _extract_tmux_lifecycle(completed)
+    if not lifecycle:
+        return {}
+    for key in (
+        "tmux_session_name",
+        "tmux_session_started",
+        "tmux_orphan_cleanup_attempted",
+        "tmux_orphan_server_running",
+        "tmux_orphan_sessions_found",
+        "tmux_orphan_sessions_cleaned",
+        "tmux_orphan_sessions_failed",
+        "tmux_orphan_failed_sessions",
+        "tmux_orphan_cleanup_error",
+        "tmux_spawn_attempts",
+        "tmux_spawn_retried",
+        "tmux_spawn_retry_reason",
+        "tmux_spawn_error",
+        "tmux_stale_session_cleanup_attempted",
+        "tmux_stale_session_name",
+        "tmux_stale_session_cleanup_result",
+        "tmux_stale_session_cleanup_error",
+        "tmux_stale_session_cleanup_retry_attempted",
+        "tmux_stale_session_cleanup_retry_result",
+        "tmux_stale_session_cleanup_retry_error",
+        "tmux_stale_session_exists_after_cleanup",
+        "tmux_stale_session_cleanup_verification_error",
+        "tmux_cleanup_retry_attempted",
+        "tmux_cleanup_retry_result",
+        "tmux_cleanup_retry_error",
+        "tmux_session_exists_after_cleanup",
+        "tmux_cleanup_verification_error",
+        "tmux_status_observed",
+        "tmux_timed_out",
+        "tmux_cleanup_result",
+        "tmux_cleanup_error",
+        "tmux_ipc_cleanup_result",
+        "tmux_ipc_cleanup_error",
+        "tmux_ipc_files_removed",
+    ):
+        diagnostics[key] = lifecycle.get(key, diagnostics.get(key))
+    return lifecycle
+
+
+def _merge_transport_timeout_into_diagnostics(
+    diagnostics: Dict[str, Any],
+    completed: subprocess.CompletedProcess[str],
+) -> Dict[str, Any]:
+    timeout_metadata = _extract_transport_timeout(completed)
+    if not timeout_metadata:
+        return {}
+    for key in (
+        "execution_timed_out",
+        "timeout_transport",
+        "timeout_phase",
+        "timeout_message",
+    ):
+        diagnostics[key] = timeout_metadata.get(key, diagnostics.get(key))
+    return timeout_metadata
 
 
 def run_tmux_worker_task(
@@ -282,15 +992,93 @@ def run_tmux_worker_task(
     transport = "subprocess"
     completed: subprocess.CompletedProcess[str]
     started_at = time.time()
+    requested_transport = str(runtime_config.teammate_mode)
+    fallback_reason = ""
+    diagnostics: Dict[str, Any] = {
+        "recorded_at": utc_now(),
+        "worker": worker_name,
+        "task_type": str(payload.get("task_type", "")),
+        "transport_requested": requested_transport,
+        "transport_used": "",
+        "fallback_used": False,
+        "fallback_reason": "",
+        "timeout_sec": timeout_sec,
+        "returncode": "",
+        "duration_ms": 0,
+        "stdout_preview": "",
+        "stderr_preview": "",
+        "result": "unknown",
+        "error": "",
+        "execution_timed_out": False,
+        "timeout_transport": "",
+        "timeout_phase": "",
+        "timeout_message": "",
+        "tmux_session_name": "",
+        "tmux_session_started": False,
+        "tmux_orphan_cleanup_attempted": False,
+        "tmux_orphan_server_running": False,
+        "tmux_orphan_sessions_found": 0,
+        "tmux_orphan_sessions_cleaned": 0,
+        "tmux_orphan_sessions_failed": 0,
+        "tmux_orphan_failed_sessions": [],
+        "tmux_orphan_cleanup_error": "",
+        "tmux_spawn_attempts": 0,
+        "tmux_spawn_retried": False,
+        "tmux_spawn_retry_reason": "",
+        "tmux_spawn_error": "",
+        "tmux_stale_session_cleanup_attempted": False,
+        "tmux_stale_session_name": "",
+        "tmux_stale_session_cleanup_result": "",
+        "tmux_stale_session_cleanup_error": "",
+        "tmux_stale_session_cleanup_retry_attempted": False,
+        "tmux_stale_session_cleanup_retry_result": "",
+        "tmux_stale_session_cleanup_retry_error": "",
+        "tmux_stale_session_exists_after_cleanup": False,
+        "tmux_stale_session_cleanup_verification_error": "",
+        "tmux_cleanup_retry_attempted": False,
+        "tmux_cleanup_retry_result": "",
+        "tmux_cleanup_retry_error": "",
+        "tmux_session_exists_after_cleanup": False,
+        "tmux_cleanup_verification_error": "",
+        "tmux_status_observed": False,
+        "tmux_timed_out": False,
+        "tmux_cleanup_result": "",
+        "tmux_cleanup_error": "",
+        "tmux_ipc_cleanup_result": "",
+        "tmux_ipc_cleanup_error": "",
+        "tmux_ipc_files_removed": 0,
+    }
 
     def _run_subprocess_fallback(reason: str) -> subprocess.CompletedProcess[str]:
+        nonlocal fallback_reason
+        fallback_reason = reason
+        diagnostics["fallback_used"] = True
+        diagnostics["fallback_reason"] = reason
         logger.log(
             "tmux_worker_fallback_attempt",
             worker=worker_name,
             reason=reason,
         )
         fallback_started = time.time()
-        fallback_completed = execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+        try:
+            fallback_completed = execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+        except subprocess.TimeoutExpired as exc:
+            fallback_completed = _completed_process_from_timeout(
+                command=command,
+                timeout_exc=exc,
+                transport="tmux->subprocess_fallback",
+                phase="fallback_subprocess",
+            )
+            timeout_metadata = _extract_transport_timeout(fallback_completed)
+            logger.log(
+                "tmux_worker_transport_timeout",
+                worker=worker_name,
+                transport=str(timeout_metadata.get("timeout_transport", "tmux->subprocess_fallback")),
+                phase=str(timeout_metadata.get("timeout_phase", "fallback_subprocess")),
+                timeout_sec=timeout_sec,
+                stdout_len=len(fallback_completed.stdout or ""),
+                stderr_len=len(fallback_completed.stderr or ""),
+            )
         logger.log(
             "tmux_worker_fallback_result",
             worker=worker_name,
@@ -300,6 +1088,28 @@ def run_tmux_worker_task(
             stderr_len=len(fallback_completed.stderr or ""),
         )
         return fallback_completed
+
+    def _run_primary_subprocess(transport_name: str, phase: str) -> subprocess.CompletedProcess[str]:
+        try:
+            return execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+        except subprocess.TimeoutExpired as exc:
+            completed_timeout = _completed_process_from_timeout(
+                command=command,
+                timeout_exc=exc,
+                transport=transport_name,
+                phase=phase,
+            )
+            timeout_metadata = _extract_transport_timeout(completed_timeout)
+            logger.log(
+                "tmux_worker_transport_timeout",
+                worker=worker_name,
+                transport=str(timeout_metadata.get("timeout_transport", transport_name)),
+                phase=str(timeout_metadata.get("timeout_phase", phase)),
+                timeout_sec=timeout_sec,
+                stdout_len=len(completed_timeout.stdout or ""),
+                stderr_len=len(completed_timeout.stderr or ""),
+            )
+            return completed_timeout
 
     try:
         if runtime_config.teammate_mode == "tmux":
@@ -312,15 +1122,31 @@ def run_tmux_worker_task(
                     timeout_sec=timeout_sec,
                 )
             else:
+                fallback_reason = "tmux binary not found"
+                diagnostics["fallback_used"] = True
+                diagnostics["fallback_reason"] = fallback_reason
                 logger.log(
                     "tmux_unavailable_fallback_subprocess",
                     worker=worker_name,
-                    reason="tmux binary not found",
+                    reason=fallback_reason,
                 )
-                completed = execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+                completed = _run_primary_subprocess(
+                    transport_name="subprocess",
+                    phase="tmux_unavailable_fallback",
+                )
         else:
-            completed = execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+            completed = _run_primary_subprocess(
+                transport_name="subprocess",
+                phase="primary_subprocess",
+            )
 
+        lifecycle = _merge_tmux_lifecycle_into_diagnostics(diagnostics=diagnostics, completed=completed)
+        timeout_metadata = _merge_transport_timeout_into_diagnostics(diagnostics=diagnostics, completed=completed)
+        diagnostics["transport_used"] = transport
+        diagnostics["returncode"] = completed.returncode
+        diagnostics["duration_ms"] = int((time.time() - started_at) * 1000)
+        diagnostics["stdout_preview"] = _output_preview(completed.stdout or "")
+        diagnostics["stderr_preview"] = _output_preview(completed.stderr or "")
         logger.log(
             "tmux_worker_transport_result",
             worker=worker_name,
@@ -329,6 +1155,24 @@ def run_tmux_worker_task(
             duration_ms=int((time.time() - started_at) * 1000),
             stdout_len=len(completed.stdout or ""),
             stderr_len=len(completed.stderr or ""),
+            tmux_timed_out=bool(lifecycle.get("tmux_timed_out", False)),
+            tmux_cleanup_result=str(lifecycle.get("tmux_cleanup_result", "")),
+            tmux_orphan_sessions_found=int(lifecycle.get("tmux_orphan_sessions_found", 0) or 0),
+            tmux_orphan_sessions_cleaned=int(lifecycle.get("tmux_orphan_sessions_cleaned", 0) or 0),
+            tmux_spawn_attempts=int(lifecycle.get("tmux_spawn_attempts", 0) or 0),
+            tmux_spawn_retried=bool(lifecycle.get("tmux_spawn_retried", False)),
+            tmux_stale_session_cleanup_attempted=bool(lifecycle.get("tmux_stale_session_cleanup_attempted", False)),
+            tmux_stale_session_cleanup_result=str(lifecycle.get("tmux_stale_session_cleanup_result", "")),
+            tmux_stale_session_cleanup_retry_attempted=bool(
+                lifecycle.get("tmux_stale_session_cleanup_retry_attempted", False)
+            ),
+            tmux_stale_session_cleanup_retry_result=str(
+                lifecycle.get("tmux_stale_session_cleanup_retry_result", "")
+            ),
+            tmux_cleanup_retry_attempted=bool(lifecycle.get("tmux_cleanup_retry_attempted", False)),
+            tmux_cleanup_retry_result=str(lifecycle.get("tmux_cleanup_retry_result", "")),
+            execution_timed_out=bool(timeout_metadata.get("execution_timed_out", False)),
+            timeout_phase=str(timeout_metadata.get("timeout_phase", "")),
         )
 
         if completed.returncode != 0:
@@ -339,24 +1183,57 @@ def run_tmux_worker_task(
             ):
                 completed = _run_subprocess_fallback(reason=f"tmux_returncode={completed.returncode}")
                 transport = "tmux->subprocess_fallback"
+                diagnostics["transport_used"] = transport
+                timeout_metadata = _merge_transport_timeout_into_diagnostics(
+                    diagnostics=diagnostics,
+                    completed=completed,
+                )
+                diagnostics["returncode"] = completed.returncode
+                diagnostics["duration_ms"] = int((time.time() - started_at) * 1000)
+                diagnostics["stdout_preview"] = _output_preview(completed.stdout or "")
+                diagnostics["stderr_preview"] = _output_preview(completed.stderr or "")
             else:
                 stderr = (completed.stderr or "").strip()
                 stdout = (completed.stdout or "").strip()
-                detail = stderr or stdout or f"worker exited with code {completed.returncode}"
+                detail = (
+                    str(timeout_metadata.get("timeout_message", "")).strip()
+                    or stderr
+                    or stdout
+                    or f"worker exited with code {completed.returncode}"
+                )
+                if diagnostics.get("execution_timed_out"):
+                    diagnostics["result"] = "timeout"
+                    diagnostics["error"] = f"worker timed out via {transport}: {detail[:400]}"
+                else:
+                    diagnostics["result"] = "execution_failed"
+                    diagnostics["error"] = f"worker execution failed via {transport}: {detail[:400]}"
                 return {
                     "ok": False,
-                    "error": f"worker execution failed via {transport}: {detail[:400]}",
+                    "error": diagnostics["error"],
                     "transport": transport,
+                    "diagnostics": dict(diagnostics),
                 }
 
         if completed.returncode != 0:
             stderr = (completed.stderr or "").strip()
             stdout = (completed.stdout or "").strip()
-            detail = stderr or stdout or f"worker exited with code {completed.returncode}"
+            detail = (
+                str(timeout_metadata.get("timeout_message", "")).strip()
+                or stderr
+                or stdout
+                or f"worker exited with code {completed.returncode}"
+            )
+            if diagnostics.get("execution_timed_out"):
+                diagnostics["result"] = "timeout"
+                diagnostics["error"] = f"worker timed out via {transport}: {detail[:400]}"
+            else:
+                diagnostics["result"] = "execution_failed"
+                diagnostics["error"] = f"worker execution failed via {transport}: {detail[:400]}"
             return {
                 "ok": False,
-                "error": f"worker execution failed via {transport}: {detail[:400]}",
+                "error": diagnostics["error"],
                 "transport": transport,
+                "diagnostics": dict(diagnostics),
             }
 
         try:
@@ -369,41 +1246,80 @@ def run_tmux_worker_task(
             ):
                 completed = _run_subprocess_fallback(reason=f"tmux_invalid_json={exc}")
                 transport = "tmux->subprocess_fallback"
+                diagnostics["transport_used"] = transport
+                timeout_metadata = _merge_transport_timeout_into_diagnostics(
+                    diagnostics=diagnostics,
+                    completed=completed,
+                )
+                diagnostics["returncode"] = completed.returncode
+                diagnostics["duration_ms"] = int((time.time() - started_at) * 1000)
+                diagnostics["stdout_preview"] = _output_preview(completed.stdout or "")
+                diagnostics["stderr_preview"] = _output_preview(completed.stderr or "")
                 if completed.returncode != 0:
                     stderr = (completed.stderr or "").strip()
                     stdout = (completed.stdout or "").strip()
-                    detail = stderr or stdout or f"worker exited with code {completed.returncode}"
+                    detail = (
+                        str(timeout_metadata.get("timeout_message", "")).strip()
+                        or stderr
+                        or stdout
+                        or f"worker exited with code {completed.returncode}"
+                    )
+                    if diagnostics.get("execution_timed_out"):
+                        diagnostics["result"] = "timeout"
+                        diagnostics["error"] = f"worker timed out via {transport}: {detail[:400]}"
+                    else:
+                        diagnostics["result"] = "execution_failed"
+                        diagnostics["error"] = f"worker execution failed via {transport}: {detail[:400]}"
                     return {
                         "ok": False,
-                        "error": f"worker execution failed via {transport}: {detail[:400]}",
+                        "error": diagnostics["error"],
                         "transport": transport,
+                        "diagnostics": dict(diagnostics),
                     }
                 try:
                     parsed = json.loads((completed.stdout or "").strip())
                 except json.JSONDecodeError as exc2:
+                    diagnostics["result"] = "invalid_json"
+                    diagnostics["error"] = f"worker returned invalid JSON via {transport}: {exc2}"
                     return {
                         "ok": False,
-                        "error": f"worker returned invalid JSON via {transport}: {exc2}",
+                        "error": diagnostics["error"],
                         "transport": transport,
+                        "diagnostics": dict(diagnostics),
                     }
             else:
+                diagnostics["result"] = "invalid_json"
+                diagnostics["error"] = f"worker returned invalid JSON via {transport}: {exc}"
                 return {
                     "ok": False,
-                    "error": f"worker returned invalid JSON via {transport}: {exc}",
+                    "error": diagnostics["error"],
                     "transport": transport,
+                    "diagnostics": dict(diagnostics),
                 }
         if not isinstance(parsed, dict):
+            diagnostics["result"] = "non_object_payload"
+            diagnostics["error"] = f"worker returned non-object payload via {transport}"
             return {
                 "ok": False,
-                "error": f"worker returned non-object payload via {transport}",
+                "error": diagnostics["error"],
                 "transport": transport,
+                "diagnostics": dict(diagnostics),
             }
+        diagnostics["result"] = "success"
         return {
             "ok": True,
             "payload": parsed,
             "transport": transport,
+            "diagnostics": dict(diagnostics),
         }
     finally:
+        diagnostics["transport_used"] = diagnostics.get("transport_used") or transport
+        diagnostics["duration_ms"] = int((time.time() - started_at) * 1000)
+        if diagnostics.get("returncode", "") == "" and "completed" in locals():
+            diagnostics["returncode"] = completed.returncode
+            diagnostics["stdout_preview"] = _output_preview(completed.stdout or "")
+            diagnostics["stderr_preview"] = _output_preview(completed.stderr or "")
+        _append_tmux_worker_diagnostics(output_dir=output_dir, record=diagnostics)
         try:
             payload_file.unlink(missing_ok=True)
         except OSError:
@@ -492,6 +1408,7 @@ def run_tmux_analyst_task_once(
         )
         if not execution.get("ok"):
             error = str(execution.get("error", "unknown worker error"))
+            execution_diagnostics = execution.get("diagnostics", {})
             lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
             lead_context.mailbox.send(
                 sender=profile.name,
@@ -506,12 +1423,39 @@ def run_tmux_analyst_task_once(
                 task_id=task.task_id,
                 error=error,
                 transport=execution.get("transport"),
+                fallback_used=bool(execution_diagnostics.get("fallback_used", False)),
+                fallback_reason=str(execution_diagnostics.get("fallback_reason", "")),
+                execution_timed_out=bool(execution_diagnostics.get("execution_timed_out", False)),
+                timeout_phase=str(execution_diagnostics.get("timeout_phase", "")),
+                tmux_timed_out=bool(execution_diagnostics.get("tmux_timed_out", False)),
+                tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
+                tmux_orphan_sessions_cleaned=int(
+                    execution_diagnostics.get("tmux_orphan_sessions_cleaned", 0) or 0
+                ),
+                tmux_spawn_attempts=int(execution_diagnostics.get("tmux_spawn_attempts", 0) or 0),
+                tmux_spawn_retried=bool(execution_diagnostics.get("tmux_spawn_retried", False)),
+                tmux_stale_session_cleanup_attempted=bool(
+                    execution_diagnostics.get("tmux_stale_session_cleanup_attempted", False)
+                ),
+                tmux_stale_session_cleanup_result=str(
+                    execution_diagnostics.get("tmux_stale_session_cleanup_result", "")
+                ),
+                tmux_stale_session_cleanup_retry_attempted=bool(
+                    execution_diagnostics.get("tmux_stale_session_cleanup_retry_attempted", False)
+                ),
+                tmux_stale_session_cleanup_retry_result=str(
+                    execution_diagnostics.get("tmux_stale_session_cleanup_retry_result", "")
+                ),
+                tmux_cleanup_retry_attempted=bool(execution_diagnostics.get("tmux_cleanup_retry_attempted", False)),
+                tmux_cleanup_retry_result=str(execution_diagnostics.get("tmux_cleanup_retry_result", "")),
+                tmux_cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
             )
             if lock_paths:
                 lead_context.file_locks.release(profile.name, lock_paths)
             return True
 
         worker_payload = execution.get("payload", {})
+        execution_diagnostics = execution.get("diagnostics", {})
         result = worker_payload.get("result", {})
         state_updates = worker_payload.get("state_updates", {})
         if isinstance(state_updates, dict):
@@ -532,6 +1476,30 @@ def run_tmux_analyst_task_once(
             worker=profile.name,
             task_id=task.task_id,
             transport=execution.get("transport"),
+            fallback_used=bool(execution_diagnostics.get("fallback_used", False)),
+            fallback_reason=str(execution_diagnostics.get("fallback_reason", "")),
+            execution_timed_out=bool(execution_diagnostics.get("execution_timed_out", False)),
+            timeout_phase=str(execution_diagnostics.get("timeout_phase", "")),
+            tmux_timed_out=bool(execution_diagnostics.get("tmux_timed_out", False)),
+            tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
+            tmux_orphan_sessions_cleaned=int(execution_diagnostics.get("tmux_orphan_sessions_cleaned", 0) or 0),
+            tmux_spawn_attempts=int(execution_diagnostics.get("tmux_spawn_attempts", 0) or 0),
+            tmux_spawn_retried=bool(execution_diagnostics.get("tmux_spawn_retried", False)),
+            tmux_stale_session_cleanup_attempted=bool(
+                execution_diagnostics.get("tmux_stale_session_cleanup_attempted", False)
+            ),
+            tmux_stale_session_cleanup_result=str(
+                execution_diagnostics.get("tmux_stale_session_cleanup_result", "")
+            ),
+            tmux_stale_session_cleanup_retry_attempted=bool(
+                execution_diagnostics.get("tmux_stale_session_cleanup_retry_attempted", False)
+            ),
+            tmux_stale_session_cleanup_retry_result=str(
+                execution_diagnostics.get("tmux_stale_session_cleanup_retry_result", "")
+            ),
+            tmux_cleanup_retry_attempted=bool(execution_diagnostics.get("tmux_cleanup_retry_attempted", False)),
+            tmux_cleanup_retry_result=str(execution_diagnostics.get("tmux_cleanup_retry_result", "")),
+            tmux_cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
         )
         if lock_paths:
             lead_context.file_locks.release(profile.name, lock_paths)

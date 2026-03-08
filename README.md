@@ -33,7 +33,7 @@ The runtime now exposes a host-agnostic configuration layer so the same team eng
 - `agent_team/models.py`
   - Model adapter layer with heuristic + OpenAI-compatible providers.
 - `agent_team/workflows/`
-  - Workflow-pack registry. Current built-in pack: `markdown-audit`.
+  - Workflow-pack registry. Current built-in packs: `markdown-audit`, `repo-audit`.
 
 The legacy entrypoint `agent_team_runtime.py` remains compatible, but now acts as the CLI wrapper around those reusable layers.
 
@@ -86,10 +86,19 @@ Host/workflow metadata can also be overridden directly:
 ```bash
 python3 agent_team_demo/agent_team_runtime.py \
   --host-kind codex \
-  --workflow-pack markdown-audit \
+  --workflow-pack repo-audit \
   --workflow-preset default \
   --target . \
   --output agent_team_demo/output
+```
+
+Run the second built-in workflow pack:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --workflow-pack repo-audit \
+  --target . \
+  --output agent_team_demo/output_repo_audit
 ```
 
 Strict mode (do not fallback to heuristic):

@@ -261,13 +261,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run local agent team runtime (MVP).")
     parser.add_argument(
         "--goal",
-        default="Audit markdown quality with a lead and teammate workflow.",
+        default="Audit repository quality with a lead and teammate workflow.",
         help="Natural language goal statement.",
     )
     parser.add_argument(
         "--target",
         default=".",
-        help="Target directory for markdown analysis.",
+        help="Target directory for workflow analysis.",
     )
     parser.add_argument(
         "--output",
@@ -287,7 +287,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--workflow-pack",
         default="",
-        help="Workflow pack to run. Current built-in option: markdown-audit.",
+        help="Workflow pack to run. Built-in options: markdown-audit, repo-audit.",
     )
     parser.add_argument(
         "--workflow-preset",

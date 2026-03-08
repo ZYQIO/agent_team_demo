@@ -232,6 +232,10 @@ class RuntimeLogicTests(unittest.TestCase):
             build_workflow_lead_task_order("markdown-audit"),
             ["lead_adjudication", "lead_re_adjudication"],
         )
+        self.assertEqual(
+            build_workflow_lead_task_order("repo-audit"),
+            ["lead_adjudication", "lead_re_adjudication"],
+        )
 
     def test_workflow_pack_exposes_runtime_metadata(self) -> None:
         metadata = build_workflow_runtime_metadata("markdown-audit")
@@ -240,6 +244,12 @@ class RuntimeLogicTests(unittest.TestCase):
             ("lead_adjudication", "lead_re_adjudication"),
         )
         self.assertEqual(metadata.report_task_ids, ("recommendation_pack",))
+        repo_metadata = build_workflow_runtime_metadata("repo-audit")
+        self.assertEqual(
+            repo_metadata.lead_task_order,
+            ("lead_adjudication", "lead_re_adjudication"),
+        )
+        self.assertEqual(repo_metadata.report_task_ids, ("repo_recommendation_pack",))
 
     def test_run_lead_tasks_once_uses_workflow_order(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -404,6 +414,482 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(length["result"]["line_threshold"], 2)
             self.assertGreaterEqual(length["result"]["long_files"], 1)
 
+    def test_tmux_worker_payload_repo_discover_and_large_file(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "repo"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "README.md").write_text("# Title\nbody\n", encoding="utf-8")
+            (target_dir / "src").mkdir(parents=True, exist_ok=True)
+            (target_dir / "src" / "app.py").write_text("\n".join(["print('x')"] * 40), encoding="utf-8")
+            (target_dir / "config.json").write_text("{\"ok\": true}\n", encoding="utf-8")
+
+            discover = runtime.run_tmux_worker_payload(
+                {
+                    "task_type": "discover_repository",
+                    "task_payload": {},
+                    "target_dir": str(target_dir),
+                    "output_dir": str(output_dir),
+                    "shared_state": {},
+                }
+            )
+            inventory = discover["state_updates"].get("repository_inventory", [])
+            self.assertEqual(len(inventory), 3)
+
+            extension_audit = runtime.run_tmux_worker_payload(
+                {
+                    "task_type": "extension_audit",
+                    "task_payload": {},
+                    "target_dir": str(target_dir),
+                    "output_dir": str(output_dir),
+                    "shared_state": {"repository_inventory": inventory},
+                }
+            )
+            self.assertGreaterEqual(extension_audit["result"]["unique_extensions"], 2)
+
+            large_file = runtime.run_tmux_worker_payload(
+                {
+                    "task_type": "large_file_audit",
+                    "task_payload": {"line_threshold": 20, "byte_threshold": 10},
+                    "target_dir": str(target_dir),
+                    "output_dir": str(output_dir),
+                    "shared_state": {"repository_inventory": inventory},
+                }
+            )
+            self.assertEqual(large_file["result"]["line_threshold"], 20)
+            self.assertGreaterEqual(large_file["result"]["oversized_files"], 1)
+
+    def test_repo_dynamic_planning_inserts_followup_tasks(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Peer challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma", "analyst_alpha", "analyst_beta"],
+                logger=logger,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set(
+                "repository_inventory",
+                [
+                    {
+                        "path": "README.md",
+                        "extension": ".md",
+                        "line_count": 10,
+                        "byte_count": 100,
+                        "top_level_dir": ".",
+                    },
+                    {
+                        "path": "src/app.py",
+                        "extension": ".py",
+                        "line_count": 350,
+                        "byte_count": 2000,
+                        "top_level_dir": "src",
+                    },
+                ],
+            )
+            shared_state.set("repository_extension_summary", {"unique_extensions": 2})
+            shared_state.set(
+                "repository_large_files",
+                [{"path": "src/app.py", "line_count": 350, "byte_count": 2000}],
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(enable_dynamic_tasks=True),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+
+            from agent_team.workflows.repo_audit_analysis import handle_repo_dynamic_planning
+
+            result = handle_repo_dynamic_planning(
+                context=context,
+                _task=runtime.Task(
+                    task_id="repo_dynamic_planning",
+                    title="plan",
+                    task_type="repo_dynamic_planning",
+                    required_skills={"review"},
+                    dependencies=[],
+                    payload={},
+                    locked_paths=[],
+                    allowed_agent_types={"reviewer"},
+                ),
+            )
+            self.assertEqual(
+                set(result["inserted_tasks"]),
+                {"extension_hotspot_followup", "directory_hotspot_followup"},
+            )
+            snapshot = board.snapshot()
+            peer = [task for task in snapshot["tasks"] if task["task_id"] == "peer_challenge"][0]
+            self.assertIn("extension_hotspot_followup", peer["dependencies"])
+            self.assertIn("directory_hotspot_followup", peer["dependencies"])
+
+    def test_execute_worker_tmux_timeout_records_lifecycle_and_cleans_ipc(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = f"{session_prefix}_deadbeef"
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr="no server running on /tmp/tmux-501/default",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("partial worker stdout", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"]:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.uuid, "uuid4", return_value=mock.Mock(hex="deadbeefcafebabe")), mock.patch.object(
+                runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
+            ), mock.patch.object(runtime.tmux_transport.time, "time", side_effect=[100.0, 102.0]), mock.patch.object(
+                runtime.tmux_transport.time, "sleep", return_value=None
+            ):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 124)
+            self.assertEqual(completed.stdout, "partial worker stdout")
+            self.assertIn("timed out", completed.stderr)
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertEqual(lifecycle.get("tmux_session_name"), session_name)
+            self.assertTrue(lifecycle.get("tmux_session_started"))
+            self.assertFalse(lifecycle.get("tmux_status_observed"))
+            self.assertTrue(lifecycle.get("tmux_timed_out"))
+            self.assertEqual(lifecycle.get("tmux_cleanup_result"), "killed")
+            self.assertEqual(lifecycle.get("tmux_ipc_cleanup_result"), "removed")
+            self.assertEqual(lifecycle.get("tmux_ipc_files_removed"), 2)
+            self.assertFalse(stdout_file.exists())
+            self.assertFalse(stderr_file.exists())
+            self.assertFalse(status_file.exists())
+
+    def test_execute_worker_tmux_retries_duplicate_session_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            first_session = f"{session_prefix}_deadbeef"
+            second_session = f"{session_prefix}_feedface"
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            second_stdout = ipc_dir / f"{second_session}.stdout.txt"
+            second_stderr = ipc_dir / f"{second_session}.stderr.txt"
+            second_status = ipc_dir / f"{second_session}.status.txt"
+            killed_sessions = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr="no server running on /tmp/tmux-501/default",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    session_name = command[4]
+                    if session_name == first_session:
+                        return subprocess.CompletedProcess(
+                            args=command,
+                            returncode=1,
+                            stdout="",
+                            stderr=f"duplicate session: {first_session}",
+                        )
+                    if session_name == second_session:
+                        ipc_dir.mkdir(parents=True, exist_ok=True)
+                        second_stdout.write_text("worker ok", encoding="utf-8")
+                        second_stderr.write_text("", encoding="utf-8")
+                        second_status.write_text("0", encoding="utf-8")
+                        return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"]:
+                    killed_sessions.append(command[-1])
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(
+                runtime.tmux_transport.uuid,
+                "uuid4",
+                side_effect=[mock.Mock(hex="deadbeefcafebabe"), mock.Mock(hex="feedfacecafebabe")],
+            ), mock.patch.object(
+                runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
+            ), mock.patch.object(runtime.tmux_transport.time, "sleep", return_value=None):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, "worker ok")
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertEqual(lifecycle.get("tmux_session_name"), second_session)
+            self.assertTrue(lifecycle.get("tmux_session_started"))
+            self.assertEqual(lifecycle.get("tmux_spawn_attempts"), 2)
+            self.assertTrue(lifecycle.get("tmux_spawn_retried"))
+            self.assertIn("duplicate session", lifecycle.get("tmux_spawn_retry_reason", ""))
+            self.assertTrue(lifecycle.get("tmux_stale_session_cleanup_attempted"))
+            self.assertEqual(lifecycle.get("tmux_stale_session_name"), first_session)
+            self.assertEqual(lifecycle.get("tmux_stale_session_cleanup_result"), "killed")
+            self.assertFalse(lifecycle.get("tmux_stale_session_cleanup_retry_attempted"))
+            self.assertEqual(lifecycle.get("tmux_cleanup_result"), "killed")
+            self.assertEqual(lifecycle.get("tmux_ipc_cleanup_result"), "removed")
+            self.assertEqual(killed_sessions, [first_session, second_session])
+            self.assertFalse(second_stdout.exists())
+            self.assertFalse(second_stderr.exists())
+            self.assertFalse(second_status.exists())
+
+    def test_execute_worker_tmux_retries_active_cleanup_when_session_still_exists(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = f"{session_prefix}_deadbeef"
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr="no server running on /tmp/tmux-501/default",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("worker ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"] and len(calls) == 3:
+                    return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="permission denied")
+                if command[:2] == ["tmux", "has-session"]:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"] and len(calls) == 5:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(
+                runtime.tmux_transport.uuid,
+                "uuid4",
+                return_value=mock.Mock(hex="deadbeefcafebabe"),
+            ), mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, "worker ok")
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertEqual(lifecycle.get("tmux_session_name"), session_name)
+            self.assertEqual(lifecycle.get("tmux_cleanup_result"), "recovered_after_retry")
+            self.assertTrue(lifecycle.get("tmux_cleanup_retry_attempted"))
+            self.assertEqual(lifecycle.get("tmux_cleanup_retry_result"), "killed")
+            self.assertTrue(lifecycle.get("tmux_session_exists_after_cleanup"))
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    ["tmux", "new-session", "-d", "-s", session_name, mock.ANY],
+                    ["tmux", "kill-session", "-t", session_name],
+                    ["tmux", "has-session", "-t", session_name],
+                    ["tmux", "kill-session", "-t", session_name],
+                ],
+            )
+
+    def test_execute_worker_tmux_cleans_orphan_sessions_before_spawn(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            orphan_session = f"{session_prefix}_orphaned"
+            active_session = f"{session_prefix}_deadbeef"
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{active_session}.stdout.txt"
+            stderr_file = ipc_dir / f"{active_session}.stderr.txt"
+            status_file = ipc_dir / f"{active_session}.status.txt"
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=0,
+                        stdout=f"{orphan_session}\nunrelated_session\n",
+                        stderr="",
+                    )
+                if command[:2] == ["tmux", "kill-session"] and command[-1] == orphan_session:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "new-session"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("worker ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"] and command[-1] == active_session:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(
+                runtime.tmux_transport.uuid,
+                "uuid4",
+                return_value=mock.Mock(hex="deadbeefcafebabe"),
+            ), mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertTrue(lifecycle.get("tmux_orphan_cleanup_attempted"))
+            self.assertEqual(lifecycle.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(lifecycle.get("tmux_orphan_sessions_cleaned"), 1)
+            self.assertEqual(lifecycle.get("tmux_orphan_sessions_failed"), 0)
+            self.assertEqual(lifecycle.get("tmux_orphan_failed_sessions"), [])
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    ["tmux", "kill-session", "-t", orphan_session],
+                    ["tmux", "new-session", "-d", "-s", active_session, mock.ANY],
+                    ["tmux", "kill-session", "-t", active_session],
+                ],
+            )
+
+    def test_cleanup_stale_tmux_session_retries_when_session_still_exists(self) -> None:
+        calls = []
+
+        def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+            calls.append(command)
+            if command[:2] == ["tmux", "kill-session"] and len(calls) == 1:
+                return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="permission denied")
+            if command[:2] == ["tmux", "has-session"]:
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+            if command[:2] == ["tmux", "kill-session"] and len(calls) == 3:
+                return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+            raise AssertionError(f"unexpected command: {command}")
+
+        with mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+            result = runtime.tmux_transport._cleanup_stale_tmux_session("agent_analyst_alpha_deadbeef")
+
+        self.assertTrue(result.get("attempted"))
+        self.assertEqual(result.get("session_name"), "agent_analyst_alpha_deadbeef")
+        self.assertEqual(result.get("result"), "recovered_after_retry")
+        self.assertTrue(result.get("retry_attempted"))
+        self.assertEqual(result.get("retry_result"), "killed")
+        self.assertTrue(result.get("session_exists_after_cleanup"))
+        self.assertEqual(
+            calls,
+            [
+                ["tmux", "kill-session", "-t", "agent_analyst_alpha_deadbeef"],
+                ["tmux", "has-session", "-t", "agent_analyst_alpha_deadbeef"],
+                ["tmux", "kill-session", "-t", "agent_analyst_alpha_deadbeef"],
+            ],
+        )
+
+    def test_worker_subprocess_timeout_returns_structured_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            config = runtime.RuntimeConfig(teammate_mode="subprocess")
+
+            with mock.patch.object(
+                runtime,
+                "_execute_worker_subprocess",
+                side_effect=subprocess.TimeoutExpired(
+                    cmd=["python"],
+                    timeout=1,
+                    output="partial stdout",
+                    stderr="subprocess too slow",
+                ),
+            ):
+                result = runtime._run_tmux_worker_task(
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                    output_dir=output_dir,
+                    runtime_config=config,
+                    payload={"task_type": "discover_markdown"},
+                    worker_name="analyst_alpha",
+                    logger=logger,
+                    timeout_sec=1,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result.get("transport"), "subprocess")
+            self.assertIn("timed out", result.get("error", ""))
+            diagnostics = result.get("diagnostics", {})
+            self.assertTrue(diagnostics.get("execution_timed_out"))
+            self.assertEqual(diagnostics.get("timeout_transport"), "subprocess")
+            self.assertEqual(diagnostics.get("timeout_phase"), "primary_subprocess")
+            self.assertEqual(diagnostics.get("result"), "timeout")
+
+            diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+            payload = json.loads(diagnostics_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertTrue(payload.get("execution_timed_out"))
+            self.assertEqual(payload.get("timeout_phase"), "primary_subprocess")
+            self.assertEqual(payload.get("result"), "timeout")
+
+            event_names = []
+            with logger.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        event_names.append(json.loads(line).get("event"))
+            self.assertIn("tmux_worker_transport_timeout", event_names)
+
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -418,6 +904,42 @@ class RuntimeLogicTests(unittest.TestCase):
                 stdout="",
                 stderr="tmux timeout",
             )
+            tmux_failed.tmux_lifecycle = {
+                "tmux_session_name": "agent_analyst_alpha_deadbeef",
+                "tmux_session_started": True,
+                "tmux_orphan_cleanup_attempted": True,
+                "tmux_orphan_server_running": True,
+                "tmux_orphan_sessions_found": 1,
+                "tmux_orphan_sessions_cleaned": 1,
+                "tmux_orphan_sessions_failed": 0,
+                "tmux_orphan_failed_sessions": [],
+                "tmux_orphan_cleanup_error": "",
+                "tmux_spawn_attempts": 2,
+                "tmux_spawn_retried": True,
+                "tmux_spawn_retry_reason": "duplicate session: agent_analyst_alpha_deadbeef",
+                "tmux_spawn_error": "",
+                "tmux_stale_session_cleanup_attempted": True,
+                "tmux_stale_session_name": "agent_analyst_alpha_deadbeef",
+                "tmux_stale_session_cleanup_result": "killed",
+                "tmux_stale_session_cleanup_error": "",
+                "tmux_stale_session_cleanup_retry_attempted": True,
+                "tmux_stale_session_cleanup_retry_result": "killed",
+                "tmux_stale_session_cleanup_retry_error": "",
+                "tmux_stale_session_exists_after_cleanup": True,
+                "tmux_stale_session_cleanup_verification_error": "",
+                "tmux_cleanup_retry_attempted": True,
+                "tmux_cleanup_retry_result": "killed",
+                "tmux_cleanup_retry_error": "",
+                "tmux_session_exists_after_cleanup": True,
+                "tmux_cleanup_verification_error": "",
+                "tmux_status_observed": False,
+                "tmux_timed_out": True,
+                "tmux_cleanup_result": "killed",
+                "tmux_cleanup_error": "",
+                "tmux_ipc_cleanup_result": "removed",
+                "tmux_ipc_cleanup_error": "",
+                "tmux_ipc_files_removed": 2,
+            }
             subprocess_ok = subprocess.CompletedProcess(
                 args=["python"],
                 returncode=0,
@@ -438,6 +960,148 @@ class RuntimeLogicTests(unittest.TestCase):
                 )
             self.assertTrue(result["ok"])
             self.assertEqual(result.get("transport"), "tmux->subprocess_fallback")
+            diagnostics = result.get("diagnostics", {})
+            self.assertTrue(diagnostics.get("fallback_used"))
+            self.assertIn("tmux_returncode=124", diagnostics.get("fallback_reason", ""))
+            self.assertTrue(diagnostics.get("tmux_timed_out"))
+            self.assertEqual(diagnostics.get("tmux_cleanup_result"), "killed")
+            self.assertEqual(diagnostics.get("tmux_ipc_cleanup_result"), "removed")
+            self.assertEqual(diagnostics.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(diagnostics.get("tmux_orphan_sessions_cleaned"), 1)
+            self.assertEqual(diagnostics.get("tmux_spawn_attempts"), 2)
+            self.assertTrue(diagnostics.get("tmux_spawn_retried"))
+            self.assertTrue(diagnostics.get("tmux_stale_session_cleanup_attempted"))
+            self.assertEqual(diagnostics.get("tmux_stale_session_cleanup_result"), "killed")
+            self.assertTrue(diagnostics.get("tmux_stale_session_cleanup_retry_attempted"))
+            self.assertEqual(diagnostics.get("tmux_stale_session_cleanup_retry_result"), "killed")
+            self.assertTrue(diagnostics.get("tmux_cleanup_retry_attempted"))
+            self.assertEqual(diagnostics.get("tmux_cleanup_retry_result"), "killed")
+
+            diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+            self.assertTrue(diagnostics_path.exists())
+            lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 1)
+            payload = json.loads(lines[0])
+            self.assertEqual(payload.get("transport_used"), "tmux->subprocess_fallback")
+            self.assertEqual(payload.get("result"), "success")
+            self.assertTrue(payload.get("tmux_timed_out"))
+            self.assertEqual(payload.get("tmux_cleanup_result"), "killed")
+            self.assertEqual(payload.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(payload.get("tmux_orphan_sessions_cleaned"), 1)
+            self.assertEqual(payload.get("tmux_spawn_attempts"), 2)
+            self.assertTrue(payload.get("tmux_spawn_retried"))
+            self.assertTrue(payload.get("tmux_stale_session_cleanup_attempted"))
+            self.assertEqual(payload.get("tmux_stale_session_cleanup_result"), "killed")
+            self.assertTrue(payload.get("tmux_stale_session_cleanup_retry_attempted"))
+            self.assertEqual(payload.get("tmux_stale_session_cleanup_retry_result"), "killed")
+            self.assertTrue(payload.get("tmux_cleanup_retry_attempted"))
+            self.assertEqual(payload.get("tmux_cleanup_retry_result"), "killed")
+
+    def test_tmux_worker_fallback_timeout_returns_structured_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            config = runtime.RuntimeConfig(
+                teammate_mode="tmux",
+                tmux_fallback_on_error=True,
+            )
+            tmux_failed = subprocess.CompletedProcess(
+                args=["tmux"],
+                returncode=124,
+                stdout="",
+                stderr="tmux timeout",
+            )
+            tmux_failed.tmux_lifecycle = {
+                "tmux_session_name": "agent_analyst_alpha_deadbeef",
+                "tmux_session_started": True,
+                "tmux_orphan_cleanup_attempted": True,
+                "tmux_orphan_server_running": True,
+                "tmux_orphan_sessions_found": 1,
+                "tmux_orphan_sessions_cleaned": 1,
+                "tmux_orphan_sessions_failed": 0,
+                "tmux_orphan_failed_sessions": [],
+                "tmux_orphan_cleanup_error": "",
+                "tmux_spawn_attempts": 2,
+                "tmux_spawn_retried": True,
+                "tmux_spawn_retry_reason": "duplicate session: agent_analyst_alpha_deadbeef",
+                "tmux_spawn_error": "",
+                "tmux_stale_session_cleanup_attempted": True,
+                "tmux_stale_session_name": "agent_analyst_alpha_deadbeef",
+                "tmux_stale_session_cleanup_result": "killed",
+                "tmux_stale_session_cleanup_error": "",
+                "tmux_stale_session_cleanup_retry_attempted": True,
+                "tmux_stale_session_cleanup_retry_result": "killed",
+                "tmux_stale_session_cleanup_retry_error": "",
+                "tmux_stale_session_exists_after_cleanup": True,
+                "tmux_stale_session_cleanup_verification_error": "",
+                "tmux_cleanup_retry_attempted": True,
+                "tmux_cleanup_retry_result": "killed",
+                "tmux_cleanup_retry_error": "",
+                "tmux_session_exists_after_cleanup": True,
+                "tmux_cleanup_verification_error": "",
+                "tmux_status_observed": False,
+                "tmux_timed_out": True,
+                "tmux_cleanup_result": "killed",
+                "tmux_cleanup_error": "",
+                "tmux_ipc_cleanup_result": "removed",
+                "tmux_ipc_cleanup_error": "",
+                "tmux_ipc_files_removed": 2,
+            }
+
+            with mock.patch.object(runtime.shutil, "which", return_value="/usr/bin/tmux"), mock.patch.object(
+                runtime, "_execute_worker_tmux", return_value=tmux_failed
+            ), mock.patch.object(
+                runtime,
+                "_execute_worker_subprocess",
+                side_effect=subprocess.TimeoutExpired(
+                    cmd=["python"],
+                    timeout=1,
+                    output="fallback partial stdout",
+                    stderr="fallback subprocess too slow",
+                ),
+            ):
+                result = runtime._run_tmux_worker_task(
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                    output_dir=output_dir,
+                    runtime_config=config,
+                    payload={"task_type": "discover_markdown"},
+                    worker_name="analyst_alpha",
+                    logger=logger,
+                    timeout_sec=1,
+                )
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result.get("transport"), "tmux->subprocess_fallback")
+            self.assertIn("timed out", result.get("error", ""))
+            diagnostics = result.get("diagnostics", {})
+            self.assertTrue(diagnostics.get("fallback_used"))
+            self.assertTrue(diagnostics.get("tmux_timed_out"))
+            self.assertTrue(diagnostics.get("execution_timed_out"))
+            self.assertEqual(diagnostics.get("timeout_transport"), "tmux->subprocess_fallback")
+            self.assertEqual(diagnostics.get("timeout_phase"), "fallback_subprocess")
+            self.assertEqual(diagnostics.get("result"), "timeout")
+            self.assertEqual(diagnostics.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(diagnostics.get("tmux_orphan_sessions_cleaned"), 1)
+            self.assertTrue(diagnostics.get("tmux_stale_session_cleanup_attempted"))
+            self.assertEqual(diagnostics.get("tmux_stale_session_cleanup_result"), "killed")
+            self.assertTrue(diagnostics.get("tmux_stale_session_cleanup_retry_attempted"))
+            self.assertEqual(diagnostics.get("tmux_stale_session_cleanup_retry_result"), "killed")
+            self.assertTrue(diagnostics.get("tmux_cleanup_retry_attempted"))
+            self.assertEqual(diagnostics.get("tmux_cleanup_retry_result"), "killed")
+
+            diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+            payload = json.loads(diagnostics_path.read_text(encoding="utf-8").splitlines()[0])
+            self.assertTrue(payload.get("execution_timed_out"))
+            self.assertEqual(payload.get("timeout_transport"), "tmux->subprocess_fallback")
+            self.assertEqual(payload.get("result"), "timeout")
+            self.assertEqual(payload.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(payload.get("tmux_orphan_sessions_cleaned"), 1)
+            self.assertTrue(payload.get("tmux_stale_session_cleanup_attempted"))
+            self.assertEqual(payload.get("tmux_stale_session_cleanup_result"), "killed")
+            self.assertTrue(payload.get("tmux_stale_session_cleanup_retry_attempted"))
+            self.assertEqual(payload.get("tmux_stale_session_cleanup_retry_result"), "killed")
+            self.assertTrue(payload.get("tmux_cleanup_retry_attempted"))
+            self.assertEqual(payload.get("tmux_cleanup_retry_result"), "killed")
 
     def test_task_from_dict_normalizes_in_progress_state(self) -> None:
         restored = runtime.task_from_dict(

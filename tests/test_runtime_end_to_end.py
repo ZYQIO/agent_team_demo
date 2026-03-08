@@ -124,6 +124,93 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("## Evidence Pack", report_text)
             self.assertIn("## Lead Adjudication", report_text)
 
+    def test_cli_repo_audit_workflow_writes_expected_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_repo"
+            output_dir = root / "runtime_output_repo"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "README.md").write_text("# Title\nBody\n", encoding="utf-8")
+            (target_dir / "src").mkdir(parents=True, exist_ok=True)
+            (target_dir / "src" / "app.py").write_text("\n".join(["print('hello')"] * 80), encoding="utf-8")
+            (target_dir / "config.json").write_text("{\"enabled\": true}\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--workflow-pack",
+                "repo-audit",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+            ]
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=90,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}",
+            )
+
+            expected_artifacts = [
+                output_dir / "events.jsonl",
+                output_dir / "task_board.json",
+                output_dir / "shared_state.json",
+                output_dir / "file_locks.json",
+                output_dir / "run_summary.json",
+                output_dir / "final_report.md",
+                output_dir / runtime.CHECKPOINT_FILENAME,
+            ]
+            for path in expected_artifacts:
+                self.assertTrue(path.exists(), msg=f"missing artifact: {path}")
+
+            task_board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+            task_states = {item["task_id"]: item["status"] for item in task_board["tasks"]}
+            self.assertTrue(all(state == "completed" for state in task_states.values()))
+            self.assertIn("repo_dynamic_planning", task_states)
+            self.assertIn("repo_recommendation_pack", task_states)
+            self.assertIn("extension_hotspot_followup", task_states)
+            self.assertIn("directory_hotspot_followup", task_states)
+
+            summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.get("workflow", {}).get("pack"), "repo-audit")
+
+            shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
+            self.assertIn("repository_inventory", shared_state)
+            self.assertIn("repository_extension_summary", shared_state)
+            self.assertIn("llm_synthesis", shared_state)
+
+            events = []
+            with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        events.append(json.loads(line))
+            event_names = {item.get("event") for item in events}
+            self.assertIn("run_started", event_names)
+            self.assertIn("lead_adjudication_published", event_names)
+            self.assertIn("run_finished", event_names)
+            self.assertIn("task_inserted", event_names)
+
+            report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Repository Findings", report_text)
+            self.assertIn("## Dynamic Tasking", report_text)
+            self.assertIn("## Evidence Pack", report_text)
+            self.assertIn("## Lead Adjudication", report_text)
+
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -234,6 +321,28 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("teammate_mode_tmux_enabled", event_names)
             self.assertIn("tmux_worker_task_dispatched", event_names)
             self.assertIn("tmux_worker_task_completed", event_names)
+
+            diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+            self.assertTrue(diagnostics_path.exists())
+            diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
+            self.assertGreaterEqual(len(diagnostics_lines), 1)
+            first_record = json.loads(diagnostics_lines[0])
+            self.assertIn(first_record.get("result"), {"success", "execution_failed", "invalid_json"})
+            self.assertIn("transport_used", first_record)
+            self.assertIn("tmux_timed_out", first_record)
+            self.assertIn("tmux_cleanup_result", first_record)
+            self.assertIn("execution_timed_out", first_record)
+            self.assertIn("timeout_phase", first_record)
+            self.assertIn("tmux_spawn_attempts", first_record)
+            self.assertIn("tmux_spawn_retried", first_record)
+            self.assertIn("tmux_stale_session_cleanup_attempted", first_record)
+            self.assertIn("tmux_stale_session_cleanup_result", first_record)
+            self.assertIn("tmux_stale_session_cleanup_retry_attempted", first_record)
+            self.assertIn("tmux_stale_session_cleanup_retry_result", first_record)
+            self.assertIn("tmux_cleanup_retry_attempted", first_record)
+            self.assertIn("tmux_cleanup_retry_result", first_record)
+            self.assertIn("tmux_orphan_sessions_found", first_record)
+            self.assertIn("tmux_orphan_sessions_cleaned", first_record)
 
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
