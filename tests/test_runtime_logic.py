@@ -16,6 +16,8 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 import agent_team_runtime as runtime
+from agent_team.runtime.engine import run_lead_tasks_once
+from agent_team.workflows import build_workflow_lead_task_order, build_workflow_runtime_metadata
 
 
 class RuntimeLogicTests(unittest.TestCase):
@@ -224,6 +226,96 @@ class RuntimeLogicTests(unittest.TestCase):
             peer = [task for task in snapshot["tasks"] if task["task_id"] == "peer_challenge"][0]
             self.assertIn("heading_structure_followup", peer["dependencies"])
             self.assertIn("length_risk_followup", peer["dependencies"])
+
+    def test_workflow_pack_declares_lead_task_order(self) -> None:
+        self.assertEqual(
+            build_workflow_lead_task_order("markdown-audit"),
+            ["lead_adjudication", "lead_re_adjudication"],
+        )
+
+    def test_workflow_pack_exposes_runtime_metadata(self) -> None:
+        metadata = build_workflow_runtime_metadata("markdown-audit")
+        self.assertEqual(
+            metadata.lead_task_order,
+            ("lead_adjudication", "lead_re_adjudication"),
+        )
+        self.assertEqual(metadata.report_task_ids, ("recommendation_pack",))
+
+    def test_run_lead_tasks_once_uses_workflow_order(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="lead_re_adjudication",
+                        title="Lead re-adjudicates",
+                        task_type="lead_re_adjudication",
+                        required_skills={"lead"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                    ),
+                    runtime.Task(
+                        task_id="lead_adjudication",
+                        title="Lead adjudicates",
+                        task_type="lead_adjudication",
+                        required_skills={"lead"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead"], logger=logger)
+            shared_state = runtime.SharedState()
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            call_order = []
+
+            def _make_handler(task_name: str):
+                def _handler(_context, _task):
+                    call_order.append(task_name)
+                    return {"task_name": task_name}
+
+                return _handler
+
+            handlers = {
+                "lead_re_adjudication": _make_handler("lead_re_adjudication"),
+                "lead_adjudication": _make_handler("lead_adjudication"),
+            }
+
+            ran_any = run_lead_tasks_once(
+                lead_context=context,
+                lead_task_order=["lead_re_adjudication", "lead_adjudication"],
+                handlers=handlers,
+            )
+
+            self.assertTrue(ran_any)
+            self.assertEqual(call_order, ["lead_re_adjudication", "lead_adjudication"])
 
     def test_teammate_provider_reply_generation_with_heuristic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

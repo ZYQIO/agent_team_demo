@@ -2,11 +2,22 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Sequence
 
 from ..config import RuntimeConfig
 from ..core import Task
 from .markdown_audit import build_markdown_audit_tasks
+from .markdown_audit_handlers import build_markdown_audit_handlers
+
+
+HandlerMap = Dict[str, Callable[[Any, Task], Dict[str, Any]]]
+LeadTaskOrder = Sequence[str]
+
+
+@dataclasses.dataclass(frozen=True)
+class WorkflowRuntimeMetadata:
+    lead_task_order: tuple[str, ...] = ()
+    report_task_ids: tuple[str, ...] = ()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -14,6 +25,8 @@ class WorkflowPack:
     name: str
     description: str
     build_tasks: Callable[[pathlib.Path, RuntimeConfig, Dict[str, Any]], List[Task]]
+    build_handlers: Callable[[], HandlerMap]
+    runtime_metadata: WorkflowRuntimeMetadata
 
 
 WORKFLOW_PACKS: Dict[str, WorkflowPack] = {
@@ -21,6 +34,11 @@ WORKFLOW_PACKS: Dict[str, WorkflowPack] = {
         name="markdown-audit",
         description="Audit Markdown repositories with analysis, challenge, adjudication, and reporting.",
         build_tasks=build_markdown_audit_tasks,
+        build_handlers=build_markdown_audit_handlers,
+        runtime_metadata=WorkflowRuntimeMetadata(
+            lead_task_order=("lead_adjudication", "lead_re_adjudication"),
+            report_task_ids=("recommendation_pack",),
+        ),
     ),
 }
 
@@ -47,3 +65,18 @@ def build_workflow_tasks(
         runtime_config=runtime_config,
         workflow_options=dict(workflow_options or {}),
     )
+
+
+def build_workflow_handlers(workflow_pack: str) -> HandlerMap:
+    pack = resolve_workflow_pack(workflow_pack)
+    return pack.build_handlers()
+
+
+def build_workflow_lead_task_order(workflow_pack: str) -> List[str]:
+    pack = resolve_workflow_pack(workflow_pack)
+    return [str(task_id) for task_id in pack.runtime_metadata.lead_task_order]
+
+
+def build_workflow_runtime_metadata(workflow_pack: str) -> WorkflowRuntimeMetadata:
+    pack = resolve_workflow_pack(workflow_pack)
+    return pack.runtime_metadata
