@@ -756,7 +756,6 @@ class RuntimeLogicTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             workdir = pathlib.Path(tmp)
             session_prefix = "agent_analyst_alpha"
-            exact_orphan_session = session_prefix
             orphan_session = f"{session_prefix}_orphaned"
             active_session = session_prefix
             ipc_dir = workdir / "_tmux_worker_ipc"
@@ -771,11 +770,10 @@ class RuntimeLogicTests(unittest.TestCase):
                     return subprocess.CompletedProcess(
                         args=command,
                         returncode=0,
-                        stdout=f"{exact_orphan_session}\n{orphan_session}\nunrelated_session\n",
+                        stdout=f"{orphan_session}\nunrelated_session\n",
                         stderr="",
                     )
                 if command[:2] == ["tmux", "kill-session"] and command[-1] in {
-                    exact_orphan_session,
                     orphan_session,
                     active_session,
                 }:
@@ -801,18 +799,85 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(lifecycle.get("tmux_orphan_cleanup_attempted"))
             self.assertEqual(lifecycle.get("tmux_session_name"), active_session)
             self.assertEqual(lifecycle.get("tmux_session_name_strategy"), "preferred")
-            self.assertEqual(lifecycle.get("tmux_orphan_sessions_found"), 2)
-            self.assertEqual(lifecycle.get("tmux_orphan_sessions_cleaned"), 2)
+            self.assertFalse(lifecycle.get("tmux_preferred_session_found_preflight"))
+            self.assertEqual(lifecycle.get("tmux_orphan_sessions_found"), 1)
+            self.assertEqual(lifecycle.get("tmux_orphan_sessions_cleaned"), 1)
             self.assertEqual(lifecycle.get("tmux_orphan_sessions_failed"), 0)
             self.assertEqual(lifecycle.get("tmux_orphan_failed_sessions"), [])
             self.assertEqual(
                 calls,
                 [
                     ["tmux", "list-sessions", "-F", "#{session_name}"],
-                    ["tmux", "kill-session", "-t", exact_orphan_session],
                     ["tmux", "kill-session", "-t", orphan_session],
                     ["tmux", "new-session", "-d", "-s", active_session, mock.ANY],
                     ["tmux", "kill-session", "-t", active_session],
+                ],
+            )
+
+    def test_execute_worker_tmux_reuses_existing_preferred_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = session_prefix
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=0,
+                        stdout=f"{session_name}\n",
+                        stderr="",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr=f"duplicate session: {session_name}",
+                    )
+                if command[:2] == ["tmux", "respawn-pane"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("reused session ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"] and command[-1] == session_name:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(completed.stdout, "reused session ok")
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertEqual(lifecycle.get("tmux_session_name"), session_name)
+            self.assertTrue(lifecycle.get("tmux_preferred_session_found_preflight"))
+            self.assertEqual(lifecycle.get("tmux_session_name_strategy"), "preferred_reused_existing")
+            self.assertTrue(lifecycle.get("tmux_preferred_session_reuse_attempted"))
+            self.assertEqual(lifecycle.get("tmux_preferred_session_reuse_result"), "respawned")
+            self.assertEqual(lifecycle.get("tmux_preferred_session_reuse_error"), "")
+            self.assertTrue(lifecycle.get("tmux_preferred_session_reused_existing"))
+            self.assertTrue(lifecycle.get("tmux_preferred_session_reused"))
+            self.assertFalse(lifecycle.get("tmux_preferred_session_retried"))
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    ["tmux", "new-session", "-d", "-s", session_name, mock.ANY],
+                    ["tmux", "respawn-pane", "-k", "-t", f"{session_name}:0.0", mock.ANY],
+                    ["tmux", "kill-session", "-t", session_name],
                 ],
             )
 
@@ -914,8 +979,13 @@ class RuntimeLogicTests(unittest.TestCase):
                 "tmux_session_name": "agent_analyst_alpha_deadbeef",
                 "tmux_preferred_session_name": "agent_analyst_alpha",
                 "tmux_session_name_strategy": "preferred",
+                "tmux_preferred_session_found_preflight": True,
                 "tmux_preferred_session_retried": True,
                 "tmux_preferred_session_reused": True,
+                "tmux_preferred_session_reuse_attempted": False,
+                "tmux_preferred_session_reuse_result": "",
+                "tmux_preferred_session_reuse_error": "",
+                "tmux_preferred_session_reused_existing": False,
                 "tmux_session_started": True,
                 "tmux_orphan_cleanup_attempted": True,
                 "tmux_orphan_server_running": True,
@@ -1025,8 +1095,13 @@ class RuntimeLogicTests(unittest.TestCase):
                 "tmux_session_name": "agent_analyst_alpha_deadbeef",
                 "tmux_preferred_session_name": "agent_analyst_alpha",
                 "tmux_session_name_strategy": "preferred",
+                "tmux_preferred_session_found_preflight": True,
                 "tmux_preferred_session_retried": True,
                 "tmux_preferred_session_reused": True,
+                "tmux_preferred_session_reuse_attempted": False,
+                "tmux_preferred_session_reuse_result": "",
+                "tmux_preferred_session_reuse_error": "",
+                "tmux_preferred_session_reused_existing": False,
                 "tmux_session_started": True,
                 "tmux_orphan_cleanup_attempted": True,
                 "tmux_orphan_server_running": True,

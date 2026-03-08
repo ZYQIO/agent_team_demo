@@ -147,10 +147,60 @@ def _build_tmux_session_name_candidates(
     return candidates[:max_attempts]
 
 
+def _build_tmux_shell_command(
+    command: List[str],
+    stdout_file: pathlib.Path,
+    stderr_file: pathlib.Path,
+    status_file: pathlib.Path,
+) -> str:
+    return (
+        f"{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
+        f"2> {shlex.quote(str(stderr_file))}; "
+        f"echo $? > {shlex.quote(str(status_file))}"
+    )
+
+
+def _reuse_tmux_session(
+    command: List[str],
+    session_name: str,
+    stdout_file: pathlib.Path,
+    stderr_file: pathlib.Path,
+    status_file: pathlib.Path,
+) -> Dict[str, Any]:
+    shell_cmd = _build_tmux_shell_command(
+        command=command,
+        stdout_file=stdout_file,
+        stderr_file=stderr_file,
+        status_file=status_file,
+    )
+    reused = subprocess.run(
+        ["tmux", "respawn-pane", "-k", "-t", f"{session_name}:0.0", shell_cmd],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    stderr = (reused.stderr or "").strip()
+    if reused.returncode == 0:
+        return {
+            "ok": True,
+            "result": "respawned",
+            "error": "",
+            "completed": reused,
+        }
+    return {
+        "ok": False,
+        "result": "respawn_failed",
+        "error": stderr[:400],
+        "completed": reused,
+    }
+
+
 def _spawn_tmux_session(
     command: List[str],
     ipc_dir: pathlib.Path,
     session_prefix: str,
+    preferred_session_found: bool = False,
 ) -> Dict[str, Any]:
     attempts = 0
     retry_reason = ""
@@ -173,6 +223,10 @@ def _spawn_tmux_session(
     preferred_session_retried = False
     preferred_session_reused = False
     session_name_strategy = ""
+    preferred_session_reuse_attempted = False
+    preferred_session_reuse_result = ""
+    preferred_session_reuse_error = ""
+    preferred_session_reused_existing = False
     candidate_names = _build_tmux_session_name_candidates(
         session_prefix=session_prefix,
         max_attempts=TMUX_SESSION_SPAWN_MAX_ATTEMPTS,
@@ -183,10 +237,11 @@ def _spawn_tmux_session(
         session_name = candidate_names[attempts - 1]
         session_name_strategy = "preferred" if session_name == preferred_session_name else "unique_suffix"
         stdout_file, stderr_file, status_file = _build_tmux_ipc_paths(ipc_dir=ipc_dir, session_name=session_name)
-        shell_cmd = (
-            f"{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
-            f"2> {shlex.quote(str(stderr_file))}; "
-            f"echo $? > {shlex.quote(str(status_file))}"
+        shell_cmd = _build_tmux_shell_command(
+            command=command,
+            stdout_file=stdout_file,
+            stderr_file=stderr_file,
+            status_file=status_file,
         )
         last_spawn = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
@@ -204,6 +259,10 @@ def _spawn_tmux_session(
                 "session_name_strategy": session_name_strategy,
                 "preferred_session_retried": preferred_session_retried,
                 "preferred_session_reused": preferred_session_reused,
+                "preferred_session_reuse_attempted": preferred_session_reuse_attempted,
+                "preferred_session_reuse_result": preferred_session_reuse_result[:400],
+                "preferred_session_reuse_error": preferred_session_reuse_error[:400],
+                "preferred_session_reused_existing": preferred_session_reused_existing,
                 "stdout_file": stdout_file,
                 "stderr_file": stderr_file,
                 "status_file": status_file,
@@ -226,6 +285,49 @@ def _spawn_tmux_session(
         last_error = (last_spawn.stderr or "").strip()
         if _is_duplicate_tmux_session_error(last_error) and attempts < TMUX_SESSION_SPAWN_MAX_ATTEMPTS:
             retry_reason = last_error
+            if session_name == preferred_session_name and preferred_session_found:
+                preferred_session_reuse_attempted = True
+                reuse = _reuse_tmux_session(
+                    command=command,
+                    session_name=session_name,
+                    stdout_file=stdout_file,
+                    stderr_file=stderr_file,
+                    status_file=status_file,
+                )
+                preferred_session_reuse_result = str(reuse["result"])
+                preferred_session_reuse_error = str(reuse["error"])
+                if reuse["ok"]:
+                    preferred_session_reused = True
+                    preferred_session_reused_existing = True
+                    return {
+                        "ok": True,
+                        "session_name": session_name,
+                        "preferred_session_name": preferred_session_name,
+                        "session_name_strategy": "preferred_reused_existing",
+                        "preferred_session_retried": preferred_session_retried,
+                        "preferred_session_reused": preferred_session_reused,
+                        "preferred_session_reuse_attempted": preferred_session_reuse_attempted,
+                        "preferred_session_reuse_result": preferred_session_reuse_result[:400],
+                        "preferred_session_reuse_error": preferred_session_reuse_error[:400],
+                        "preferred_session_reused_existing": preferred_session_reused_existing,
+                        "stdout_file": stdout_file,
+                        "stderr_file": stderr_file,
+                        "status_file": status_file,
+                        "spawn": reuse["completed"],
+                        "attempts": attempts,
+                        "retried": False,
+                        "retry_reason": retry_reason[:400],
+                        "spawn_error": "",
+                        "stale_cleanup_attempted": stale_cleanup_attempted,
+                        "stale_cleanup_session_name": stale_cleanup_session_name,
+                        "stale_cleanup_result": stale_cleanup_result[:400],
+                        "stale_cleanup_error": stale_cleanup_error[:400],
+                        "stale_cleanup_retry_attempted": stale_cleanup_retry_attempted,
+                        "stale_cleanup_retry_result": stale_cleanup_retry_result[:400],
+                        "stale_cleanup_retry_error": stale_cleanup_retry_error[:400],
+                        "stale_session_exists_after_cleanup": stale_session_exists_after_cleanup,
+                        "stale_cleanup_verification_error": stale_cleanup_verification_error[:400],
+                    }
             if session_name == preferred_session_name:
                 preferred_session_retried = True
             stale_cleanup = _cleanup_stale_tmux_session(session_name=session_name)
@@ -248,6 +350,10 @@ def _spawn_tmux_session(
         "session_name_strategy": session_name_strategy,
         "preferred_session_retried": preferred_session_retried,
         "preferred_session_reused": preferred_session_reused,
+        "preferred_session_reuse_attempted": preferred_session_reuse_attempted,
+        "preferred_session_reuse_result": preferred_session_reuse_result[:400],
+        "preferred_session_reuse_error": preferred_session_reuse_error[:400],
+        "preferred_session_reused_existing": preferred_session_reused_existing,
         "stdout_file": stdout_file,
         "stderr_file": stderr_file,
         "status_file": status_file,
@@ -388,13 +494,19 @@ def _cleanup_active_tmux_session(session_name: str) -> Dict[str, Any]:
     return cleanup
 
 
-def _cleanup_orphan_tmux_sessions(session_prefix: str) -> Dict[str, Any]:
+def _cleanup_orphan_tmux_sessions(session_prefix: str, keep_exact_session: bool = False) -> Dict[str, Any]:
     listed = _list_tmux_sessions()
+    preferred_session_found = False
     matched = [
         name
         for name in listed["sessions"]
-        if str(name) == session_prefix or str(name).startswith(f"{session_prefix}_")
+        if str(name).startswith(f"{session_prefix}_")
     ]
+    for name in listed["sessions"]:
+        if str(name) == session_prefix:
+            preferred_session_found = True
+            if not keep_exact_session:
+                matched.append(name)
     cleaned = 0
     failed: List[str] = []
 
@@ -408,6 +520,7 @@ def _cleanup_orphan_tmux_sessions(session_prefix: str) -> Dict[str, Any]:
     return {
         "attempted": True,
         "server_running": bool(listed["server_running"]),
+        "preferred_session_found": preferred_session_found,
         "sessions_found": len(matched),
         "sessions_cleaned": cleaned,
         "sessions_failed": len(failed),
@@ -784,8 +897,13 @@ def execute_worker_tmux(
         "tmux_session_name": "",
         "tmux_preferred_session_name": "",
         "tmux_session_name_strategy": "",
+        "tmux_preferred_session_found_preflight": False,
         "tmux_preferred_session_retried": False,
         "tmux_preferred_session_reused": False,
+        "tmux_preferred_session_reuse_attempted": False,
+        "tmux_preferred_session_reuse_result": "",
+        "tmux_preferred_session_reuse_error": "",
+        "tmux_preferred_session_reused_existing": False,
         "tmux_session_started": False,
         "tmux_orphan_cleanup_attempted": False,
         "tmux_orphan_server_running": False,
@@ -821,9 +939,13 @@ def execute_worker_tmux(
         "tmux_ipc_files_removed": 0,
     }
 
-    orphan_cleanup = _cleanup_orphan_tmux_sessions(session_prefix=session_prefix)
+    orphan_cleanup = _cleanup_orphan_tmux_sessions(
+        session_prefix=session_prefix,
+        keep_exact_session=True,
+    )
     lifecycle["tmux_orphan_cleanup_attempted"] = bool(orphan_cleanup["attempted"])
     lifecycle["tmux_orphan_server_running"] = bool(orphan_cleanup["server_running"])
+    lifecycle["tmux_preferred_session_found_preflight"] = bool(orphan_cleanup.get("preferred_session_found", False))
     lifecycle["tmux_orphan_sessions_found"] = int(orphan_cleanup["sessions_found"])
     lifecycle["tmux_orphan_sessions_cleaned"] = int(orphan_cleanup["sessions_cleaned"])
     lifecycle["tmux_orphan_sessions_failed"] = int(orphan_cleanup["sessions_failed"])
@@ -834,6 +956,7 @@ def execute_worker_tmux(
         command=command,
         ipc_dir=ipc_dir,
         session_prefix=session_prefix,
+        preferred_session_found=bool(orphan_cleanup.get("preferred_session_found", False)),
     )
     session_name = str(spawn_result.get("session_name", ""))
     stdout_file = pathlib.Path(spawn_result.get("stdout_file"))
@@ -849,6 +972,18 @@ def execute_worker_tmux(
     lifecycle["tmux_session_name_strategy"] = str(spawn_result.get("session_name_strategy", ""))
     lifecycle["tmux_preferred_session_retried"] = bool(spawn_result.get("preferred_session_retried", False))
     lifecycle["tmux_preferred_session_reused"] = bool(spawn_result.get("preferred_session_reused", False))
+    lifecycle["tmux_preferred_session_reuse_attempted"] = bool(
+        spawn_result.get("preferred_session_reuse_attempted", False)
+    )
+    lifecycle["tmux_preferred_session_reuse_result"] = str(
+        spawn_result.get("preferred_session_reuse_result", "")
+    )
+    lifecycle["tmux_preferred_session_reuse_error"] = str(
+        spawn_result.get("preferred_session_reuse_error", "")
+    )
+    lifecycle["tmux_preferred_session_reused_existing"] = bool(
+        spawn_result.get("preferred_session_reused_existing", False)
+    )
     lifecycle["tmux_session_started"] = spawn.returncode == 0
     lifecycle["tmux_spawn_attempts"] = int(spawn_result.get("attempts", 0))
     lifecycle["tmux_spawn_retried"] = bool(spawn_result.get("retried", False))
@@ -950,8 +1085,13 @@ def _merge_tmux_lifecycle_into_diagnostics(
         "tmux_session_name",
         "tmux_preferred_session_name",
         "tmux_session_name_strategy",
+        "tmux_preferred_session_found_preflight",
         "tmux_preferred_session_retried",
         "tmux_preferred_session_reused",
+        "tmux_preferred_session_reuse_attempted",
+        "tmux_preferred_session_reuse_result",
+        "tmux_preferred_session_reuse_error",
+        "tmux_preferred_session_reused_existing",
         "tmux_session_started",
         "tmux_orphan_cleanup_attempted",
         "tmux_orphan_server_running",
@@ -1061,8 +1201,13 @@ def run_tmux_worker_task(
         "tmux_session_name": "",
         "tmux_preferred_session_name": "",
         "tmux_session_name_strategy": "",
+        "tmux_preferred_session_found_preflight": False,
         "tmux_preferred_session_retried": False,
         "tmux_preferred_session_reused": False,
+        "tmux_preferred_session_reuse_attempted": False,
+        "tmux_preferred_session_reuse_result": "",
+        "tmux_preferred_session_reuse_error": "",
+        "tmux_preferred_session_reused_existing": False,
         "tmux_session_started": False,
         "tmux_orphan_cleanup_attempted": False,
         "tmux_orphan_server_running": False,
@@ -1206,8 +1351,20 @@ def run_tmux_worker_task(
             stderr_len=len(completed.stderr or ""),
             tmux_timed_out=bool(lifecycle.get("tmux_timed_out", False)),
             tmux_session_name_strategy=str(lifecycle.get("tmux_session_name_strategy", "")),
+            tmux_preferred_session_found_preflight=bool(
+                lifecycle.get("tmux_preferred_session_found_preflight", False)
+            ),
             tmux_preferred_session_retried=bool(lifecycle.get("tmux_preferred_session_retried", False)),
             tmux_preferred_session_reused=bool(lifecycle.get("tmux_preferred_session_reused", False)),
+            tmux_preferred_session_reuse_attempted=bool(
+                lifecycle.get("tmux_preferred_session_reuse_attempted", False)
+            ),
+            tmux_preferred_session_reuse_result=str(
+                lifecycle.get("tmux_preferred_session_reuse_result", "")
+            ),
+            tmux_preferred_session_reused_existing=bool(
+                lifecycle.get("tmux_preferred_session_reused_existing", False)
+            ),
             tmux_cleanup_result=str(lifecycle.get("tmux_cleanup_result", "")),
             tmux_orphan_sessions_found=int(lifecycle.get("tmux_orphan_sessions_found", 0) or 0),
             tmux_orphan_sessions_cleaned=int(lifecycle.get("tmux_orphan_sessions_cleaned", 0) or 0),
@@ -1481,11 +1638,23 @@ def run_tmux_analyst_task_once(
                 timeout_phase=str(execution_diagnostics.get("timeout_phase", "")),
                 tmux_timed_out=bool(execution_diagnostics.get("tmux_timed_out", False)),
                 tmux_session_name_strategy=str(execution_diagnostics.get("tmux_session_name_strategy", "")),
+                tmux_preferred_session_found_preflight=bool(
+                    execution_diagnostics.get("tmux_preferred_session_found_preflight", False)
+                ),
                 tmux_preferred_session_retried=bool(
                     execution_diagnostics.get("tmux_preferred_session_retried", False)
                 ),
                 tmux_preferred_session_reused=bool(
                     execution_diagnostics.get("tmux_preferred_session_reused", False)
+                ),
+                tmux_preferred_session_reuse_attempted=bool(
+                    execution_diagnostics.get("tmux_preferred_session_reuse_attempted", False)
+                ),
+                tmux_preferred_session_reuse_result=str(
+                    execution_diagnostics.get("tmux_preferred_session_reuse_result", "")
+                ),
+                tmux_preferred_session_reused_existing=bool(
+                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
                 ),
                 tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
                 tmux_orphan_sessions_cleaned=int(
@@ -1541,11 +1710,23 @@ def run_tmux_analyst_task_once(
             timeout_phase=str(execution_diagnostics.get("timeout_phase", "")),
             tmux_timed_out=bool(execution_diagnostics.get("tmux_timed_out", False)),
             tmux_session_name_strategy=str(execution_diagnostics.get("tmux_session_name_strategy", "")),
+            tmux_preferred_session_found_preflight=bool(
+                execution_diagnostics.get("tmux_preferred_session_found_preflight", False)
+            ),
             tmux_preferred_session_retried=bool(
                 execution_diagnostics.get("tmux_preferred_session_retried", False)
             ),
             tmux_preferred_session_reused=bool(
                 execution_diagnostics.get("tmux_preferred_session_reused", False)
+            ),
+            tmux_preferred_session_reuse_attempted=bool(
+                execution_diagnostics.get("tmux_preferred_session_reuse_attempted", False)
+            ),
+            tmux_preferred_session_reuse_result=str(
+                execution_diagnostics.get("tmux_preferred_session_reuse_result", "")
+            ),
+            tmux_preferred_session_reused_existing=bool(
+                execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
             ),
             tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
             tmux_orphan_sessions_cleaned=int(execution_diagnostics.get("tmux_orphan_sessions_cleaned", 0) or 0),
