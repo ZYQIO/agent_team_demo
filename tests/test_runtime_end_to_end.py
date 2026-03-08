@@ -444,6 +444,11 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 "heuristic",
                 "--max-completed-tasks",
                 "3",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--no-auto-round3-on-challenge",
             ]
             partial = subprocess.run(
                 partial_cmd,
@@ -501,6 +506,126 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("resume_from"), str(checkpoint.resolve()))
+            runtime_config = summary.get("runtime_config", {})
+            self.assertEqual(runtime_config.get("peer_wait_seconds"), 1)
+            self.assertEqual(runtime_config.get("evidence_wait_seconds"), 1)
+            self.assertFalse(runtime_config.get("auto_round3_on_challenge", True))
+
+    def test_cli_tmux_resume_defers_cleanup_until_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output_tmux_resume"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "a.md").write_text("# A\nx\n", encoding="utf-8")
+            (target_dir / "b.md").write_text("plain\nplain\nplain\n", encoding="utf-8")
+
+            partial_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--teammate-mode",
+                "tmux",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--no-auto-round3-on-challenge",
+                "--max-completed-tasks",
+                "3",
+            ]
+            partial = subprocess.run(
+                partial_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(
+                partial.returncode,
+                0,
+                msg=f"stdout:\n{partial.stdout}\n\nstderr:\n{partial.stderr}",
+            )
+            partial_cleanup_summary = json.loads(
+                (output_dir / "tmux_session_cleanup_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(partial_cleanup_summary.get("skipped"), "deferred_for_resume")
+            self.assertIn("max_completed_tasks reached", partial_cleanup_summary.get("deferred_reason", ""))
+            partial_cleanup_history = [
+                json.loads(line)
+                for line in (output_dir / "tmux_session_cleanup_history.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual(partial_cleanup_history[-1]["summary"].get("skipped"), "deferred_for_resume")
+
+            checkpoint = output_dir / runtime.CHECKPOINT_FILENAME
+            resume_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--teammate-mode",
+                "tmux",
+                "--resume-from",
+                str(checkpoint),
+            ]
+            resumed = subprocess.run(
+                resume_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(
+                resumed.returncode,
+                0,
+                msg=f"stdout:\n{resumed.stdout}\n\nstderr:\n{resumed.stderr}",
+            )
+            recovery_summary = json.loads(
+                (output_dir / "tmux_session_recovery_summary.json").read_text(encoding="utf-8")
+            )
+            self.assertIn("skipped", recovery_summary)
+            run_summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(
+                pathlib.Path(run_summary.get("tmux_session_recovery_summary_path", "")).resolve(),
+                (output_dir / "tmux_session_recovery_summary.json").resolve(),
+            )
+            runtime_config = run_summary.get("runtime_config", {})
+            self.assertEqual(runtime_config.get("peer_wait_seconds"), 1)
+            self.assertEqual(runtime_config.get("evidence_wait_seconds"), 1)
+            self.assertFalse(runtime_config.get("auto_round3_on_challenge", True))
+            cleanup_history = [
+                json.loads(line)
+                for line in (output_dir / "tmux_session_cleanup_history.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertGreaterEqual(len(cleanup_history), 2)
+            self.assertEqual(cleanup_history[0]["summary"].get("skipped"), "deferred_for_resume")
+            self.assertEqual(
+                pathlib.Path(run_summary.get("tmux_session_cleanup_history_path", "")).resolve(),
+                (output_dir / "tmux_session_cleanup_history.jsonl").resolve(),
+            )
+            recovery_history = [
+                json.loads(line)
+                for line in (output_dir / "tmux_session_recovery_history.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertGreaterEqual(len(recovery_history), 1)
+            self.assertEqual(
+                pathlib.Path(run_summary.get("tmux_session_recovery_history_path", "")).resolve(),
+                (output_dir / "tmux_session_recovery_history.jsonl").resolve(),
+            )
 
     def test_cli_rewind_to_history_index_restarts_from_earlier_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

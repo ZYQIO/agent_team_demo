@@ -55,6 +55,7 @@ from agent_team.runtime import (
     default_history_replay_report_path,
     default_rewind_branch_output_dir,
     derive_evidence_focus_areas,
+    load_checkpoint,
     replay_task_states_from_events,
     resolve_checkpoint_by_event_index,
     resolve_checkpoint_by_history_index,
@@ -687,6 +688,40 @@ def validate_runtime_config(runtime_config: RuntimeConfig) -> None:
         raise ValueError("sum of re-adjudication weights must be > 0")
 
 
+def runtime_config_from_checkpoint_payload(payload: Dict[str, Any]) -> Optional[RuntimeConfig]:
+    runtime_payload = payload.get("runtime_config", {})
+    if not isinstance(runtime_payload, dict) or not runtime_payload:
+        return None
+    return RuntimeConfig(
+        **{
+            key: value
+            for key, value in runtime_payload.items()
+            if key in RuntimeConfig.__annotations__
+        }
+    )
+
+
+def apply_resume_runtime_defaults(
+    agent_team_config: AgentTeamConfig,
+    resume_from: Optional[pathlib.Path],
+) -> AgentTeamConfig:
+    if resume_from is None:
+        return agent_team_config
+    resume_payload = load_checkpoint(resume_from)
+    checkpoint_runtime = runtime_config_from_checkpoint_payload(resume_payload)
+    if checkpoint_runtime is None:
+        return agent_team_config
+    default_runtime = RuntimeConfig()
+    runtime_overrides = {
+        field: getattr(agent_team_config.runtime, field)
+        for field in RuntimeConfig.__annotations__
+        if getattr(agent_team_config.runtime, field) != getattr(default_runtime, field)
+    }
+    effective_runtime = dataclasses.replace(checkpoint_runtime, **runtime_overrides)
+    validate_runtime_config(effective_runtime)
+    return dataclasses.replace(agent_team_config, runtime=effective_runtime)
+
+
 def build_agent_team_config_from_args(
     args: argparse.Namespace,
     runtime_config: RuntimeConfig,
@@ -807,8 +842,6 @@ if __name__ == "__main__":
                 f"mismatches={report_meta['mismatch_count']}"
             )
             raise SystemExit(0)
-        agent_team_config = build_agent_team_config_from_args(args=args, runtime_config=runtime_config)
-
         rewind_history_index: Optional[int] = None
         rewind_event_index: Optional[int] = None
         rewind_event_resolution: Optional[Dict[str, Any]] = None
@@ -863,6 +896,11 @@ if __name__ == "__main__":
             resume_from_path = pathlib.Path(args.resume_from).resolve()
             if not resume_from_path.exists():
                 raise ValueError(f"--resume-from file does not exist: {resume_from_path}")
+        agent_team_config = build_agent_team_config_from_args(args=args, runtime_config=runtime_config)
+        agent_team_config = apply_resume_runtime_defaults(
+            agent_team_config=agent_team_config,
+            resume_from=resume_from_path,
+        )
         exit_code = run_team(
             goal=args.goal,
             target_dir=pathlib.Path(args.target).resolve(),

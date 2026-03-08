@@ -59,6 +59,8 @@ The intended architecture is now:
 | tmux explicit lease ledger | Completed | preferred-session reuse is now authorized from a runtime-managed lease ledger that also persists worker lease state into artifacts. |
 | tmux resume-aware lease recovery | Completed | resumed tmux runs now reconcile retained lease state up front and persist recovery summaries into runtime artifacts. |
 | tmux artifact verification hardening | Completed | verifier now checks tmux recovery, cleanup, lease, and diagnostics artifacts for tmux-mode runs. |
+| tmux deferred cleanup + artifact history | Completed | pause-for-resume runs now defer tmux cleanup, preserve retained leases for resume, and persist cleanup/recovery history alongside the latest summary snapshot. |
+| resume runtime-config inheritance | Completed | resumed runs now inherit checkpoint runtime settings by default and only change behavior when current CLI/config explicitly overrides them. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -262,6 +264,25 @@ Completed:
 - Added end-to-end coverage to assert verifier success against current tmux output artifacts
 - Re-verified both standard tmux output and resumed tmux recovery output with the hardened verifier
 
+### Phase N8: tmux Deferred Cleanup and Artifact History
+
+Completed:
+
+- Enhanced [engine.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/runtime/engine.py) so intentional `max_completed_tasks` pauses mark tmux cleanup as deferred-for-resume before shutdown cleanup executes
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so deferred cleanup preserves retained session leases and emits structured `deferred_for_resume` cleanup summaries instead of killing preferred sessions
+- Enhanced [persistence.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/runtime/persistence.py) so tmux cleanup and recovery summaries now also append to `tmux_session_cleanup_history.jsonl` and `tmux_session_recovery_history.jsonl`
+- Enhanced [verify_run.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py) so tmux-mode runs must also ship non-empty cleanup/recovery history artifacts
+- Extended tests to cover deferred cleanup semantics, resume-time history preservation, and faster tmux recovery callback validation
+
+### Phase N9: Resume Runtime-Config Inheritance
+
+Completed:
+
+- Enhanced [agent_team_runtime.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team_runtime.py) so resumed runs load runtime defaults from the checkpoint before CLI/config overrides are applied
+- Resumed runs now preserve prior behavior for `peer_wait_seconds`, `evidence_wait_seconds`, `auto_round3_on_challenge`, tmux mode, and the rest of the runtime config unless the current invocation explicitly changes them
+- Added logic coverage for both checkpoint-inherited defaults and explicit override precedence
+- Extended CLI end-to-end coverage to assert resumed runs keep prior runtime settings even when the resume command omits those flags
+
 ### Phase O: Second Workflow Pack
 
 Completed:
@@ -322,6 +343,8 @@ Key runtime artifact added during M8:
 - `tmux_session_recovery_summary.json` now persists resume-aware lease recovery decisions for tmux runs
 - `tmux_session_cleanup_summary.json` now persists the end-of-run cleanup sweep summary for retained tmux sessions
 - `tmux_session_leases.json` now persists explicit worker lease state, including authorization, reuse count, and cleanup status
+- `tmux_session_cleanup_history.jsonl` now preserves cleanup sweep history across pause/resume cycles instead of only keeping the latest cleanup snapshot
+- `tmux_session_recovery_history.jsonl` now preserves recovery sweep history across resumed runs instead of only keeping the latest recovery snapshot
 
 ## 6. Validation Status
 
@@ -337,7 +360,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `58/58` tests passed
+- `63/63` tests passed
 
 ### Smoke Runs
 
@@ -362,6 +385,27 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
   --extra-arg=--evidence-wait-seconds \
   --extra-arg=1 \
   --extra-arg=--no-auto-round3-on-challenge
+```
+
+tmux pause/resume history smoke run:
+
+```bash
+python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
+  --preset tmux \
+  --target agent_team_demo \
+  --output agent_team_demo/output_analysis_m8_resume_history_tmux \
+  --max-completed-tasks 3 \
+  --extra-arg=--peer-wait-seconds \
+  --extra-arg=1 \
+  --extra-arg=--evidence-wait-seconds \
+  --extra-arg=1 \
+  --extra-arg=--no-auto-round3-on-challenge
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
+  --preset tmux \
+  --target agent_team_demo \
+  --output agent_team_demo/output_analysis_m8_resume_history_tmux \
+  --resume-from agent_team_demo/output_analysis_m8_resume_history_tmux/run_checkpoint.json
 ```
 
 Second workflow smoke run:
@@ -401,6 +445,12 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m8_lease_ledger_tmux
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
+  --output agent_team_demo/output_analysis_m8_resume_history_tmux
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
+  --output agent_team_demo/output_analysis_m8_resume_config_history_tmux
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m9_repo_audit
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
@@ -423,6 +473,8 @@ Verified output directories:
 - [output_analysis_m8_lease_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_tmux)
 - [output_analysis_m8_lease_ledger_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_ledger_tmux)
 - [output_analysis_m8_resume_recovery_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_recovery_tmux)
+- [output_analysis_m8_resume_history_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_history_tmux)
+- [output_analysis_m8_resume_config_history_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_config_history_tmux)
 - [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
 - [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
 
@@ -512,6 +564,9 @@ Completed slice:
 - Added explicit lease-authorized reuse semantics and persisted `tmux_session_leases.json` state so exact-session reuse is driven by runtime state instead of implicit session discovery
 - Added resume-aware lease recovery so tmux runs can reconcile persisted retained-session state before dispatch and persist recovery summaries as first-class artifacts
 - Hardened verifier expectations so tmux-mode artifact integrity now includes diagnostics, recovery, cleanup, and lease outputs
+- Added deferred cleanup semantics for intentional pause-for-resume runs so retained tmux sessions survive until resume instead of being swept at pause time
+- Added persisted cleanup/recovery history artifacts so pause/resume cycles keep audit-visible sweep history instead of overwriting prior summaries
+- Added checkpoint-backed runtime-config inheritance so resumed runs keep prior wait/rounding/tmux behavior instead of silently drifting back to CLI defaults
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

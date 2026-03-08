@@ -484,6 +484,8 @@ def run_team(
         effective_rewind_seed_event_index if effective_rewind_seed_event_index is not None else "",
     )
     shared_state.set("run_rewind_seed_event_count", effective_rewind_seed_event_count)
+    shared_state.set("tmux_cleanup_deferred_for_resume", False)
+    shared_state.set("tmux_cleanup_deferred_reason", "")
     file_locks = FileLockRegistry(logger=logger)
     lead_context = AgentContext(
         profile=AgentProfile(name=lead_name, skills={"lead"}, agent_type="lead"),
@@ -654,6 +656,12 @@ def run_team(
         for worker in workers:
             worker.join(timeout=2.0)
         if runtime_config.teammate_mode == "tmux" and cleanup_tmux_analyst_sessions_fn is not None:
+            defer_tmux_cleanup = interrupted_reason.startswith("max_completed_tasks reached")
+            shared_state.set("tmux_cleanup_deferred_for_resume", defer_tmux_cleanup)
+            shared_state.set(
+                "tmux_cleanup_deferred_reason",
+                interrupted_reason if defer_tmux_cleanup else "",
+            )
             try:
                 cleanup_tmux_analyst_sessions_fn(
                     lead_context=lead_context,

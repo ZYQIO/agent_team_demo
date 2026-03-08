@@ -47,6 +47,20 @@ def load_json(path: pathlib.Path) -> Dict:
     return payload
 
 
+def load_jsonl(path: pathlib.Path) -> List[Dict]:
+    payloads: List[Dict] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for raw_line in fh:
+            line = raw_line.strip()
+            if not line:
+                continue
+            payload = json.loads(line)
+            if not isinstance(payload, dict):
+                raise ValueError(f"expected JSON object entries in {path}")
+            payloads.append(payload)
+    return payloads
+
+
 def fail(message: str) -> int:
     print(f"[verify] FAIL: {message}")
     return 1
@@ -131,6 +145,29 @@ def main() -> int:
                 )
             if summary_key == "tmux_session_leases_path" and not payload:
                 return fail("tmux_session_leases.json should not be empty for tmux runs")
+
+        required_tmux_history_paths = {
+            "tmux_session_recovery_history_path": {"generated_at", "kind", "resume_from", "interrupted_reason", "summary"},
+            "tmux_session_cleanup_history_path": {"generated_at", "kind", "resume_from", "interrupted_reason", "summary"},
+        }
+        for history_key, required_keys in required_tmux_history_paths.items():
+            raw_path = str(summary.get(history_key, "") or "")
+            if not raw_path:
+                return fail(f"Missing tmux history path in run_summary.json: {history_key}")
+            artifact_path = pathlib.Path(raw_path).resolve()
+            if not artifact_path.exists():
+                return fail(f"Referenced tmux history artifact does not exist: {artifact_path}")
+            payloads = load_jsonl(artifact_path)
+            if not payloads:
+                return fail(f"tmux history artifact is empty: {artifact_path.name}")
+            latest_payload = payloads[-1]
+            if not required_keys.issubset(set(latest_payload.keys())):
+                return fail(
+                    f"tmux history artifact missing required keys: {artifact_path.name} "
+                    f"missing={sorted(required_keys - set(latest_payload.keys()))}"
+                )
+            if not isinstance(latest_payload.get("summary"), dict):
+                return fail(f"tmux history entry has non-object summary: {artifact_path.name}")
 
     print("[verify] PASS")
     print(f"[verify] output={output_dir}")

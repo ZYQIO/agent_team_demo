@@ -581,25 +581,52 @@ def write_artifacts(
         encoding="utf-8",
     )
 
+    def append_history_entry(path: pathlib.Path, summary: Dict[str, Any], kind: str) -> str:
+        entry = {
+            "generated_at": utc_now(),
+            "kind": kind,
+            "resume_from": str(resume_from) if resume_from else "",
+            "interrupted_reason": interrupted_reason,
+            "summary": summary,
+        }
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        return str(path)
+
     tmux_cleanup_summary_path = output_dir / "tmux_session_cleanup_summary.json"
+    tmux_cleanup_history_path = output_dir / "tmux_session_cleanup_history.jsonl"
     tmux_cleanup_summary = state_snapshot.get("tmux_session_cleanup_summary", {})
     tmux_cleanup_summary_path_str = ""
+    tmux_cleanup_history_path_str = ""
     if isinstance(tmux_cleanup_summary, dict) and tmux_cleanup_summary:
         tmux_cleanup_summary_path.write_text(
             json.dumps(tmux_cleanup_summary, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         tmux_cleanup_summary_path_str = str(tmux_cleanup_summary_path)
+        tmux_cleanup_history_path_str = append_history_entry(
+            path=tmux_cleanup_history_path,
+            summary=tmux_cleanup_summary,
+            kind="cleanup",
+        )
 
     tmux_recovery_summary_path = output_dir / "tmux_session_recovery_summary.json"
+    tmux_recovery_history_path = output_dir / "tmux_session_recovery_history.jsonl"
     tmux_recovery_summary = state_snapshot.get("tmux_session_recovery_summary", {})
     tmux_recovery_summary_path_str = ""
+    tmux_recovery_history_path_str = ""
     if isinstance(tmux_recovery_summary, dict) and tmux_recovery_summary:
         tmux_recovery_summary_path.write_text(
             json.dumps(tmux_recovery_summary, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
         tmux_recovery_summary_path_str = str(tmux_recovery_summary_path)
+        tmux_recovery_history_path_str = append_history_entry(
+            path=tmux_recovery_history_path,
+            summary=tmux_recovery_summary,
+            kind="recovery",
+        )
 
     tmux_session_leases_path = output_dir / "tmux_session_leases.json"
     tmux_session_leases = state_snapshot.get("tmux_session_leases", {})
@@ -626,7 +653,9 @@ def write_artifacts(
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
         "tmux_session_cleanup_summary_path": tmux_cleanup_summary_path_str,
+        "tmux_session_cleanup_history_path": tmux_cleanup_history_path_str,
         "tmux_session_recovery_summary_path": tmux_recovery_summary_path_str,
+        "tmux_session_recovery_history_path": tmux_recovery_history_path_str,
         "tmux_session_leases_path": tmux_session_leases_path_str,
         "mailbox_model": state_snapshot.get("team", {}).get(
             "mailbox_model",

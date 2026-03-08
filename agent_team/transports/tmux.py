@@ -2140,6 +2140,28 @@ def recover_tmux_analyst_sessions(
 
 def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[AgentProfile]) -> Dict[str, Any]:
     session_names = [preferred_tmux_session_name(profile.name) for profile in analyst_profiles]
+    defer_cleanup = bool(lead_context.shared_state.get("tmux_cleanup_deferred_for_resume", False))
+    deferred_reason = str(lead_context.shared_state.get("tmux_cleanup_deferred_reason", "") or "")
+    if defer_cleanup:
+        summary = {
+            "sessions": session_names,
+            "cleaned": 0,
+            "already_exited": 0,
+            "failed": [],
+            "skipped": "deferred_for_resume",
+            "deferred_reason": deferred_reason,
+        }
+        lead_context.logger.log(
+            "tmux_worker_session_cleanup_sweep",
+            sessions=session_names,
+            cleaned=0,
+            already_exited=0,
+            failed=[],
+            skipped="deferred_for_resume",
+            deferred_reason=deferred_reason,
+        )
+        lead_context.shared_state.set("tmux_session_cleanup_summary", summary)
+        return summary
     if shutil.which("tmux") is None:
         summary = {
             "sessions": session_names,
@@ -2147,6 +2169,7 @@ def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[
             "already_exited": 0,
             "failed": [],
             "skipped": "tmux_unavailable",
+            "deferred_reason": "",
         }
         lead_context.logger.log(
             "tmux_worker_session_cleanup_sweep",
@@ -2155,6 +2178,7 @@ def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[
             already_exited=0,
             failed=[],
             skipped="tmux_unavailable",
+            deferred_reason="",
         )
         for profile in analyst_profiles:
             _update_tmux_session_lease(
@@ -2198,6 +2222,7 @@ def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[
         "already_exited": already_exited,
         "failed": failed,
         "skipped": "",
+        "deferred_reason": "",
     }
     lead_context.logger.log(
         "tmux_worker_session_cleanup_sweep",
@@ -2206,6 +2231,7 @@ def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[
         already_exited=already_exited,
         failed=failed,
         skipped="",
+        deferred_reason="",
     )
     lead_context.shared_state.set("tmux_session_cleanup_summary", summary)
     return summary

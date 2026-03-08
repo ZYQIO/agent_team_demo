@@ -1247,6 +1247,52 @@ class RuntimeLogicTests(unittest.TestCase):
                 ],
             )
 
+    def test_cleanup_tmux_analyst_sessions_can_defer_for_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            shared_state = runtime.SharedState()
+            shared_state.set("tmux_cleanup_deferred_for_resume", True)
+            shared_state.set("tmux_cleanup_deferred_reason", "max_completed_tasks reached (3)")
+            shared_state.set(
+                "tmux_session_leases",
+                {
+                    "analyst_alpha": {
+                        "worker": "analyst_alpha",
+                        "session_name": "agent_analyst_alpha",
+                        "status": "retained",
+                    }
+                },
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=mock.Mock(),
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=mock.Mock(),
+                mailbox=mock.Mock(),
+                file_locks=mock.Mock(),
+                shared_state=shared_state,
+                logger=logger,
+            )
+            analyst_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            ]
+
+            with mock.patch.object(runtime.tmux_transport.subprocess, "run") as tmux_run:
+                summary = runtime.cleanup_tmux_analyst_sessions(
+                    lead_context=lead_context,
+                    analyst_profiles=analyst_profiles,
+                )
+
+            tmux_run.assert_not_called()
+            self.assertEqual(summary["skipped"], "deferred_for_resume")
+            self.assertEqual(summary["deferred_reason"], "max_completed_tasks reached (3)")
+            lease_entry = shared_state.get("tmux_session_leases", {}).get("analyst_alpha", {})
+            self.assertEqual(lease_entry.get("status"), "retained")
+
     def test_recover_tmux_analyst_sessions_marks_retained_session_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -1395,7 +1441,19 @@ class RuntimeLogicTests(unittest.TestCase):
                                     "allowed_agent_types": ["lead"],
                                     "status": "completed",
                                     "owner": "lead",
-                                }
+                                },
+                                {
+                                    "task_id": "pending",
+                                    "title": "Pending",
+                                    "task_type": "lead_re_adjudication",
+                                    "required_skills": ["lead"],
+                                    "dependencies": [],
+                                    "payload": {},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["lead"],
+                                    "status": "pending",
+                                    "owner": None,
+                                },
                             ]
                         },
                         "shared_state": {},
@@ -1435,6 +1493,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     require_llm=False,
                     provider_timeout_sec=5,
                     resume_from=resume_from,
+                    max_completed_tasks=1,
                     teammate_agent_factory=fake_worker_factory,
                     run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
                     recover_tmux_analyst_sessions_fn=fake_recovery,
@@ -1500,6 +1559,108 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(
                 cleanup_calls,
                 [{"lead": "lead", "analysts": ["analyst_alpha", "analyst_beta"]}],
+            )
+
+    def test_run_team_tmux_defers_cleanup_when_paused_for_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            resume_from = output_dir / runtime.CHECKPOINT_FILENAME
+            output_dir.mkdir(parents=True, exist_ok=True)
+            resume_from.write_text(
+                json.dumps(
+                    {
+                        "version": runtime.CHECKPOINT_VERSION,
+                        "saved_at": runtime.utc_now(),
+                        "goal": "test",
+                        "target_dir": str(target_dir),
+                        "output_dir": str(output_dir),
+                        "runtime_config": runtime.RuntimeConfig(teammate_mode="tmux").to_dict(),
+                        "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                        "task_board": {
+                            "tasks": [
+                                {
+                                    "task_id": "done",
+                                    "title": "Done",
+                                    "task_type": "lead_adjudication",
+                                    "required_skills": ["lead"],
+                                    "dependencies": [],
+                                    "payload": {},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["lead"],
+                                    "status": "completed",
+                                    "owner": "lead",
+                                },
+                                {
+                                    "task_id": "pending",
+                                    "title": "Pending",
+                                    "task_type": "lead_re_adjudication",
+                                    "required_skills": ["lead"],
+                                    "dependencies": [],
+                                    "payload": {},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["lead"],
+                                    "status": "pending",
+                                    "owner": None,
+                                },
+                            ]
+                        },
+                        "shared_state": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            workflow_pack = mock.Mock()
+            workflow_pack.build_handlers.return_value = {}
+            workflow_pack.build_tasks.return_value = []
+            workflow_pack.runtime_metadata = mock.Mock(lead_task_order=(), report_task_ids=())
+            cleanup_flags = []
+
+            def fake_worker_factory(**_kwargs):
+                return threading.Thread(target=lambda: None)
+
+            def fake_cleanup(lead_context, analyst_profiles):
+                cleanup_flags.append(
+                    {
+                        "deferred": bool(lead_context.shared_state.get("tmux_cleanup_deferred_for_resume", False)),
+                        "reason": str(lead_context.shared_state.get("tmux_cleanup_deferred_reason", "")),
+                        "analysts": [profile.name for profile in analyst_profiles],
+                    }
+                )
+                return {"cleaned": 0}
+
+            with mock.patch("agent_team.runtime.engine.resolve_workflow_pack", return_value=workflow_pack):
+                exit_code = runtime.run_team_impl(
+                    goal="test",
+                    target_dir=target_dir,
+                    output_dir=output_dir,
+                    runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                    provider_name="heuristic",
+                    model="heuristic-v1",
+                    openai_api_key_env="OPENAI_API_KEY",
+                    openai_base_url="https://api.openai.com/v1",
+                    require_llm=False,
+                    provider_timeout_sec=5,
+                    resume_from=resume_from,
+                    max_completed_tasks=1,
+                    teammate_agent_factory=fake_worker_factory,
+                    run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
+                    cleanup_tmux_analyst_sessions_fn=fake_cleanup,
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            self.assertEqual(
+                cleanup_flags,
+                [
+                    {
+                        "deferred": True,
+                        "reason": "max_completed_tasks reached (1)",
+                        "analysts": ["analyst_alpha", "analyst_beta"],
+                    }
+                ],
             )
 
     def test_run_team_tmux_logs_cleanup_callback_failure(self) -> None:
@@ -2144,6 +2305,103 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(team_config.model.model, "gpt-4.1-mini")
             self.assertEqual(team_config.workflow.preset, "custom")
             self.assertEqual(team_config.team.agents[0].name, "doc_analyst")
+
+    def test_apply_resume_runtime_defaults_uses_checkpoint_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            checkpoint = root / "run_checkpoint.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "version": runtime.CHECKPOINT_VERSION,
+                        "saved_at": runtime.utc_now(),
+                        "goal": "resume",
+                        "target_dir": str(root),
+                        "output_dir": str(root),
+                        "runtime_config": runtime.RuntimeConfig(
+                            teammate_mode="tmux",
+                            peer_wait_seconds=1,
+                            evidence_wait_seconds=1,
+                            auto_round3_on_challenge=False,
+                        ).to_dict(),
+                        "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                        "task_board": {"tasks": []},
+                        "shared_state": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            base_config = runtime.build_agent_team_config(
+                runtime_config=runtime.RuntimeConfig(),
+                host_kind="generic-cli",
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                provider_timeout_sec=60,
+                workflow_pack="markdown-audit",
+            )
+
+            effective = runtime.apply_resume_runtime_defaults(
+                agent_team_config=base_config,
+                resume_from=checkpoint,
+            )
+
+            self.assertEqual(effective.runtime.teammate_mode, "tmux")
+            self.assertEqual(effective.runtime.peer_wait_seconds, 1)
+            self.assertEqual(effective.runtime.evidence_wait_seconds, 1)
+            self.assertFalse(effective.runtime.auto_round3_on_challenge)
+
+    def test_apply_resume_runtime_defaults_preserves_explicit_runtime_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            checkpoint = root / "run_checkpoint.json"
+            checkpoint.write_text(
+                json.dumps(
+                    {
+                        "version": runtime.CHECKPOINT_VERSION,
+                        "saved_at": runtime.utc_now(),
+                        "goal": "resume",
+                        "target_dir": str(root),
+                        "output_dir": str(root),
+                        "runtime_config": runtime.RuntimeConfig(
+                            teammate_mode="tmux",
+                            peer_wait_seconds=1,
+                            evidence_wait_seconds=1,
+                            auto_round3_on_challenge=False,
+                        ).to_dict(),
+                        "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                        "task_board": {"tasks": []},
+                        "shared_state": {},
+                    }
+                ),
+                encoding="utf-8",
+            )
+            base_config = runtime.build_agent_team_config(
+                runtime_config=runtime.RuntimeConfig(
+                    peer_wait_seconds=7,
+                    evidence_wait_seconds=9,
+                ),
+                host_kind="generic-cli",
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                provider_timeout_sec=60,
+                workflow_pack="markdown-audit",
+            )
+
+            effective = runtime.apply_resume_runtime_defaults(
+                agent_team_config=base_config,
+                resume_from=checkpoint,
+            )
+
+            self.assertEqual(effective.runtime.teammate_mode, "tmux")
+            self.assertEqual(effective.runtime.peer_wait_seconds, 7)
+            self.assertEqual(effective.runtime.evidence_wait_seconds, 9)
+            self.assertFalse(effective.runtime.auto_round3_on_challenge)
 
 
 if __name__ == "__main__":
