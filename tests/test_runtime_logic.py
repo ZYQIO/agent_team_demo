@@ -857,6 +857,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     workdir=workdir,
                     session_prefix=session_prefix,
                     timeout_sec=1,
+                    allow_existing_session_reuse=True,
                 )
 
             self.assertEqual(completed.returncode, 0)
@@ -877,6 +878,60 @@ class RuntimeLogicTests(unittest.TestCase):
                     ["tmux", "list-sessions", "-F", "#{session_name}"],
                     ["tmux", "new-session", "-d", "-s", session_name, mock.ANY],
                     ["tmux", "respawn-pane", "-k", "-t", f"{session_name}:0.0", mock.ANY],
+                    ["tmux", "kill-session", "-t", session_name],
+                ],
+            )
+
+    def test_execute_worker_tmux_cleans_exact_session_when_reuse_not_authorized(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = session_prefix
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+            calls = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                calls.append(command)
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=0,
+                        stdout=f"{session_name}\n",
+                        stderr="",
+                    )
+                if command[:2] == ["tmux", "kill-session"] and command[-1] == session_name:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "new-session"]:
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("fresh session ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertTrue(lifecycle.get("tmux_preferred_session_found_preflight"))
+            self.assertFalse(lifecycle.get("tmux_preferred_session_reuse_authorized"))
+            self.assertFalse(lifecycle.get("tmux_preferred_session_reuse_attempted"))
+            self.assertFalse(lifecycle.get("tmux_preferred_session_reused_existing"))
+            self.assertEqual(
+                calls,
+                [
+                    ["tmux", "list-sessions", "-F", "#{session_name}"],
+                    ["tmux", "kill-session", "-t", session_name],
+                    ["tmux", "new-session", "-d", "-s", session_name, mock.ANY],
                     ["tmux", "kill-session", "-t", session_name],
                 ],
             )
@@ -992,14 +1047,21 @@ class RuntimeLogicTests(unittest.TestCase):
                 runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
             ]
             retain_flags = []
+            allow_reuse_flags = []
 
             def fake_run_worker_task(**kwargs):
                 retain_flags.append(bool(kwargs.get("retain_session_for_reuse", False)))
+                allow_reuse_flags.append(bool(kwargs.get("allow_existing_session_reuse", False)))
                 return {
                     "ok": True,
                     "transport": "tmux",
                     "payload": {"result": {"ok": True}, "state_updates": {}},
-                    "diagnostics": {"tmux_session_retained_for_reuse": kwargs.get("retain_session_for_reuse", False)},
+                    "diagnostics": {
+                        "tmux_session_retained_for_reuse": kwargs.get("retain_session_for_reuse", False),
+                        "tmux_preferred_session_reused_existing": kwargs.get(
+                            "allow_existing_session_reuse", False
+                        ),
+                    },
                 }
 
             ran = runtime.tmux_transport.run_tmux_analyst_task_once(
@@ -1013,12 +1075,123 @@ class RuntimeLogicTests(unittest.TestCase):
 
             self.assertTrue(ran)
             self.assertEqual(retain_flags, [True])
+            self.assertEqual(allow_reuse_flags, [False])
+            lease_entry = shared_state.get("tmux_session_leases", {}).get("analyst_alpha", {})
+            self.assertEqual(lease_entry.get("status"), "retained")
+            self.assertTrue(lease_entry.get("retained_for_reuse"))
+
+    def test_run_tmux_analyst_task_once_authorizes_reuse_from_lease_registry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="heading_audit",
+                        title="Heading audit",
+                        task_type="heading_audit",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "analyst_alpha"], logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set(
+                "tmux_session_leases",
+                {
+                    "analyst_alpha": {
+                        "worker": "analyst_alpha",
+                        "session_name": "agent_analyst_alpha",
+                        "status": "retained",
+                        "reuse_count": 0,
+                    }
+                },
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            analyst_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            ]
+            allow_reuse_flags = []
+
+            def fake_run_worker_task(**kwargs):
+                allow_reuse_flags.append(bool(kwargs.get("allow_existing_session_reuse", False)))
+                return {
+                    "ok": True,
+                    "transport": "tmux",
+                    "payload": {"result": {"ok": True}, "state_updates": {}},
+                    "diagnostics": {
+                        "tmux_preferred_session_reused_existing": True,
+                        "tmux_preferred_session_reuse_authorized": kwargs.get(
+                            "allow_existing_session_reuse", False
+                        ),
+                        "tmux_preferred_session_name": "agent_analyst_alpha",
+                        "tmux_cleanup_result": "killed",
+                    },
+                }
+
+            ran = runtime.tmux_transport.run_tmux_analyst_task_once(
+                lead_context=lead_context,
+                analyst_profiles=analyst_profiles,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                run_worker_task_fn=fake_run_worker_task,
+                supported_task_types=runtime.TMUX_ANALYST_TASK_TYPES,
+                worker_timeout_sec=10,
+            )
+
+            self.assertTrue(ran)
+            self.assertEqual(allow_reuse_flags, [True])
+            lease_entry = shared_state.get("tmux_session_leases", {}).get("analyst_alpha", {})
+            self.assertEqual(lease_entry.get("status"), "released")
+            self.assertTrue(lease_entry.get("reuse_authorized"))
+            self.assertTrue(lease_entry.get("reused_existing"))
+            self.assertEqual(lease_entry.get("reuse_count"), 1)
 
     def test_cleanup_tmux_analyst_sessions_sweeps_preferred_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
             shared_state = runtime.SharedState()
+            shared_state.set(
+                "tmux_session_leases",
+                {
+                    "analyst_alpha": {
+                        "worker": "analyst_alpha",
+                        "session_name": "agent_analyst_alpha",
+                        "status": "retained",
+                    },
+                    "analyst_beta": {
+                        "worker": "analyst_beta",
+                        "session_name": "agent_analyst_beta",
+                        "status": "retained",
+                    },
+                },
+            )
             lead_context = runtime.AgentContext(
                 profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
                 target_dir=output_dir,
@@ -1061,6 +1234,11 @@ class RuntimeLogicTests(unittest.TestCase):
                 shared_state.get("tmux_session_cleanup_summary"),
                 summary,
             )
+            leases = shared_state.get("tmux_session_leases", {})
+            self.assertEqual(leases.get("analyst_alpha", {}).get("status"), "cleanup_swept")
+            self.assertEqual(leases.get("analyst_alpha", {}).get("last_cleanup_result"), "killed")
+            self.assertEqual(leases.get("analyst_beta", {}).get("status"), "cleanup_swept")
+            self.assertEqual(leases.get("analyst_beta", {}).get("last_cleanup_result"), "already_exited")
             self.assertEqual(
                 calls,
                 [

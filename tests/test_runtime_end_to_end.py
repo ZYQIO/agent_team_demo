@@ -339,6 +339,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("tmux_preferred_session_reuse_attempted", first_record)
             self.assertIn("tmux_preferred_session_reuse_result", first_record)
             self.assertIn("tmux_preferred_session_reuse_error", first_record)
+            self.assertIn("tmux_preferred_session_reuse_authorized", first_record)
             self.assertIn("tmux_preferred_session_reused_existing", first_record)
             self.assertIn("tmux_reuse_retention_requested", first_record)
             self.assertIn("tmux_session_retained_for_reuse", first_record)
@@ -365,10 +366,26 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("failed", cleanup_summary)
             self.assertIn(cleanup_summary.get("skipped", ""), {"", "tmux_unavailable"})
 
+            leases_path = output_dir / "tmux_session_leases.json"
+            self.assertTrue(leases_path.exists())
+            leases = json.loads(leases_path.read_text(encoding="utf-8"))
+            self.assertIn("analyst_alpha", leases)
+            self.assertIn("analyst_beta", leases)
+            self.assertIn(
+                leases["analyst_alpha"].get("status"),
+                {"cleanup_skipped_tmux_unavailable", "cleanup_swept", "cleanup_failed"},
+            )
+            self.assertIn("reuse_authorized", leases["analyst_alpha"])
+            self.assertIn("session_name", leases["analyst_alpha"])
+
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(
                 pathlib.Path(summary.get("tmux_session_cleanup_summary_path", "")).resolve(),
                 cleanup_summary_path.resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(summary.get("tmux_session_leases_path", "")).resolve(),
+                leases_path.resolve(),
             )
 
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:

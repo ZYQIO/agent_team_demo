@@ -56,6 +56,7 @@ The intended architecture is now:
 | tmux preferred-session reuse recovery | Completed | worker launches now reuse exact existing preferred sessions via `respawn-pane` before falling back to cleanup/retry. |
 | tmux session lease strategy | Completed | preferred worker sessions can now be retained across likely future analyst tasks and swept at the end of the run. |
 | tmux cleanup sweep artifact | Completed | retained-session cleanup summaries now persist as a standalone artifact and are referenced from `run_summary.json`. |
+| tmux explicit lease ledger | Completed | preferred-session reuse is now authorized from a runtime-managed lease ledger that also persists worker lease state into artifacts. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -233,6 +234,15 @@ Completed:
 - Added persisted `tmux_session_cleanup_summary.json` artifact plus `run_summary.json` reference for cleanup sweep results
 - Extended tests to cover preferred-session lease retention, cleanup sweep behavior, and engine-level cleanup callback execution
 
+### Phase N5: tmux Explicit Lease Ledger
+
+Completed:
+
+- Enhanced [tmux.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team/transports/tmux.py) so exact preferred-session reuse is only authorized when the runtime lease ledger marks that worker session as retained
+- Added runtime-managed `tmux_session_leases` state entries with per-worker status, authorization flag, reuse count, transport, and cleanup results
+- Added persisted [tmux_session_leases.json](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_ledger_tmux/tmux_session_leases.json) artifact plus `run_summary.json` reference for lease-ledger inspection
+- Extended tests to cover unauthorized exact-session cleanup, lease-authorized reuse dispatch, lease-ledger updates, and end-to-end artifact persistence
+
 ### Phase O: Second Workflow Pack
 
 Completed:
@@ -290,6 +300,7 @@ Key runtime artifact added during M8:
 - `tmux_worker_diagnostics.jsonl` now also includes orphan-session preflight cleanup metadata for interruption recovery paths
 - `tmux_worker_diagnostics.jsonl` now also includes cross-task preferred-session lease retention metadata
 - `tmux_session_cleanup_summary.json` now persists the end-of-run cleanup sweep summary for retained tmux sessions
+- `tmux_session_leases.json` now persists explicit worker lease state, including authorization, reuse count, and cleanup status
 
 ## 6. Validation Status
 
@@ -305,7 +316,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `53/53` tests passed
+- `55/55` tests passed
 
 ### Smoke Runs
 
@@ -324,7 +335,7 @@ tmux smoke run:
 python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
   --preset tmux \
   --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m8_lease_tmux \
+  --output agent_team_demo/output_analysis_m8_lease_ledger_tmux \
   --extra-arg=--peer-wait-seconds \
   --extra-arg=1 \
   --extra-arg=--evidence-wait-seconds \
@@ -366,7 +377,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m7_fast
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m8_lease_tmux
+  --output agent_team_demo/output_analysis_m8_lease_ledger_tmux
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
   --output agent_team_demo/output_analysis_m9_repo_audit
@@ -389,6 +400,7 @@ Verified output directories:
 - [output_analysis_m8_stable_session_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stable_session_tmux)
 - [output_analysis_m8_reuse_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_reuse_tmux)
 - [output_analysis_m8_lease_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_tmux)
+- [output_analysis_m8_lease_ledger_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_ledger_tmux)
 - [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
 - [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
 
@@ -475,6 +487,7 @@ Completed slice:
 - Added preferred-session reuse via `respawn-pane` so exact existing worker sessions can recover without forced cleanup first
 - Added preferred-session lease hints so tmux workers can retain reusable sessions when more analyst work is pending, plus an end-of-run cleanup sweep to reconcile retained sessions
 - Added persisted cleanup sweep artifact so retained-session reconciliation is visible outside `events.jsonl` and `shared_state.json`
+- Added explicit lease-authorized reuse semantics and persisted `tmux_session_leases.json` state so exact-session reuse is driven by runtime state instead of implicit session discovery
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

@@ -140,6 +140,7 @@ def _execute_worker_tmux(
     session_prefix: str,
     timeout_sec: int,
     retain_session_for_reuse: bool = False,
+    allow_existing_session_reuse: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     return tmux_transport.execute_worker_tmux(
         command=command,
@@ -147,6 +148,7 @@ def _execute_worker_tmux(
         session_prefix=session_prefix,
         timeout_sec=timeout_sec,
         retain_session_for_reuse=retain_session_for_reuse,
+        allow_existing_session_reuse=allow_existing_session_reuse,
     )
 
 
@@ -159,6 +161,7 @@ def _run_tmux_worker_task(
     logger: EventLogger,
     timeout_sec: int = 120,
     retain_session_for_reuse: bool = False,
+    allow_existing_session_reuse: bool = False,
 ) -> Dict[str, Any]:
     return tmux_transport.run_tmux_worker_task(
         runtime_script=runtime_script,
@@ -169,6 +172,7 @@ def _run_tmux_worker_task(
         logger=logger,
         timeout_sec=timeout_sec,
         retain_session_for_reuse=retain_session_for_reuse,
+        allow_existing_session_reuse=allow_existing_session_reuse,
         execute_worker_tmux_fn=_execute_worker_tmux,
         execute_worker_subprocess_fn=_execute_worker_subprocess,
         which_fn=shutil.which,
