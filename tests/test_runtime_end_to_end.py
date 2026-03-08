@@ -319,6 +319,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         events.append(json.loads(line))
             event_names = {item.get("event") for item in events}
             self.assertIn("teammate_mode_tmux_enabled", event_names)
+            self.assertIn("tmux_worker_session_recovery_sweep", event_names)
             self.assertIn("tmux_worker_task_dispatched", event_names)
             self.assertIn("tmux_worker_task_completed", event_names)
             self.assertIn("tmux_worker_session_cleanup_sweep", event_names)
@@ -366,6 +367,16 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("failed", cleanup_summary)
             self.assertIn(cleanup_summary.get("skipped", ""), {"", "tmux_unavailable"})
 
+            recovery_summary_path = output_dir / "tmux_session_recovery_summary.json"
+            self.assertTrue(recovery_summary_path.exists())
+            recovery_summary = json.loads(recovery_summary_path.read_text(encoding="utf-8"))
+            self.assertIn("workers", recovery_summary)
+            self.assertIn("recovered", recovery_summary)
+            self.assertIn("missing", recovery_summary)
+            self.assertIn("inactive", recovery_summary)
+            self.assertIn("failed", recovery_summary)
+            self.assertIn(recovery_summary.get("skipped", ""), {"", "no_leases", "tmux_unavailable"})
+
             leases_path = output_dir / "tmux_session_leases.json"
             self.assertTrue(leases_path.exists())
             leases = json.loads(leases_path.read_text(encoding="utf-8"))
@@ -382,6 +393,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 pathlib.Path(summary.get("tmux_session_cleanup_summary_path", "")).resolve(),
                 cleanup_summary_path.resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(summary.get("tmux_session_recovery_summary_path", "")).resolve(),
+                recovery_summary_path.resolve(),
             )
             self.assertEqual(
                 pathlib.Path(summary.get("tmux_session_leases_path", "")).resolve(),

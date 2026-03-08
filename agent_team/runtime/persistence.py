@@ -591,6 +591,16 @@ def write_artifacts(
         )
         tmux_cleanup_summary_path_str = str(tmux_cleanup_summary_path)
 
+    tmux_recovery_summary_path = output_dir / "tmux_session_recovery_summary.json"
+    tmux_recovery_summary = state_snapshot.get("tmux_session_recovery_summary", {})
+    tmux_recovery_summary_path_str = ""
+    if isinstance(tmux_recovery_summary, dict) and tmux_recovery_summary:
+        tmux_recovery_summary_path.write_text(
+            json.dumps(tmux_recovery_summary, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmux_recovery_summary_path_str = str(tmux_recovery_summary_path)
+
     tmux_session_leases_path = output_dir / "tmux_session_leases.json"
     tmux_session_leases = state_snapshot.get("tmux_session_leases", {})
     tmux_session_leases_path_str = ""
@@ -616,6 +626,7 @@ def write_artifacts(
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
         "tmux_session_cleanup_summary_path": tmux_cleanup_summary_path_str,
+        "tmux_session_recovery_summary_path": tmux_recovery_summary_path_str,
         "tmux_session_leases_path": tmux_session_leases_path_str,
         "mailbox_model": state_snapshot.get("team", {}).get(
             "mailbox_model",

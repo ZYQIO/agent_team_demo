@@ -62,6 +62,7 @@ TaskHandlers = Mapping[str, TaskHandler]
 TeammateFactory = Callable[..., threading.Thread]
 TmuxRunner = Callable[[AgentContext, Sequence[AgentProfile], pathlib.Path, int], bool]
 TmuxCleanupRunner = Callable[[AgentContext, Sequence[AgentProfile]], Any]
+TmuxRecoveryRunner = Callable[[AgentContext, Sequence[AgentProfile], Optional[pathlib.Path]], Any]
 
 
 def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
@@ -241,6 +242,7 @@ def run_team(
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
+    recover_tmux_analyst_sessions_fn: Optional[TmuxRecoveryRunner] = None,
     cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
     runtime_script: Optional[pathlib.Path] = None,
 ) -> int:
@@ -496,6 +498,19 @@ def run_team(
         shared_state=shared_state,
         logger=logger,
     )
+    if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
+        try:
+            recover_tmux_analyst_sessions_fn(
+                lead_context=lead_context,
+                analyst_profiles=analyst_profiles,
+                resume_from=resume_from,
+            )
+        except Exception as exc:  # pragma: no cover - defensive path
+            logger.log(
+                "tmux_worker_session_recovery_failed",
+                error=f"{type(exc).__name__}: {exc}",
+                resume_from=str(resume_from) if resume_from else "",
+            )
 
     stop_event = threading.Event()
     workers = [

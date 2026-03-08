@@ -59,7 +59,7 @@ def _get_tmux_session_lease(shared_state: Any, worker_name: str) -> Dict[str, An
 def _lease_allows_preferred_session_reuse(shared_state: Any, worker_name: str) -> bool:
     lease = _get_tmux_session_lease(shared_state=shared_state, worker_name=worker_name)
     return (
-        str(lease.get("status", "")) == "retained"
+        str(lease.get("status", "")) in {"retained", "recovered_available"}
         and str(lease.get("session_name", "")) == preferred_tmux_session_name(worker_name)
     )
 
@@ -77,6 +77,7 @@ def _update_tmux_session_lease(
     reuse_authorized: bool = False,
     error: str = "",
     session_name: str = "",
+    recovery_result: str = "",
 ) -> Dict[str, Any]:
     leases = _load_tmux_session_leases(lead_context.shared_state)
     current = dict(leases.get(worker_name, {}))
@@ -104,6 +105,8 @@ def _update_tmux_session_lease(
         "reused_existing": bool(reused_existing),
         "reuse_count": reuse_count,
         "retained_at": retained_at,
+        "recovery_result": str(recovery_result or current.get("recovery_result", "")),
+        "recovered_at": utc_now() if recovery_result else str(current.get("recovered_at", "")),
         "updated_at": utc_now(),
         "error": str(error or "")[:400],
     }
@@ -123,9 +126,26 @@ def _update_tmux_session_lease(
         reused_existing=bool(reused_existing),
         reuse_count=reuse_count,
         retained_at=retained_at,
+        recovery_result=str(entry.get("recovery_result", "")),
         error=str(entry.get("error", "")),
     )
     return entry
+
+
+def _tmux_session_exists(session_name: str) -> Dict[str, Any]:
+    completed = subprocess.run(
+        ["tmux", "has-session", "-t", session_name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        check=False,
+    )
+    stderr = str(completed.stderr or "").strip()
+    if completed.returncode == 0:
+        return {"exists": True, "error": ""}
+    if _is_no_tmux_server_error(stderr) or _is_missing_tmux_session_error(stderr):
+        return {"exists": False, "error": ""}
+    return {"exists": False, "error": stderr[:400]}
 
 
 def tmux_worker_diagnostics_file(output_dir: pathlib.Path) -> pathlib.Path:
@@ -220,6 +240,11 @@ def _is_duplicate_tmux_session_error(stderr: str) -> bool:
 def _is_no_tmux_server_error(message: str) -> bool:
     text = str(message or "").casefold()
     return "no server running" in text or "failed to connect to server" in text
+
+
+def _is_missing_tmux_session_error(message: str) -> bool:
+    text = str(message or "").casefold()
+    return "can't find session" in text or "no such session" in text
 
 
 def _build_tmux_ipc_paths(
@@ -1968,6 +1993,149 @@ def run_tmux_analyst_task_once(
             lead_context.file_locks.release(profile.name, lock_paths)
         return True
     return False
+
+
+def recover_tmux_analyst_sessions(
+    lead_context: Any,
+    analyst_profiles: Sequence[AgentProfile],
+    resume_from: Optional[pathlib.Path] = None,
+) -> Dict[str, Any]:
+    leases = _load_tmux_session_leases(lead_context.shared_state)
+    if not leases:
+        summary = {
+            "workers": [],
+            "recovered": [],
+            "missing": [],
+            "inactive": [],
+            "failed": [],
+            "skipped": "no_leases",
+            "resume_from": str(resume_from) if resume_from else "",
+        }
+        lead_context.logger.log(
+            "tmux_worker_session_recovery_sweep",
+            workers=[],
+            recovered=[],
+            missing=[],
+            inactive=[],
+            failed=[],
+            skipped="no_leases",
+            resume_from=str(resume_from) if resume_from else "",
+        )
+        lead_context.shared_state.set("tmux_session_recovery_summary", summary)
+        return summary
+    worker_names = [profile.name for profile in analyst_profiles]
+    recovered: List[str] = []
+    missing: List[str] = []
+    inactive: List[str] = []
+    failed: List[str] = []
+    if shutil.which("tmux") is None:
+        for worker_name in worker_names:
+            lease = leases.get(worker_name, {})
+            if not isinstance(lease, dict) or not lease:
+                continue
+            _update_tmux_session_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                session_name=str(lease.get("session_name", "") or preferred_tmux_session_name(worker_name)),
+                status="recovery_tmux_unavailable",
+                transport="tmux_resume_recovery",
+                reuse_authorized=False,
+                recovery_result="tmux_unavailable",
+            )
+            failed.append(worker_name)
+        summary = {
+            "workers": worker_names,
+            "recovered": recovered,
+            "missing": missing,
+            "inactive": inactive,
+            "failed": failed,
+            "skipped": "tmux_unavailable",
+            "resume_from": str(resume_from) if resume_from else "",
+        }
+        lead_context.logger.log(
+            "tmux_worker_session_recovery_sweep",
+            workers=worker_names,
+            recovered=recovered,
+            missing=missing,
+            inactive=inactive,
+            failed=failed,
+            skipped="tmux_unavailable",
+            resume_from=str(resume_from) if resume_from else "",
+        )
+        lead_context.shared_state.set("tmux_session_recovery_summary", summary)
+        return summary
+
+    for worker_name in worker_names:
+        lease = leases.get(worker_name, {})
+        if not isinstance(lease, dict) or not lease:
+            continue
+        session_name = str(lease.get("session_name", "") or preferred_tmux_session_name(worker_name))
+        lease_status = str(lease.get("status", ""))
+        if lease_status != "retained":
+            _update_tmux_session_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                session_name=session_name,
+                status="recovery_inactive",
+                transport="tmux_resume_recovery",
+                reuse_authorized=False,
+                recovery_result="inactive",
+            )
+            inactive.append(worker_name)
+            continue
+        existence = _tmux_session_exists(session_name=session_name)
+        if existence.get("exists"):
+            _update_tmux_session_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                session_name=session_name,
+                status="recovered_available",
+                transport="tmux_resume_recovery",
+                retained_for_reuse=True,
+                reuse_authorized=True,
+                recovery_result="available",
+            )
+            recovered.append(worker_name)
+        else:
+            error = str(existence.get("error", ""))
+            status = "recovered_missing" if not error else "recovery_failed"
+            _update_tmux_session_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                session_name=session_name,
+                status=status,
+                transport="tmux_resume_recovery",
+                retained_for_reuse=False,
+                reuse_authorized=False,
+                error=error,
+                recovery_result="missing" if status == "recovered_missing" else "failed",
+            )
+            if status == "recovered_missing":
+                missing.append(worker_name)
+            else:
+                failed.append(worker_name)
+
+    summary = {
+        "workers": worker_names,
+        "recovered": recovered,
+        "missing": missing,
+        "inactive": inactive,
+        "failed": failed,
+        "skipped": "",
+        "resume_from": str(resume_from) if resume_from else "",
+    }
+    lead_context.logger.log(
+        "tmux_worker_session_recovery_sweep",
+        workers=worker_names,
+        recovered=recovered,
+        missing=missing,
+        inactive=inactive,
+        failed=failed,
+        skipped="",
+        resume_from=str(resume_from) if resume_from else "",
+    )
+    lead_context.shared_state.set("tmux_session_recovery_summary", summary)
+    return summary
 
 
 def cleanup_tmux_analyst_sessions(lead_context: Any, analyst_profiles: Sequence[AgentProfile]) -> Dict[str, Any]:

@@ -189,6 +189,18 @@ def cleanup_tmux_analyst_sessions(
     )
 
 
+def recover_tmux_analyst_sessions(
+    lead_context: AgentContext,
+    analyst_profiles: Sequence[AgentProfile],
+    resume_from: Optional[pathlib.Path] = None,
+) -> Dict[str, Any]:
+    return tmux_transport.recover_tmux_analyst_sessions(
+        lead_context=lead_context,
+        analyst_profiles=analyst_profiles,
+        resume_from=resume_from,
+    )
+
+
 def run_tmux_analyst_task_once(
     lead_context: AgentContext,
     analyst_profiles: Sequence[AgentProfile],
@@ -271,6 +283,7 @@ def run_team(
         agent_team_config=agent_team_config,
         teammate_agent_factory=TeammateAgent,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
+        recover_tmux_analyst_sessions_fn=recover_tmux_analyst_sessions,
         cleanup_tmux_analyst_sessions_fn=cleanup_tmux_analyst_sessions,
         runtime_script=pathlib.Path(__file__).resolve(),
     )
