@@ -14,7 +14,7 @@ This document tracks repeatable checks for the local `agent_team_runtime.py` imp
 - Checkpoint persistence, history timeline, rewind/resume flow, rewind branching, and event-index rewind mapping
   (`run_checkpoint.json` + `_checkpoint_history` + `--resume-from` + `--rewind-to-history-index` + `--rewind-to-event-index` + `--rewind-branch`)
 - Artifact completeness and event traceability
-- Teammate session ledger generation and final report append behavior
+- Teammate session ledger generation, resume continuity tracking, and final report append behavior
 - Session-boundary posture artifact generation and final report append behavior
 - Team progress artifact generation and report append behavior
 - Task-context boundary generation and context summary artifact
@@ -190,6 +190,8 @@ python3 agent_team_demo/agent_team_runtime.py \
 - Tmux diagnostics should emit `tmux_worker_transport_result`; when tmux worker fails and fallback is enabled,
   runtime should emit `tmux_worker_fallback_attempt` and `tmux_worker_fallback_result`.
 - Resume flow should emit `run_resume_loaded` and finish with all tasks `completed` after the second run.
+- Resume flow should emit `teammate_session_resumed`, preserve prior `session_id` values in `teammate_sessions.json`,
+  and record non-zero session resume counts after the second run.
 - Rewind flow should load `_checkpoint_history/checkpoint_XXXXXX.json`, emit `run_resume_loaded`,
   and reflect `rewind_history_index` in `run_summary.json`.
 - Event-index rewind should emit `rewind_event_index` and `rewind_event_resolution` in `run_summary.json`

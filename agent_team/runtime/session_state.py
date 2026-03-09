@@ -55,6 +55,12 @@ def _normalize_session_entry(agent_name: str, entry: Mapping[str, Any]) -> Dict[
         "last_active_at": str(entry.get("last_active_at", now) or now),
         "current_task_id": str(entry.get("current_task_id", "") or ""),
         "current_task_type": str(entry.get("current_task_type", "") or ""),
+        "run_activations": max(0, int(entry.get("run_activations", 0) or 0)),
+        "initialization_count": max(0, int(entry.get("initialization_count", 0) or 0)),
+        "resume_count": max(0, int(entry.get("resume_count", 0) or 0)),
+        "last_initialized_at": str(entry.get("last_initialized_at", "") or ""),
+        "last_resume_at": str(entry.get("last_resume_at", "") or ""),
+        "last_resume_from": str(entry.get("last_resume_from", "") or ""),
         "tasks_started": max(0, int(entry.get("tasks_started", 0) or 0)),
         "tasks_completed": max(0, int(entry.get("tasks_completed", 0) or 0)),
         "tasks_failed": max(0, int(entry.get("tasks_failed", 0) or 0)),
@@ -168,6 +174,48 @@ class TeammateSessionRegistry:
                 entry["last_active_at"] = utc_now()
             self._flush_locked()
             return _clone(entry)
+
+    def activate_for_run(
+        self,
+        profile: AgentProfile,
+        transport: str,
+        resume_from: str = "",
+    ) -> Dict[str, Any]:
+        with self._lock:
+            name = str(profile.name)
+            entry = self._sessions.get(name)
+            had_existing_session = entry is not None and bool(str(entry.get("session_id", "") or ""))
+            if entry is None:
+                entry = _normalize_session_entry(
+                    name,
+                    {
+                        "agent": name,
+                        "agent_type": profile.agent_type,
+                        "skills": sorted(profile.skills),
+                    },
+                )
+                self._sessions[name] = entry
+            entry["agent_type"] = profile.agent_type
+            entry["skills"] = sorted(profile.skills)
+            entry["transport"] = str(transport)
+            entry["run_activations"] = int(entry.get("run_activations", 0)) + 1
+            entry["last_active_at"] = utc_now()
+            if resume_from and had_existing_session:
+                lifecycle_event = "resumed"
+                entry["resume_count"] = int(entry.get("resume_count", 0)) + 1
+                entry["last_resume_from"] = str(resume_from)
+                entry["last_resume_at"] = utc_now()
+                entry["status"] = "resumed"
+            else:
+                lifecycle_event = "initialized"
+                entry["initialization_count"] = int(entry.get("initialization_count", 0)) + 1
+                entry["last_initialized_at"] = utc_now()
+                entry["status"] = "created"
+            self._flush_locked()
+            activated = _clone(entry)
+            activated["lifecycle_event"] = lifecycle_event
+            activated["resume_from"] = str(resume_from or "")
+            return activated
 
     def record_status(
         self,
@@ -335,6 +383,11 @@ def build_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any
     sessions: List[Dict[str, Any]] = []
     status_counts: Dict[str, int] = {}
     transport_counts: Dict[str, int] = {}
+    lifecycle_counts = {
+        "run_activations": 0,
+        "initializations": 0,
+        "resumes": 0,
+    }
     if isinstance(raw_sessions, Mapping):
         for agent_name, entry in sorted(raw_sessions.items()):
             if not isinstance(entry, Mapping):
@@ -344,12 +397,16 @@ def build_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any
             transport = str(normalized.get("transport", "") or "unknown")
             status_counts[status] = status_counts.get(status, 0) + 1
             transport_counts[transport] = transport_counts.get(transport, 0) + 1
+            lifecycle_counts["run_activations"] += int(normalized.get("run_activations", 0) or 0)
+            lifecycle_counts["initializations"] += int(normalized.get("initialization_count", 0) or 0)
+            lifecycle_counts["resumes"] += int(normalized.get("resume_count", 0) or 0)
             sessions.append(normalized)
     return {
         "generated_at": utc_now(),
         "session_count": len(sessions),
         "status_counts": status_counts,
         "transport_counts": transport_counts,
+        "lifecycle_counts": lifecycle_counts,
         "sessions": sessions,
     }
 

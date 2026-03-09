@@ -156,6 +156,13 @@ def main() -> int:
     teammate_sessions = load_json(output_dir / "teammate_sessions.json")
     if int(teammate_sessions.get("session_count", 0)) <= 0:
         return fail("teammate_sessions.json must contain at least one teammate session")
+    resume_from = str(summary.get("resume_from", "") or "")
+    if resume_from:
+        lifecycle_counts = teammate_sessions.get("lifecycle_counts", {})
+        if int(lifecycle_counts.get("resumes", 0)) <= 0:
+            return fail("resumed runs must record non-zero session resume counts in teammate_sessions.json")
+        if "teammate_session_resumed" not in event_names:
+            return fail("resumed runs must emit teammate_session_resumed events")
     for summary_key in ["team_progress_path", "team_progress_report_path"]:
         raw_path = str(summary.get(summary_key, "") or "")
         if not raw_path:

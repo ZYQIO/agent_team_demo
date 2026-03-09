@@ -106,21 +106,24 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("runtime_config", summary)
             self.assertIn("checkpoint_history_dir", summary)
             self.assertEqual(
-                summary.get("context_boundary_path"),
-                str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
+                pathlib.Path(str(summary.get("context_boundary_path", ""))).resolve(),
+                (output_dir / runtime.CONTEXT_BOUNDARY_FILENAME).resolve(),
             )
             self.assertEqual(
-                summary.get("session_boundary_path"),
-                str(output_dir / runtime.SESSION_BOUNDARY_FILENAME),
+                pathlib.Path(str(summary.get("session_boundary_path", ""))).resolve(),
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).resolve(),
             )
             self.assertEqual(
-                summary.get("teammate_sessions_path"),
-                str(output_dir / runtime.TEAMMATE_SESSIONS_FILENAME),
+                pathlib.Path(str(summary.get("teammate_sessions_path", ""))).resolve(),
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).resolve(),
             )
-            self.assertEqual(summary.get("team_progress_path"), str(output_dir / runtime.TEAM_PROGRESS_FILENAME))
             self.assertEqual(
-                summary.get("team_progress_report_path"),
-                str(output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME),
+                pathlib.Path(str(summary.get("team_progress_path", ""))).resolve(),
+                (output_dir / runtime.TEAM_PROGRESS_FILENAME).resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(str(summary.get("team_progress_report_path", ""))).resolve(),
+                (output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME).resolve(),
             )
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
@@ -238,18 +241,21 @@ class RuntimeEndToEndTests(unittest.TestCase):
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("workflow", {}).get("pack"), "repo-audit")
             self.assertEqual(
-                summary.get("context_boundary_path"),
-                str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
+                pathlib.Path(str(summary.get("context_boundary_path", ""))).resolve(),
+                (output_dir / runtime.CONTEXT_BOUNDARY_FILENAME).resolve(),
             )
             self.assertEqual(
-                summary.get("session_boundary_path"),
-                str(output_dir / runtime.SESSION_BOUNDARY_FILENAME),
+                pathlib.Path(str(summary.get("session_boundary_path", ""))).resolve(),
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).resolve(),
             )
             self.assertEqual(
-                summary.get("teammate_sessions_path"),
-                str(output_dir / runtime.TEAMMATE_SESSIONS_FILENAME),
+                pathlib.Path(str(summary.get("teammate_sessions_path", ""))).resolve(),
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).resolve(),
             )
-            self.assertEqual(summary.get("team_progress_path"), str(output_dir / runtime.TEAM_PROGRESS_FILENAME))
+            self.assertEqual(
+                pathlib.Path(str(summary.get("team_progress_path", ""))).resolve(),
+                (output_dir / runtime.TEAM_PROGRESS_FILENAME).resolve(),
+            )
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("repository_inventory", shared_state)
@@ -539,6 +545,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 any(status != "completed" for status in statuses_partial.values()),
                 msg=f"expected partial completion, got={statuses_partial}",
             )
+            partial_sessions = json.loads(
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")
+            )
+            partial_session_ids = {
+                item["agent"]: item["session_id"]
+                for item in partial_sessions.get("sessions", [])
+                if isinstance(item, dict)
+            }
+            self.assertTrue(partial_session_ids)
 
             resume_cmd = [
                 sys.executable,
@@ -577,6 +592,37 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(runtime_config.get("peer_wait_seconds"), 1)
             self.assertEqual(runtime_config.get("evidence_wait_seconds"), 1)
             self.assertFalse(runtime_config.get("auto_round3_on_challenge", True))
+            resumed_sessions = json.loads(
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")
+            )
+            resumed_session_ids = {
+                item["agent"]: item["session_id"]
+                for item in resumed_sessions.get("sessions", [])
+                if isinstance(item, dict)
+            }
+            self.assertEqual(resumed_session_ids, partial_session_ids)
+            self.assertEqual(
+                resumed_sessions.get("lifecycle_counts", {}).get("resumes"),
+                len(partial_session_ids),
+            )
+            resumed_by_agent = {
+                item["agent"]: item
+                for item in resumed_sessions.get("sessions", [])
+                if isinstance(item, dict)
+            }
+            self.assertTrue(all(item.get("resume_count", 0) >= 1 for item in resumed_by_agent.values()))
+
+            events = [
+                json.loads(line)
+                for line in (output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            resumed_events = [item for item in events if item.get("event") == "teammate_session_resumed"]
+            self.assertEqual(len(resumed_events), len(partial_session_ids))
+            self.assertEqual(
+                {item.get("session_id") for item in resumed_events},
+                set(partial_session_ids.values()),
+            )
 
     def test_cli_tmux_resume_defers_cleanup_until_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -973,6 +973,14 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
                 f"{transport}={count}" for transport, count in sorted(transport_counts.items())
             )
         )
+    lifecycle_counts = snapshot.get("lifecycle_counts", {})
+    if isinstance(lifecycle_counts, dict) and lifecycle_counts:
+        lines.append(
+            "- Session lifecycle: "
+            f"activations={lifecycle_counts.get('run_activations', 0)} "
+            f"initializations={lifecycle_counts.get('initializations', 0)} "
+            f"resumes={lifecycle_counts.get('resumes', 0)}"
+        )
     status_counts = snapshot.get("status_counts", {})
     if isinstance(status_counts, dict) and status_counts:
         lines.append(
@@ -993,8 +1001,13 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
             f"completed={session.get('tasks_completed', 0)} "
             f"failed={session.get('tasks_failed', 0)} "
             f"messages_seen={session.get('messages_seen', 0)} "
-            f"provider_memory={len(session.get('provider_memory', []))}"
+            f"provider_memory={len(session.get('provider_memory', []))} "
+            f"initializations={session.get('initialization_count', 0)} "
+            f"resumes={session.get('resume_count', 0)}"
         )
+        last_resume_from = str(session.get("last_resume_from", "") or "")
+        if last_resume_from:
+            lines[-1] += f" last_resume_from={last_resume_from}"
     report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
     return True
 

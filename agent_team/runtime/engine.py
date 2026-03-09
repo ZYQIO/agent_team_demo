@@ -494,11 +494,28 @@ def run_team(
     shared_state.set("tmux_cleanup_deferred_for_resume", False)
     shared_state.set("tmux_cleanup_deferred_reason", "")
     session_registry = TeammateSessionRegistry(shared_state=shared_state)
+    initial_session_states: Dict[str, Dict[str, Any]] = {}
     for profile in profiles:
-        session_registry.ensure_profile(
+        transport = teammate_transport_for_profile(profile=profile, runtime_config=runtime_config)
+        session_state = session_registry.activate_for_run(
             profile=profile,
-            transport=teammate_transport_for_profile(profile=profile, runtime_config=runtime_config),
-            status="created",
+            transport=transport,
+            resume_from=str(resume_from) if resume_from else "",
+        )
+        initial_session_states[profile.name] = session_state
+        lifecycle_event = str(session_state.get("lifecycle_event", "") or "initialized")
+        logger.log(
+            f"teammate_session_{lifecycle_event}",
+            agent=profile.name,
+            agent_type=profile.agent_type,
+            transport=transport,
+            session_id=str(session_state.get("session_id", "") or ""),
+            resume_from=str(session_state.get("resume_from", "") or ""),
+            provider_memory_entries=len(session_state.get("provider_memory", [])),
+            task_history_entries=len(session_state.get("task_history", [])),
+            run_activations=int(session_state.get("run_activations", 0) or 0),
+            initialization_count=int(session_state.get("initialization_count", 0) or 0),
+            resume_count=int(session_state.get("resume_count", 0) or 0),
         )
     file_locks = FileLockRegistry(logger=logger)
     lead_context = AgentContext(
@@ -544,7 +561,7 @@ def run_team(
                 file_locks=file_locks,
                 shared_state=shared_state,
                 logger=logger,
-                session_state=session_registry.session_for(profile.name),
+                session_state=initial_session_states.get(profile.name, session_registry.session_for(profile.name)),
                 session_registry=session_registry,
             ),
             stop_event=stop_event,

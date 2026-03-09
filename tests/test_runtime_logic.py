@@ -2335,21 +2335,175 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(len(session["provider_memory"]), 1)
         self.assertEqual(session["provider_memory"][0]["topic"], "peer_challenge_round1")
 
+    def test_teammate_session_registry_preserves_session_id_on_resume(self) -> None:
+        shared_state = runtime.SharedState()
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        profile = runtime.AgentProfile(
+            name="analyst_alpha",
+            skills={"analysis"},
+            agent_type="analyst",
+        )
+
+        initialized = registry.activate_for_run(profile=profile, transport="in-process")
+        resumed = registry.activate_for_run(
+            profile=profile,
+            transport="in-process",
+            resume_from="D:/tmp/run_checkpoint.json",
+        )
+
+        self.assertEqual(initialized["lifecycle_event"], "initialized")
+        self.assertEqual(resumed["lifecycle_event"], "resumed")
+        self.assertEqual(resumed["session_id"], initialized["session_id"])
+        self.assertEqual(resumed["run_activations"], 2)
+        self.assertEqual(resumed["initialization_count"], 1)
+        self.assertEqual(resumed["resume_count"], 1)
+        self.assertEqual(resumed["last_resume_from"], "D:/tmp/run_checkpoint.json")
+
     def test_build_teammate_sessions_snapshot_summarizes_registry(self) -> None:
         shared_state = runtime.SharedState()
         registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
         analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
         reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
-        registry.ensure_profile(profile=analyst, transport="tmux", status="retained")
-        registry.ensure_profile(profile=reviewer, transport="in-process", status="ready")
+        registry.activate_for_run(profile=analyst, transport="tmux")
+        registry.activate_for_run(profile=reviewer, transport="in-process")
+        registry.record_status(agent_name="analyst_alpha", transport="tmux", status="retained")
+        registry.record_status(agent_name="reviewer_gamma", transport="in-process", status="ready")
+        registry.activate_for_run(
+            profile=analyst,
+            transport="tmux",
+            resume_from="D:/tmp/run_checkpoint.json",
+        )
 
         snapshot = runtime.build_teammate_sessions_snapshot(shared_state=shared_state)
 
         self.assertEqual(snapshot["session_count"], 2)
         self.assertEqual(snapshot["transport_counts"]["tmux"], 1)
         self.assertEqual(snapshot["transport_counts"]["in-process"], 1)
-        self.assertEqual(snapshot["status_counts"]["retained"], 1)
+        self.assertEqual(snapshot["status_counts"]["resumed"], 1)
         self.assertEqual(snapshot["status_counts"]["ready"], 1)
+        self.assertEqual(snapshot["lifecycle_counts"]["run_activations"], 3)
+        self.assertEqual(snapshot["lifecycle_counts"]["initializations"], 2)
+        self.assertEqual(snapshot["lifecycle_counts"]["resumes"], 1)
+
+    def test_run_team_resume_logs_teammate_session_resumed_events(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            resume_from = output_dir / runtime.CHECKPOINT_FILENAME
+            checkpoint_sessions = {
+                "analyst_alpha": {
+                    "session_id": "session-alpha",
+                    "agent": "analyst_alpha",
+                    "agent_type": "analyst",
+                    "skills": ["analysis"],
+                    "transport": "in-process",
+                    "status": "stopped",
+                    "started_at": runtime.utc_now(),
+                    "last_active_at": runtime.utc_now(),
+                    "initialization_count": 1,
+                    "run_activations": 1,
+                },
+                "analyst_beta": {
+                    "session_id": "session-beta",
+                    "agent": "analyst_beta",
+                    "agent_type": "analyst",
+                    "skills": ["analysis"],
+                    "transport": "in-process",
+                    "status": "stopped",
+                    "started_at": runtime.utc_now(),
+                    "last_active_at": runtime.utc_now(),
+                    "initialization_count": 1,
+                    "run_activations": 1,
+                },
+                "reviewer_gamma": {
+                    "session_id": "session-reviewer",
+                    "agent": "reviewer_gamma",
+                    "agent_type": "reviewer",
+                    "skills": ["review", "writer"],
+                    "transport": "in-process",
+                    "status": "stopped",
+                    "started_at": runtime.utc_now(),
+                    "last_active_at": runtime.utc_now(),
+                    "initialization_count": 1,
+                    "run_activations": 1,
+                },
+            }
+            resume_from.write_text(
+                json.dumps(
+                    {
+                        "version": runtime.CHECKPOINT_VERSION,
+                        "saved_at": runtime.utc_now(),
+                        "goal": "resume",
+                        "target_dir": str(target_dir),
+                        "output_dir": str(output_dir),
+                        "runtime_config": runtime.RuntimeConfig().to_dict(),
+                        "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                        "task_board": {
+                            "tasks": [
+                                {
+                                    "task_id": "done",
+                                    "title": "Done",
+                                    "task_type": "lead_adjudication",
+                                    "required_skills": ["lead"],
+                                    "dependencies": [],
+                                    "payload": {},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["lead"],
+                                    "status": "completed",
+                                    "owner": "lead",
+                                }
+                            ]
+                        },
+                        "shared_state": {
+                            "teammate_sessions": checkpoint_sessions,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            workflow_pack = mock.Mock()
+            workflow_pack.build_handlers.return_value = {}
+            workflow_pack.build_tasks.return_value = []
+            workflow_pack.runtime_metadata = mock.Mock(lead_task_order=(), report_task_ids=())
+
+            def fake_worker_factory(**_kwargs):
+                return threading.Thread(target=lambda: None)
+
+            with mock.patch("agent_team.runtime.engine.resolve_workflow_pack", return_value=workflow_pack):
+                exit_code = runtime.run_team_impl(
+                    goal="resume",
+                    target_dir=target_dir,
+                    output_dir=output_dir,
+                    runtime_config=runtime.RuntimeConfig(),
+                    provider_name="heuristic",
+                    model="heuristic-v1",
+                    openai_api_key_env="OPENAI_API_KEY",
+                    openai_base_url="https://api.openai.com/v1",
+                    require_llm=False,
+                    provider_timeout_sec=5,
+                    resume_from=resume_from,
+                    teammate_agent_factory=fake_worker_factory,
+                    run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
+                    cleanup_tmux_analyst_sessions_fn=lambda **_kwargs: {"cleaned": 0},
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                )
+
+            self.assertEqual(exit_code, 0)
+            events = [
+                json.loads(line)
+                for line in (output_dir / "events.jsonl").read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            resumed_events = [item for item in events if item.get("event") == "teammate_session_resumed"]
+            self.assertEqual(len(resumed_events), 3)
+            self.assertEqual(
+                {item.get("session_id") for item in resumed_events},
+                {"session-alpha", "session-beta", "session-reviewer"},
+            )
+            self.assertTrue(all(item.get("resume_from") == str(resume_from) for item in resumed_events))
 
     def test_build_session_boundary_snapshot_distinguishes_tmux_and_runtime_sessions(self) -> None:
         shared_state = runtime.SharedState()

@@ -17,7 +17,7 @@ This folder now contains two layers:
   - compatibility hook events: `TeammateIdle` and `TaskCompleted`
   - team progress artifacts and lead-facing progress summary
   - explicit teammate task-context boundaries with per-run context summary artifact
-  - durable teammate session ledger with per-agent task/memory/activity snapshots
+  - durable teammate session ledger with per-agent task/memory/activity snapshots and explicit resume continuity markers
   - explicit session-boundary posture artifact describing host-native, tmux-backed, or runtime-emulated session isolation
   - teammate execution mode toggle (`in-process` / `tmux`, with subprocess fallback when tmux binary is unavailable)
   - file lock registry
@@ -265,7 +265,7 @@ After runtime execution, output directory contains:
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
 - `session_boundaries.json`: host/session boundary posture for each teammate session
-- `teammate_sessions.json`: persistent per-agent session ids, transport, memory, and recent task/message history
+- `teammate_sessions.json`: persistent per-agent session ids, transport, memory, recent task/message history, and resume continuity metadata
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity
 - `team_progress.md`: lead-facing team progress dashboard
 - `run_summary.json`: pointers to all artifacts
