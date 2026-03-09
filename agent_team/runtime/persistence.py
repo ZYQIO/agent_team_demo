@@ -996,6 +996,7 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
             f"- {session.get('agent', '')}: "
             f"session_id={session.get('session_id', '')} "
             f"transport={session.get('transport', '')} "
+            f"transport_session={session.get('transport_session_name', '')} "
             f"status={session.get('status', '')} "
             f"started={session.get('tasks_started', 0)} "
             f"completed={session.get('tasks_completed', 0)} "
@@ -1005,6 +1006,11 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
             f"initializations={session.get('initialization_count', 0)} "
             f"resumes={session.get('resume_count', 0)}"
         )
+        if session.get("workspace_scope", ""):
+            lines[-1] += (
+                f" workspace_scope={session.get('workspace_scope', '')} "
+                f"workspace_isolated={session.get('workspace_isolation_active', False)}"
+            )
         last_resume_from = str(session.get("last_resume_from", "") or "")
         if last_resume_from:
             lines[-1] += f" last_resume_from={last_resume_from}"
@@ -1052,7 +1058,10 @@ def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapsho
             f"mode={session.get('boundary_mode', '')} "
             f"strength={session.get('boundary_strength', '')} "
             f"transport={session.get('transport', '')} "
+            f"transport_session={session.get('transport_session_name', '')} "
             f"status={session.get('status', '')} "
+            f"workspace_scope={session.get('workspace_scope', '')} "
+            f"workspace_isolated={session.get('workspace_isolation_active', False)} "
             f"notes={', '.join(str(item) for item in notes) or 'none'}"
         )
     report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")

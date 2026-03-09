@@ -147,8 +147,16 @@ class TeammateAgent(InProcessTeammateAgent):
         )
 
 
-def _execute_worker_subprocess(command: List[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
-    return tmux_transport.execute_worker_subprocess(command=command, timeout_sec=timeout_sec)
+def _execute_worker_subprocess(
+    command: List[str],
+    timeout_sec: int,
+    worker_env: Optional[Dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
+    return tmux_transport.execute_worker_subprocess(
+        command=command,
+        timeout_sec=timeout_sec,
+        worker_env=worker_env,
+    )
 
 
 def _execute_worker_tmux(
@@ -158,6 +166,9 @@ def _execute_worker_tmux(
     timeout_sec: int,
     retain_session_for_reuse: bool = False,
     allow_existing_session_reuse: bool = False,
+    worker_env: Optional[Dict[str, str]] = None,
+    session_workspace_root: str = "",
+    session_workspace_tmp_dir: str = "",
 ) -> subprocess.CompletedProcess[str]:
     return tmux_transport.execute_worker_tmux(
         command=command,
@@ -166,6 +177,9 @@ def _execute_worker_tmux(
         timeout_sec=timeout_sec,
         retain_session_for_reuse=retain_session_for_reuse,
         allow_existing_session_reuse=allow_existing_session_reuse,
+        worker_env=worker_env,
+        session_workspace_root=session_workspace_root,
+        session_workspace_tmp_dir=session_workspace_tmp_dir,
     )
 
 

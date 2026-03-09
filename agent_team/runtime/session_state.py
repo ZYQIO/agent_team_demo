@@ -55,6 +55,14 @@ def _normalize_session_entry(agent_name: str, entry: Mapping[str, Any]) -> Dict[
         "last_active_at": str(entry.get("last_active_at", now) or now),
         "current_task_id": str(entry.get("current_task_id", "") or ""),
         "current_task_type": str(entry.get("current_task_type", "") or ""),
+        "transport_session_name": str(entry.get("transport_session_name", "") or ""),
+        "workspace_root": str(entry.get("workspace_root", "") or ""),
+        "workspace_tmp_dir": str(entry.get("workspace_tmp_dir", "") or ""),
+        "workspace_scope": str(entry.get("workspace_scope", "") or ""),
+        "workspace_isolation_active": bool(entry.get("workspace_isolation_active", False)),
+        "transport_reuse_count": max(0, int(entry.get("transport_reuse_count", 0) or 0)),
+        "reuse_authorized": bool(entry.get("reuse_authorized", False)),
+        "retained_for_reuse": bool(entry.get("retained_for_reuse", False)),
         "run_activations": max(0, int(entry.get("run_activations", 0) or 0)),
         "initialization_count": max(0, int(entry.get("initialization_count", 0) or 0)),
         "resume_count": max(0, int(entry.get("resume_count", 0) or 0)),
@@ -216,6 +224,44 @@ class TeammateSessionRegistry:
             activated["lifecycle_event"] = lifecycle_event
             activated["resume_from"] = str(resume_from or "")
             return activated
+
+    def record_boundary(
+        self,
+        agent_name: str,
+        transport: str = "",
+        transport_session_name: str = "",
+        workspace_root: str = "",
+        workspace_tmp_dir: str = "",
+        workspace_scope: str = "",
+        workspace_isolation_active: bool = False,
+        retained_for_reuse: bool = False,
+        reuse_authorized: bool = False,
+        transport_reuse_count: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        with self._lock:
+            name = str(agent_name)
+            entry = self._sessions.get(name)
+            if entry is None:
+                entry = _normalize_session_entry(name, {})
+                self._sessions[name] = entry
+            if transport:
+                entry["transport"] = str(transport)
+            if transport_session_name:
+                entry["transport_session_name"] = str(transport_session_name)
+            if workspace_root:
+                entry["workspace_root"] = str(workspace_root)
+            if workspace_tmp_dir:
+                entry["workspace_tmp_dir"] = str(workspace_tmp_dir)
+            if workspace_scope:
+                entry["workspace_scope"] = str(workspace_scope)
+            entry["workspace_isolation_active"] = bool(workspace_isolation_active)
+            entry["retained_for_reuse"] = bool(retained_for_reuse)
+            entry["reuse_authorized"] = bool(reuse_authorized)
+            if transport_reuse_count is not None:
+                entry["transport_reuse_count"] = max(0, int(transport_reuse_count))
+            entry["last_active_at"] = utc_now()
+            self._flush_locked()
+            return _clone(entry)
 
     def record_status(
         self,
@@ -432,15 +478,24 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             continue
         transport = str(session.get("transport", "") or "unknown")
         notes: List[str] = []
+        workspace_isolation_active = bool(session.get("workspace_isolation_active", False))
         if host_independent_sessions:
             boundary_mode = "host_native_session"
             boundary_strength = "strong"
             isolation_source = "host"
-        elif transport == "tmux":
+        elif transport == "tmux" or transport.startswith("tmux"):
             boundary_mode = "tmux_worker_session"
             boundary_strength = "medium"
             isolation_source = "transport"
-            notes.append("session_isolation_backed_by_tmux_process")
+            if transport == "tmux":
+                notes.append("session_isolation_backed_by_tmux_process")
+            else:
+                notes.append("session_isolation_backed_by_tmux_fallback_transport")
+        elif workspace_isolation_active or transport == "subprocess":
+            boundary_mode = "worker_subprocess_session"
+            boundary_strength = "medium"
+            isolation_source = "transport"
+            notes.append("session_isolation_backed_by_worker_subprocess")
         else:
             boundary_mode = "runtime_emulated_session"
             boundary_strength = "emulated"
@@ -450,10 +505,13 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             notes.append("workspace_isolation_unavailable")
         if not host_independent_sessions:
             notes.append("host_independent_sessions_unavailable")
+        if workspace_isolation_active:
+            notes.append("session_workspace_scoped_tmpdir")
         record = {
             "agent": str(session.get("agent", "") or ""),
             "session_id": str(session.get("session_id", "") or ""),
             "transport": transport,
+            "transport_session_name": str(session.get("transport_session_name", "") or ""),
             "boundary_mode": boundary_mode,
             "boundary_strength": boundary_strength,
             "isolation_source": isolation_source,
@@ -461,6 +519,13 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             "host_session_transport": host_session_transport,
             "host_independent_sessions": host_independent_sessions,
             "host_workspace_isolation": host_workspace_isolation,
+            "workspace_root": str(session.get("workspace_root", "") or ""),
+            "workspace_tmp_dir": str(session.get("workspace_tmp_dir", "") or ""),
+            "workspace_scope": str(session.get("workspace_scope", "") or ""),
+            "workspace_isolation_active": workspace_isolation_active,
+            "transport_reuse_count": int(session.get("transport_reuse_count", 0) or 0),
+            "reuse_authorized": bool(session.get("reuse_authorized", False)),
+            "retained_for_reuse": bool(session.get("retained_for_reuse", False)),
             "status": str(session.get("status", "") or ""),
             "current_task_id": str(session.get("current_task_id", "") or ""),
             "current_task_type": str(session.get("current_task_type", "") or ""),

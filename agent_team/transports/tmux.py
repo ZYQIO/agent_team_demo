@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import shlex
 import shutil
@@ -32,6 +33,7 @@ TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
 TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
 TMUX_SESSION_SPAWN_MAX_ATTEMPTS = 3
 TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
+TMUX_SESSION_WORKSPACE_DIRNAME = "_tmux_session_workspaces"
 
 
 def preferred_tmux_session_name(worker_name: str) -> str:
@@ -274,12 +276,63 @@ def _build_tmux_shell_command(
     stdout_file: pathlib.Path,
     stderr_file: pathlib.Path,
     status_file: pathlib.Path,
+    worker_env: Optional[Dict[str, str]] = None,
 ) -> str:
+    env_prefix = ""
+    if isinstance(worker_env, dict) and worker_env:
+        env_prefix = " ".join(
+            f"{str(key)}={shlex.quote(str(value))}"
+            for key, value in sorted(worker_env.items())
+            if str(key)
+        )
+        if env_prefix:
+            env_prefix += " "
     return (
-        f"{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
+        f"{env_prefix}{shlex.join(command)} > {shlex.quote(str(stdout_file))} "
         f"2> {shlex.quote(str(stderr_file))}; "
         f"echo $? > {shlex.quote(str(status_file))}"
     )
+
+
+def _worker_subprocess_env(worker_env: Optional[Dict[str, str]]) -> Optional[Dict[str, str]]:
+    if not isinstance(worker_env, dict) or not worker_env:
+        return None
+    env = dict(os.environ)
+    env.update({str(key): str(value) for key, value in worker_env.items() if str(key)})
+    return env
+
+
+def _build_tmux_session_environment(
+    output_dir: pathlib.Path,
+    worker_name: str,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    raw_session_state = payload.get("session_state", {})
+    session_state = raw_session_state if isinstance(raw_session_state, dict) else {}
+    session_id = str(session_state.get("session_id", "") or worker_name)
+    transport_session_name = preferred_tmux_session_name(worker_name)
+    workspace_root = output_dir / TMUX_SESSION_WORKSPACE_DIRNAME / worker_name / session_id
+    workspace_tmp_dir = workspace_root / "tmp"
+    workspace_root.mkdir(parents=True, exist_ok=True)
+    workspace_tmp_dir.mkdir(parents=True, exist_ok=True)
+    worker_env = {
+        "AGENT_TEAM_AGENT": str(worker_name),
+        "AGENT_TEAM_SESSION_ID": session_id,
+        "AGENT_TEAM_SESSION_DIR": str(workspace_root),
+        "AGENT_TEAM_SESSION_TMP_DIR": str(workspace_tmp_dir),
+        "AGENT_TEAM_WORKSPACE_SCOPE": "tmux_session_workspace",
+        "TMPDIR": str(workspace_tmp_dir),
+        "TMP": str(workspace_tmp_dir),
+        "TEMP": str(workspace_tmp_dir),
+    }
+    return {
+        "worker_env": worker_env,
+        "transport_session_name": transport_session_name,
+        "workspace_root": str(workspace_root),
+        "workspace_tmp_dir": str(workspace_tmp_dir),
+        "workspace_scope": "tmux_session_workspace",
+        "workspace_isolation_active": True,
+    }
 
 
 def _reuse_tmux_session(
@@ -288,12 +341,16 @@ def _reuse_tmux_session(
     stdout_file: pathlib.Path,
     stderr_file: pathlib.Path,
     status_file: pathlib.Path,
+    worker_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
+    shell_worker_env = dict(worker_env or {})
+    shell_worker_env["AGENT_TEAM_TRANSPORT_SESSION"] = str(session_name)
     shell_cmd = _build_tmux_shell_command(
         command=command,
         stdout_file=stdout_file,
         stderr_file=stderr_file,
         status_file=status_file,
+        worker_env=shell_worker_env,
     )
     reused = subprocess.run(
         ["tmux", "respawn-pane", "-k", "-t", f"{session_name}:0.0", shell_cmd],
@@ -324,6 +381,7 @@ def _spawn_tmux_session(
     session_prefix: str,
     preferred_session_found: bool = False,
     allow_existing_session_reuse: bool = False,
+    worker_env: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     attempts = 0
     retry_reason = ""
@@ -360,11 +418,14 @@ def _spawn_tmux_session(
         session_name = candidate_names[attempts - 1]
         session_name_strategy = "preferred" if session_name == preferred_session_name else "unique_suffix"
         stdout_file, stderr_file, status_file = _build_tmux_ipc_paths(ipc_dir=ipc_dir, session_name=session_name)
+        shell_worker_env = dict(worker_env or {})
+        shell_worker_env["AGENT_TEAM_TRANSPORT_SESSION"] = str(session_name)
         shell_cmd = _build_tmux_shell_command(
             command=command,
             stdout_file=stdout_file,
             stderr_file=stderr_file,
             status_file=status_file,
+            worker_env=shell_worker_env,
         )
         last_spawn = subprocess.run(
             ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
@@ -420,6 +481,7 @@ def _spawn_tmux_session(
                     stdout_file=stdout_file,
                     stderr_file=stderr_file,
                     status_file=status_file,
+                    worker_env=worker_env,
                 )
                 preferred_session_reuse_result = str(reuse["result"])
                 preferred_session_reuse_error = str(reuse["error"])
@@ -1004,7 +1066,11 @@ def run_tmux_worker_entrypoint(
         return 2
 
 
-def execute_worker_subprocess(command: List[str], timeout_sec: int) -> subprocess.CompletedProcess[str]:
+def execute_worker_subprocess(
+    command: List[str],
+    timeout_sec: int,
+    worker_env: Optional[Dict[str, str]] = None,
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
         stdout=subprocess.PIPE,
@@ -1012,6 +1078,7 @@ def execute_worker_subprocess(command: List[str], timeout_sec: int) -> subproces
         text=True,
         check=False,
         timeout=timeout_sec,
+        env=_worker_subprocess_env(worker_env),
     )
 
 
@@ -1022,6 +1089,9 @@ def execute_worker_tmux(
     timeout_sec: int,
     retain_session_for_reuse: bool = False,
     allow_existing_session_reuse: bool = False,
+    worker_env: Optional[Dict[str, str]] = None,
+    session_workspace_root: str = "",
+    session_workspace_tmp_dir: str = "",
 ) -> subprocess.CompletedProcess[str]:
     ipc_dir = workdir / "_tmux_worker_ipc"
     ipc_dir.mkdir(parents=True, exist_ok=True)
@@ -1072,6 +1142,11 @@ def execute_worker_tmux(
         "tmux_ipc_cleanup_result": "",
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
+        "tmux_session_workspace_root": str(session_workspace_root or ""),
+        "tmux_session_workspace_tmp_dir": str(session_workspace_tmp_dir or ""),
+        "tmux_session_workspace_scope": "tmux_session_workspace" if session_workspace_root else "",
+        "tmux_session_workspace_isolated": bool(session_workspace_root),
+        "tmux_session_env_keys": sorted({str(key) for key in (worker_env or {}).keys()}),
     }
 
     orphan_cleanup = _cleanup_orphan_tmux_sessions(
@@ -1093,6 +1168,7 @@ def execute_worker_tmux(
         session_prefix=session_prefix,
         preferred_session_found=bool(orphan_cleanup.get("preferred_session_found", False)),
         allow_existing_session_reuse=allow_existing_session_reuse,
+        worker_env=worker_env,
     )
     session_name = str(spawn_result.get("session_name", ""))
     stdout_file = pathlib.Path(spawn_result.get("stdout_file"))
@@ -1287,6 +1363,11 @@ def _merge_tmux_lifecycle_into_diagnostics(
         "tmux_ipc_cleanup_result",
         "tmux_ipc_cleanup_error",
         "tmux_ipc_files_removed",
+        "tmux_session_workspace_root",
+        "tmux_session_workspace_tmp_dir",
+        "tmux_session_workspace_scope",
+        "tmux_session_workspace_isolated",
+        "tmux_session_env_keys",
     ):
         diagnostics[key] = lifecycle.get(key, diagnostics.get(key))
     return lifecycle
@@ -1320,10 +1401,12 @@ def run_tmux_worker_task(
     retain_session_for_reuse: bool = False,
     allow_existing_session_reuse: bool = False,
     execute_worker_tmux_fn: Callable[
-        [List[str], pathlib.Path, str, int, bool, bool], subprocess.CompletedProcess[str]
+        [List[str], pathlib.Path, str, int, bool, bool, Optional[Dict[str, str]], str, str],
+        subprocess.CompletedProcess[str],
     ] = execute_worker_tmux,
     execute_worker_subprocess_fn: Callable[
-        [List[str], int], subprocess.CompletedProcess[str]
+        [List[str], int, Optional[Dict[str, str]]],
+        subprocess.CompletedProcess[str],
     ] = execute_worker_subprocess,
     which_fn: Callable[[str], str | None] = shutil.which,
 ) -> Dict[str, Any]:
@@ -1331,6 +1414,12 @@ def run_tmux_worker_task(
     payload_dir.mkdir(parents=True, exist_ok=True)
     payload_file = payload_dir / f"{worker_name}_{uuid.uuid4().hex}.json"
     payload_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    session_environment = _build_tmux_session_environment(
+        output_dir=output_dir,
+        worker_name=worker_name,
+        payload=payload,
+    )
+    worker_env = dict(session_environment.get("worker_env", {}))
 
     command = [
         sys.executable,
@@ -1408,6 +1497,11 @@ def run_tmux_worker_task(
         "tmux_ipc_cleanup_result": "",
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
+        "tmux_session_workspace_root": str(session_environment.get("workspace_root", "")),
+        "tmux_session_workspace_tmp_dir": str(session_environment.get("workspace_tmp_dir", "")),
+        "tmux_session_workspace_scope": str(session_environment.get("workspace_scope", "")),
+        "tmux_session_workspace_isolated": bool(session_environment.get("workspace_isolation_active", False)),
+        "tmux_session_env_keys": sorted({str(key) for key in worker_env.keys()}),
     }
 
     def _run_subprocess_fallback(reason: str) -> subprocess.CompletedProcess[str]:
@@ -1422,7 +1516,11 @@ def run_tmux_worker_task(
         )
         fallback_started = time.time()
         try:
-            fallback_completed = execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+            fallback_completed = execute_worker_subprocess_fn(
+                command=command,
+                timeout_sec=timeout_sec,
+                worker_env=worker_env,
+            )
         except subprocess.TimeoutExpired as exc:
             fallback_completed = _completed_process_from_timeout(
                 command=command,
@@ -1452,7 +1550,7 @@ def run_tmux_worker_task(
 
     def _run_primary_subprocess(transport_name: str, phase: str) -> subprocess.CompletedProcess[str]:
         try:
-            return execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec)
+            return execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec, worker_env=worker_env)
         except subprocess.TimeoutExpired as exc:
             completed_timeout = _completed_process_from_timeout(
                 command=command,
@@ -1483,6 +1581,9 @@ def run_tmux_worker_task(
                     timeout_sec=timeout_sec,
                     retain_session_for_reuse=retain_session_for_reuse,
                     allow_existing_session_reuse=allow_existing_session_reuse,
+                    worker_env=worker_env,
+                    session_workspace_root=str(session_environment.get("workspace_root", "")),
+                    session_workspace_tmp_dir=str(session_environment.get("workspace_tmp_dir", "")),
                 )
             else:
                 fallback_reason = "tmux binary not found"
@@ -1837,11 +1938,12 @@ def run_tmux_analyst_task_once(
             lease_status = "failed"
             if "subprocess" in transport:
                 lease_status = "fallback_subprocess"
-            _update_tmux_session_lease(
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=profile.name,
                 session_name=str(
-                    execution_diagnostics.get("tmux_preferred_session_name", "")
+                    execution_diagnostics.get("tmux_session_name", "")
+                    or execution_diagnostics.get("tmux_preferred_session_name", "")
                     or preferred_tmux_session_name(profile.name)
                 ),
                 status=lease_status,
@@ -1857,6 +1959,23 @@ def run_tmux_analyst_task_once(
                 error=error,
             )
             if lead_context.session_registry is not None:
+                lead_context.session_state = lead_context.session_registry.record_boundary(
+                    agent_name=profile.name,
+                    transport=transport or "tmux",
+                    transport_session_name=str(
+                        execution_diagnostics.get("tmux_session_name", "")
+                        or lease_entry.get("session_name", "")
+                    ),
+                    workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                    workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+                    workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+                    workspace_isolation_active=bool(
+                        execution_diagnostics.get("tmux_session_workspace_isolated", False)
+                    ),
+                    retained_for_reuse=bool(lease_entry.get("retained_for_reuse", False)),
+                    reuse_authorized=bool(lease_entry.get("reuse_authorized", False)),
+                    transport_reuse_count=int(lease_entry.get("reuse_count", 0) or 0),
+                )
                 lead_context.session_state = lead_context.session_registry.record_task_result(
                     agent_name=profile.name,
                     task=task,
@@ -1951,11 +2070,12 @@ def run_tmux_analyst_task_once(
         session_status = "retained" if retained_for_reuse else "ready"
         if "subprocess" in transport:
             session_status = "fallback_subprocess"
-        _update_tmux_session_lease(
+        lease_entry = _update_tmux_session_lease(
             lead_context=lead_context,
             worker_name=profile.name,
             session_name=str(
-                execution_diagnostics.get("tmux_preferred_session_name", "")
+                execution_diagnostics.get("tmux_session_name", "")
+                or execution_diagnostics.get("tmux_preferred_session_name", "")
                 or preferred_tmux_session_name(profile.name)
             ),
             status=lease_status,
@@ -1968,6 +2088,23 @@ def run_tmux_analyst_task_once(
             reuse_authorized=allow_existing_session_reuse,
         )
         if lead_context.session_registry is not None:
+            lead_context.session_state = lead_context.session_registry.record_boundary(
+                agent_name=profile.name,
+                transport=transport or "tmux",
+                transport_session_name=str(
+                    execution_diagnostics.get("tmux_session_name", "")
+                    or lease_entry.get("session_name", "")
+                ),
+                workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+                workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+                workspace_isolation_active=bool(
+                    execution_diagnostics.get("tmux_session_workspace_isolated", False)
+                ),
+                retained_for_reuse=bool(lease_entry.get("retained_for_reuse", False)),
+                reuse_authorized=bool(lease_entry.get("reuse_authorized", False)),
+                transport_reuse_count=int(lease_entry.get("reuse_count", 0) or 0),
+            )
             lead_context.session_state = lead_context.session_registry.record_task_result(
                 agent_name=profile.name,
                 task=task,

@@ -437,16 +437,23 @@ class InProcessTeammateAgent(threading.Thread):
         )
 
     def run(self) -> None:
+        session_transport = "in-process"
+        if (
+            not self.claim_tasks
+            and self.context.runtime_config.teammate_mode == "tmux"
+            and self.context.profile.agent_type == "analyst"
+        ):
+            session_transport = str(self.context.session_state.get("transport", "") or "")
         if self.context.session_registry is not None:
             self.context.session_state = self.context.session_registry.record_status(
                 agent_name=self.context.profile.name,
-                transport="in-process",
+                transport=session_transport,
                 status="ready",
             )
         self.context.logger.log(
             "teammate_session_started",
             agent=self.context.profile.name,
-            transport="in-process",
+            transport=str(self.context.session_state.get("transport", "") or session_transport or "in-process"),
             session_id=str(self.context.session_state.get("session_id", "") or ""),
         )
         self.context.mailbox.send(
@@ -501,13 +508,13 @@ class InProcessTeammateAgent(threading.Thread):
         if self.context.session_registry is not None:
             self.context.session_state = self.context.session_registry.record_status(
                 agent_name=self.context.profile.name,
-                transport="in-process",
+                transport=session_transport,
                 status="stopped",
             )
         self.context.logger.log(
             "teammate_session_stopped",
             agent=self.context.profile.name,
-            transport="in-process",
+            transport=str(self.context.session_state.get("transport", "") or session_transport or "in-process"),
             session_id=str(self.context.session_state.get("session_id", "") or ""),
         )
         self.context.mailbox.send(

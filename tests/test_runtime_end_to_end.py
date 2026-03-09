@@ -461,6 +461,22 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertIn("reuse_authorized", leases["analyst_alpha"])
             self.assertIn("session_name", leases["analyst_alpha"])
+            session_boundaries = json.loads(
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(session_boundaries.get("session_count", 0), 1)
+            scoped_tmux_boundaries = [
+                item
+                for item in session_boundaries.get("sessions", [])
+                if isinstance(item, dict)
+                and item.get("boundary_mode") in {"tmux_worker_session", "worker_subprocess_session"}
+                and item.get("workspace_isolation_active")
+            ]
+            self.assertGreaterEqual(len(scoped_tmux_boundaries), 1)
+            first_boundary = scoped_tmux_boundaries[0]
+            self.assertTrue(first_boundary.get("workspace_root"))
+            self.assertTrue(first_boundary.get("workspace_tmp_dir"))
+            self.assertEqual(first_boundary.get("workspace_scope"), "tmux_session_workspace")
 
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(

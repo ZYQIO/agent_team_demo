@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -1013,6 +1014,64 @@ class RuntimeLogicTests(unittest.TestCase):
                 ],
             )
 
+    def test_execute_worker_tmux_injects_session_environment_into_shell_command(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = pathlib.Path(tmp)
+            session_prefix = "agent_analyst_alpha"
+            session_name = session_prefix
+            ipc_dir = workdir / "_tmux_worker_ipc"
+            stdout_file = ipc_dir / f"{session_name}.stdout.txt"
+            stderr_file = ipc_dir / f"{session_name}.stderr.txt"
+            status_file = ipc_dir / f"{session_name}.status.txt"
+            session_root = workdir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"
+            session_tmp = session_root / "tmp"
+            shell_commands = []
+
+            def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
+                if command[:2] == ["tmux", "list-sessions"]:
+                    return subprocess.CompletedProcess(
+                        args=command,
+                        returncode=1,
+                        stdout="",
+                        stderr="no server running on /tmp/tmux-501/default",
+                    )
+                if command[:2] == ["tmux", "new-session"]:
+                    shell_commands.append(str(command[-1]))
+                    ipc_dir.mkdir(parents=True, exist_ok=True)
+                    stdout_file.write_text("env ok", encoding="utf-8")
+                    stderr_file.write_text("", encoding="utf-8")
+                    status_file.write_text("0", encoding="utf-8")
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                if command[:2] == ["tmux", "kill-session"] and command[-1] == session_name:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
+                raise AssertionError(f"unexpected command: {command}")
+
+            with mock.patch.object(runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run):
+                completed = runtime._execute_worker_tmux(
+                    command=[sys.executable, "-c", "print('hi')"],
+                    workdir=workdir,
+                    session_prefix=session_prefix,
+                    timeout_sec=1,
+                    worker_env={
+                        "AGENT_TEAM_SESSION_ID": "session-alpha",
+                        "AGENT_TEAM_SESSION_DIR": str(session_root),
+                        "TMPDIR": str(session_tmp),
+                    },
+                    session_workspace_root=str(session_root),
+                    session_workspace_tmp_dir=str(session_tmp),
+                )
+
+            self.assertEqual(completed.returncode, 0)
+            self.assertEqual(len(shell_commands), 1)
+            self.assertIn("AGENT_TEAM_SESSION_ID=session-alpha", shell_commands[0])
+            self.assertIn(f"AGENT_TEAM_SESSION_DIR={shlex.quote(str(session_root))}", shell_commands[0])
+            self.assertIn(f"TMPDIR={shlex.quote(str(session_tmp))}", shell_commands[0])
+            self.assertIn("AGENT_TEAM_TRANSPORT_SESSION=agent_analyst_alpha", shell_commands[0])
+            lifecycle = getattr(completed, "tmux_lifecycle", {})
+            self.assertEqual(lifecycle.get("tmux_session_workspace_root"), str(session_root))
+            self.assertEqual(lifecycle.get("tmux_session_workspace_tmp_dir"), str(session_tmp))
+            self.assertTrue(lifecycle.get("tmux_session_workspace_isolated"))
+
     def test_run_tmux_analyst_task_once_sets_reuse_hint_when_future_tasks_exist(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -1160,6 +1219,9 @@ class RuntimeLogicTests(unittest.TestCase):
             analyst_profiles = [
                 runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
             ]
+            session_registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_registry.activate_for_run(profile=analyst_profiles[0], transport="tmux")
+            lead_context.session_registry = session_registry
             allow_reuse_flags = []
 
             def fake_run_worker_task(**kwargs):
@@ -1173,7 +1235,16 @@ class RuntimeLogicTests(unittest.TestCase):
                         "tmux_preferred_session_reuse_authorized": kwargs.get(
                             "allow_existing_session_reuse", False
                         ),
+                        "tmux_session_name": "agent_analyst_alpha",
                         "tmux_preferred_session_name": "agent_analyst_alpha",
+                        "tmux_session_workspace_root": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"
+                        ),
+                        "tmux_session_workspace_tmp_dir": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
+                        ),
+                        "tmux_session_workspace_scope": "tmux_session_workspace",
+                        "tmux_session_workspace_isolated": True,
                         "tmux_cleanup_result": "killed",
                     },
                 }
@@ -1194,6 +1265,12 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(lease_entry.get("reuse_authorized"))
             self.assertTrue(lease_entry.get("reused_existing"))
             self.assertEqual(lease_entry.get("reuse_count"), 1)
+            session = session_registry.session_for("analyst_alpha")
+            self.assertEqual(session.get("transport_session_name"), "agent_analyst_alpha")
+            self.assertEqual(session.get("workspace_scope"), "tmux_session_workspace")
+            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertTrue(session.get("reuse_authorized"))
+            self.assertEqual(session.get("transport_reuse_count"), 1)
 
     def test_cleanup_tmux_analyst_sessions_sweeps_preferred_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1808,6 +1885,47 @@ class RuntimeLogicTests(unittest.TestCase):
                     if line:
                         event_names.append(json.loads(line).get("event"))
             self.assertIn("tmux_worker_transport_timeout", event_names)
+
+    def test_run_tmux_worker_task_builds_isolated_worker_env(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            config = runtime.RuntimeConfig(teammate_mode="subprocess")
+            subprocess_ok = subprocess.CompletedProcess(
+                args=["python"],
+                returncode=0,
+                stdout=json.dumps({"result": {"ok": True}, "state_updates": {}}),
+                stderr="",
+            )
+
+            with mock.patch.object(runtime, "_execute_worker_subprocess", return_value=subprocess_ok) as run_subprocess:
+                result = runtime._run_tmux_worker_task(
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                    output_dir=output_dir,
+                    runtime_config=config,
+                    payload={
+                        "task_type": "discover_markdown",
+                        "session_state": {
+                            "session_id": "session-alpha",
+                        },
+                    },
+                    worker_name="analyst_alpha",
+                    logger=logger,
+                    timeout_sec=1,
+                )
+
+            self.assertTrue(result["ok"])
+            worker_env = run_subprocess.call_args.kwargs["worker_env"]
+            self.assertEqual(worker_env["AGENT_TEAM_SESSION_ID"], "session-alpha")
+            self.assertEqual(worker_env["AGENT_TEAM_AGENT"], "analyst_alpha")
+            self.assertTrue(worker_env["AGENT_TEAM_SESSION_DIR"].endswith("session-alpha"))
+            self.assertTrue(pathlib.Path(worker_env["AGENT_TEAM_SESSION_DIR"]).exists())
+            self.assertTrue(pathlib.Path(worker_env["AGENT_TEAM_SESSION_TMP_DIR"]).exists())
+            self.assertEqual(worker_env["TMPDIR"], worker_env["AGENT_TEAM_SESSION_TMP_DIR"])
+            diagnostics = result.get("diagnostics", {})
+            self.assertEqual(diagnostics.get("tmux_session_workspace_scope"), "tmux_session_workspace")
+            self.assertTrue(diagnostics.get("tmux_session_workspace_isolated"))
+            self.assertIn("AGENT_TEAM_SESSION_ID", diagnostics.get("tmux_session_env_keys", []))
 
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2532,6 +2650,100 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(snapshot["boundary_mode_counts"]["runtime_emulated_session"], 1)
         self.assertEqual(snapshot["boundary_strength_counts"]["medium"], 1)
         self.assertEqual(snapshot["boundary_strength_counts"]["emulated"], 1)
+
+    def test_build_session_boundary_snapshot_captures_workspace_isolation_metadata(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "generic-cli",
+                "session_transport": "process",
+                "capabilities": {
+                    "independent_sessions": False,
+                    "workspace_isolation": False,
+                },
+                "limits": ["session_isolation_emulated"],
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        registry.activate_for_run(profile=analyst, transport="subprocess")
+        registry.record_boundary(
+            agent_name="analyst_alpha",
+            transport="subprocess",
+            transport_session_name="worker_subprocess_analyst_alpha",
+            workspace_root="D:/tmp/session-alpha",
+            workspace_tmp_dir="D:/tmp/session-alpha/tmp",
+            workspace_scope="tmux_session_workspace",
+            workspace_isolation_active=True,
+            reuse_authorized=True,
+            transport_reuse_count=2,
+        )
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["worker_subprocess_session"], 1)
+        session = snapshot["sessions"][0]
+        self.assertEqual(session["transport_session_name"], "worker_subprocess_analyst_alpha")
+        self.assertEqual(session["workspace_scope"], "tmux_session_workspace")
+        self.assertTrue(session["workspace_isolation_active"])
+        self.assertEqual(session["transport_reuse_count"], 2)
+        self.assertIn("session_workspace_scoped_tmpdir", session["notes"])
+
+    def test_tmux_mailbox_helper_does_not_override_worker_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(participants=["lead", "analyst_alpha"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="tmux")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                session_state=session_state,
+                session_registry=registry,
+            )
+            stop_event = threading.Event()
+            stop_event.set()
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=stop_event,
+                claim_tasks=False,
+                handlers={},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+
+            agent.run()
+
+            session = registry.session_for("analyst_alpha")
+            self.assertEqual(session["transport"], "tmux")
+            self.assertEqual(session["status"], "stopped")
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            started = [item for item in events if item.get("event") == "teammate_session_started"]
+            stopped = [item for item in events if item.get("event") == "teammate_session_stopped"]
+            self.assertEqual(started[-1].get("transport"), "tmux")
+            self.assertEqual(stopped[-1].get("transport"), "tmux")
 
     def test_build_session_boundary_snapshot_prefers_host_native_sessions(self) -> None:
         shared_state = runtime.SharedState()

@@ -179,6 +179,19 @@ def main() -> int:
         return fail("team_progress.md is missing the Agent Summary section")
 
     if runtime_config.get("teammate_mode") == "tmux":
+        scoped_tmux_boundaries = [
+            item
+            for item in session_boundaries.get("sessions", [])
+            if isinstance(item, dict)
+            and item.get("boundary_mode") in {"tmux_worker_session", "worker_subprocess_session"}
+            and bool(item.get("workspace_isolation_active", False))
+            and str(item.get("workspace_root", "") or "")
+        ]
+        if not scoped_tmux_boundaries:
+            return fail(
+                "tmux runs must record at least one workspace-scoped teammate session boundary "
+                "with workspace_root and workspace_isolation_active"
+            )
         diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
         if not diagnostics_path.exists():
             return fail("Missing tmux worker diagnostics artifact")

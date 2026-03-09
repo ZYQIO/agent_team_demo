@@ -66,7 +66,8 @@ The intended architecture is now:
 | Task-context boundaries | Completed | Runtime now prepares task-scoped shared-state views, emits `task_context_prepared`, and writes `context_boundaries.json` for per-agent/task visibility auditing. |
 | Teammate session ledger | Completed | Runtime now maintains durable per-agent session ids, transport, recent task history, message history, and provider memory in `teammate_sessions.json`. |
 | Session continuity on resume | Completed | Resumed runs now preserve prior teammate `session_id` values, increment session lifecycle counters, and emit explicit `teammate_session_resumed` events. |
-| Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, or runtime-emulated. |
+| Tmux session workspaces | Completed | Tmux-mode workers now get stable session-scoped workspace/temp directories that are surfaced in `teammate_sessions.json` and `session_boundaries.json`. |
+| Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -365,7 +366,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `74/74` tests passed
+- `78/78` tests passed
 
 ### Smoke Runs
 
