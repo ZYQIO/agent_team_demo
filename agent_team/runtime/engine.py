@@ -474,6 +474,7 @@ def run_team(
     board = TaskBoard(tasks=tasks, logger=logger)
     profiles = build_profiles(team_config=effective_agent_team_config.team)
     analyst_profiles = [profile for profile in profiles if profile.agent_type == "analyst"]
+    tmux_worker_profiles = list(profiles)
     lead_name = str(effective_agent_team_config.team.lead_name or "lead")
     participants = [lead_name] + [profile.name for profile in profiles]
     mailbox = Mailbox(participants=participants, logger=logger)
@@ -564,11 +565,7 @@ def run_team(
     )
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
         try:
-            recover_tmux_analyst_sessions_fn(
-                lead_context=lead_context,
-                analyst_profiles=analyst_profiles,
-                resume_from=resume_from,
-            )
+            recover_tmux_analyst_sessions_fn(lead_context, tmux_worker_profiles, resume_from)
         except Exception as exc:  # pragma: no cover - defensive path
             logger.log(
                 "tmux_worker_session_recovery_failed",
@@ -605,6 +602,7 @@ def run_team(
             "teammate_mode_tmux_enabled",
             analyst_workers=[profile.name for profile in analyst_profiles],
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
+            tmux_worker_profiles=[profile.name for profile in tmux_worker_profiles],
         )
 
     for worker in workers:
@@ -715,10 +713,7 @@ def run_team(
                 interrupted_reason if defer_tmux_cleanup else "",
             )
             try:
-                cleanup_tmux_analyst_sessions_fn(
-                    lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
-                )
+                cleanup_tmux_analyst_sessions_fn(lead_context, tmux_worker_profiles)
             except Exception as exc:  # pragma: no cover - defensive path
                 logger.log(
                     "tmux_worker_session_cleanup_failed",

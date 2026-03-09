@@ -1172,7 +1172,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(lease_entry.get("reused_existing"))
             self.assertEqual(lease_entry.get("reuse_count"), 1)
 
-    def test_cleanup_tmux_analyst_sessions_sweeps_preferred_sessions(self) -> None:
+    def test_cleanup_tmux_worker_sessions_sweeps_preferred_sessions(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
@@ -1190,6 +1190,11 @@ class RuntimeLogicTests(unittest.TestCase):
                         "session_name": "agent_analyst_beta",
                         "status": "retained",
                     },
+                    "reviewer_gamma": {
+                        "worker": "reviewer_gamma",
+                        "session_name": "agent_reviewer_gamma",
+                        "status": "retained",
+                    },
                 },
             )
             lead_context = runtime.AgentContext(
@@ -1205,9 +1210,10 @@ class RuntimeLogicTests(unittest.TestCase):
                 shared_state=shared_state,
                 logger=logger,
             )
-            analyst_profiles = [
+            worker_profiles = [
                 runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
                 runtime.AgentProfile(name="analyst_beta", skills={"analysis"}, agent_type="analyst"),
+                runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
             ]
             calls = []
 
@@ -1217,17 +1223,19 @@ class RuntimeLogicTests(unittest.TestCase):
                     return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
                 if command == ["tmux", "kill-session", "-t", "agent_analyst_beta"]:
                     return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="can't find session")
+                if command == ["tmux", "kill-session", "-t", "agent_reviewer_gamma"]:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
                 raise AssertionError(f"unexpected command: {command}")
 
             with mock.patch.object(runtime.tmux_transport.shutil, "which", return_value="/usr/bin/tmux"), mock.patch.object(
                 runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
             ):
-                summary = runtime.cleanup_tmux_analyst_sessions(
+                summary = runtime.cleanup_tmux_worker_sessions(
                     lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
+                    worker_profiles=worker_profiles,
                 )
 
-            self.assertEqual(summary["cleaned"], 1)
+            self.assertEqual(summary["cleaned"], 2)
             self.assertEqual(summary["already_exited"], 1)
             self.assertEqual(summary["failed"], [])
             self.assertEqual(
@@ -1239,15 +1247,18 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(leases.get("analyst_alpha", {}).get("last_cleanup_result"), "killed")
             self.assertEqual(leases.get("analyst_beta", {}).get("status"), "cleanup_swept")
             self.assertEqual(leases.get("analyst_beta", {}).get("last_cleanup_result"), "already_exited")
+            self.assertEqual(leases.get("reviewer_gamma", {}).get("status"), "cleanup_swept")
+            self.assertEqual(leases.get("reviewer_gamma", {}).get("last_cleanup_result"), "killed")
             self.assertEqual(
                 calls,
                 [
                     ["tmux", "kill-session", "-t", "agent_analyst_alpha"],
                     ["tmux", "kill-session", "-t", "agent_analyst_beta"],
+                    ["tmux", "kill-session", "-t", "agent_reviewer_gamma"],
                 ],
             )
 
-    def test_cleanup_tmux_analyst_sessions_can_defer_for_resume(self) -> None:
+    def test_cleanup_tmux_worker_sessions_can_defer_for_resume(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
@@ -1277,14 +1288,15 @@ class RuntimeLogicTests(unittest.TestCase):
                 shared_state=shared_state,
                 logger=logger,
             )
-            analyst_profiles = [
-                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            worker_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
+                runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
             ]
 
             with mock.patch.object(runtime.tmux_transport.subprocess, "run") as tmux_run:
-                summary = runtime.cleanup_tmux_analyst_sessions(
+                summary = runtime.cleanup_tmux_worker_sessions(
                     lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
+                    worker_profiles=worker_profiles,
                 )
 
             tmux_run.assert_not_called()
@@ -1293,7 +1305,7 @@ class RuntimeLogicTests(unittest.TestCase):
             lease_entry = shared_state.get("tmux_session_leases", {}).get("analyst_alpha", {})
             self.assertEqual(lease_entry.get("status"), "retained")
 
-    def test_recover_tmux_analyst_sessions_marks_retained_session_available(self) -> None:
+    def test_recover_tmux_worker_sessions_marks_retained_session_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
@@ -1321,8 +1333,9 @@ class RuntimeLogicTests(unittest.TestCase):
                 shared_state=shared_state,
                 logger=logger,
             )
-            analyst_profiles = [
-                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            worker_profiles = [
+                runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
+                runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
             ]
 
             def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
@@ -1333,9 +1346,9 @@ class RuntimeLogicTests(unittest.TestCase):
             with mock.patch.object(runtime.tmux_transport.shutil, "which", return_value="/usr/bin/tmux"), mock.patch.object(
                 runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
             ):
-                summary = runtime.recover_tmux_analyst_sessions(
+                summary = runtime.recover_tmux_worker_sessions(
                     lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
+                    worker_profiles=worker_profiles,
                     resume_from=output_dir / "run_checkpoint.json",
                 )
 
@@ -1349,7 +1362,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 ["analyst_alpha"],
             )
 
-    def test_recover_tmux_analyst_sessions_marks_missing_retained_session(self) -> None:
+    def test_recover_tmux_worker_sessions_marks_missing_retained_session(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
@@ -1367,6 +1380,11 @@ class RuntimeLogicTests(unittest.TestCase):
                         "session_name": "agent_analyst_beta",
                         "status": "cleanup_swept",
                     },
+                    "reviewer_gamma": {
+                        "worker": "reviewer_gamma",
+                        "session_name": "agent_reviewer_gamma",
+                        "status": "retained",
+                    },
                 },
             )
             lead_context = runtime.AgentContext(
@@ -1382,33 +1400,40 @@ class RuntimeLogicTests(unittest.TestCase):
                 shared_state=shared_state,
                 logger=logger,
             )
-            analyst_profiles = [
+            worker_profiles = [
                 runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
                 runtime.AgentProfile(name="analyst_beta", skills={"analysis"}, agent_type="analyst"),
+                runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
             ]
 
             def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
                 if command == ["tmux", "has-session", "-t", "agent_analyst_alpha"]:
                     return subprocess.CompletedProcess(args=command, returncode=1, stdout="", stderr="can't find session")
+                if command == ["tmux", "has-session", "-t", "agent_reviewer_gamma"]:
+                    return subprocess.CompletedProcess(args=command, returncode=0, stdout="", stderr="")
                 raise AssertionError(f"unexpected command: {command}")
 
             with mock.patch.object(runtime.tmux_transport.shutil, "which", return_value="/usr/bin/tmux"), mock.patch.object(
                 runtime.tmux_transport.subprocess, "run", side_effect=fake_tmux_run
             ):
-                summary = runtime.recover_tmux_analyst_sessions(
+                summary = runtime.recover_tmux_worker_sessions(
                     lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
+                    worker_profiles=worker_profiles,
                 )
 
             self.assertEqual(summary["missing"], ["analyst_alpha"])
             self.assertEqual(summary["inactive"], ["analyst_beta"])
+            self.assertEqual(summary["recovered"], ["reviewer_gamma"])
             alpha_lease = shared_state.get("tmux_session_leases", {}).get("analyst_alpha", {})
             beta_lease = shared_state.get("tmux_session_leases", {}).get("analyst_beta", {})
+            reviewer_lease = shared_state.get("tmux_session_leases", {}).get("reviewer_gamma", {})
             self.assertEqual(alpha_lease.get("status"), "recovered_missing")
             self.assertFalse(alpha_lease.get("reuse_authorized"))
             self.assertEqual(alpha_lease.get("recovery_result"), "missing")
             self.assertEqual(beta_lease.get("status"), "recovery_inactive")
             self.assertEqual(beta_lease.get("recovery_result"), "inactive")
+            self.assertEqual(reviewer_lease.get("status"), "recovered_available")
+            self.assertEqual(reviewer_lease.get("recovery_result"), "available")
 
     def test_tmux_worker_payload_supports_dynamic_planning_board_mutations(self) -> None:
         payload = {
@@ -1618,11 +1643,11 @@ class RuntimeLogicTests(unittest.TestCase):
             def fake_worker_factory(**_kwargs):
                 return threading.Thread(target=lambda: None)
 
-            def fake_recovery(lead_context, analyst_profiles, resume_from):
+            def fake_recovery(lead_context, worker_profiles, resume_from):
                 calls.append(
                     {
                         "lead": lead_context.profile.name,
-                        "analysts": [profile.name for profile in analyst_profiles],
+                        "workers": [profile.name for profile in worker_profiles],
                         "resume_from": str(resume_from) if resume_from else "",
                     }
                 )
@@ -1645,7 +1670,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     teammate_agent_factory=fake_worker_factory,
                     run_tmux_analyst_task_once_fn=lambda **_kwargs: False,
                     recover_tmux_analyst_sessions_fn=fake_recovery,
-                    cleanup_tmux_analyst_sessions_fn=lambda **_kwargs: {"cleaned": 0},
+                    cleanup_tmux_analyst_sessions_fn=lambda *_args, **_kwargs: {"cleaned": 0},
                     runtime_script=pathlib.Path(runtime.__file__).resolve(),
                 )
 
@@ -1655,7 +1680,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 [
                     {
                         "lead": "lead",
-                        "analysts": ["analyst_alpha", "analyst_beta"],
+                        "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"],
                         "resume_from": str(resume_from),
                     }
                 ],
@@ -1676,14 +1701,14 @@ class RuntimeLogicTests(unittest.TestCase):
             def fake_worker_factory(**_kwargs):
                 return threading.Thread(target=lambda: None)
 
-            def fake_cleanup(lead_context, analyst_profiles):
+            def fake_cleanup(lead_context, worker_profiles):
                 cleanup_calls.append(
                     {
                         "lead": lead_context.profile.name,
-                        "analysts": [profile.name for profile in analyst_profiles],
+                        "workers": [profile.name for profile in worker_profiles],
                     }
                 )
-                return {"cleaned": len(analyst_profiles)}
+                return {"cleaned": len(worker_profiles)}
 
             with mock.patch("agent_team.runtime.engine.resolve_workflow_pack", return_value=workflow_pack):
                 exit_code = runtime.run_team_impl(
@@ -1706,7 +1731,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(
                 cleanup_calls,
-                [{"lead": "lead", "analysts": ["analyst_alpha", "analyst_beta"]}],
+                [{"lead": "lead", "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"]}],
             )
 
     def test_run_team_tmux_defers_cleanup_when_paused_for_resume(self) -> None:
@@ -1769,12 +1794,12 @@ class RuntimeLogicTests(unittest.TestCase):
             def fake_worker_factory(**_kwargs):
                 return threading.Thread(target=lambda: None)
 
-            def fake_cleanup(lead_context, analyst_profiles):
+            def fake_cleanup(lead_context, worker_profiles):
                 cleanup_flags.append(
                     {
                         "deferred": bool(lead_context.shared_state.get("tmux_cleanup_deferred_for_resume", False)),
                         "reason": str(lead_context.shared_state.get("tmux_cleanup_deferred_reason", "")),
-                        "analysts": [profile.name for profile in analyst_profiles],
+                        "workers": [profile.name for profile in worker_profiles],
                     }
                 )
                 return {"cleaned": 0}
@@ -1806,7 +1831,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     {
                         "deferred": True,
                         "reason": "max_completed_tasks reached (1)",
-                        "analysts": ["analyst_alpha", "analyst_beta"],
+                        "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"],
                     }
                 ],
             )

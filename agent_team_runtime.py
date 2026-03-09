@@ -188,13 +188,35 @@ def _run_tmux_worker_task(
     )
 
 
+def cleanup_tmux_worker_sessions(
+    lead_context: AgentContext,
+    worker_profiles: Sequence[AgentProfile],
+) -> Dict[str, Any]:
+    return tmux_transport.cleanup_tmux_worker_sessions(
+        lead_context=lead_context,
+        worker_profiles=worker_profiles,
+    )
+
+
 def cleanup_tmux_analyst_sessions(
     lead_context: AgentContext,
     analyst_profiles: Sequence[AgentProfile],
 ) -> Dict[str, Any]:
-    return tmux_transport.cleanup_tmux_analyst_sessions(
+    return cleanup_tmux_worker_sessions(
         lead_context=lead_context,
-        analyst_profiles=analyst_profiles,
+        worker_profiles=analyst_profiles,
+    )
+
+
+def recover_tmux_worker_sessions(
+    lead_context: AgentContext,
+    worker_profiles: Sequence[AgentProfile],
+    resume_from: Optional[pathlib.Path] = None,
+) -> Dict[str, Any]:
+    return tmux_transport.recover_tmux_worker_sessions(
+        lead_context=lead_context,
+        worker_profiles=worker_profiles,
+        resume_from=resume_from,
     )
 
 
@@ -203,9 +225,9 @@ def recover_tmux_analyst_sessions(
     analyst_profiles: Sequence[AgentProfile],
     resume_from: Optional[pathlib.Path] = None,
 ) -> Dict[str, Any]:
-    return tmux_transport.recover_tmux_analyst_sessions(
+    return recover_tmux_worker_sessions(
         lead_context=lead_context,
-        analyst_profiles=analyst_profiles,
+        worker_profiles=analyst_profiles,
         resume_from=resume_from,
     )
 
@@ -612,8 +634,8 @@ def run_team(
         teammate_agent_factory=TeammateAgent,
         external_teammate_task_runner=run_external_teammate_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
-        recover_tmux_analyst_sessions_fn=recover_tmux_analyst_sessions,
-        cleanup_tmux_analyst_sessions_fn=cleanup_tmux_analyst_sessions,
+        recover_tmux_analyst_sessions_fn=recover_tmux_worker_sessions,
+        cleanup_tmux_analyst_sessions_fn=cleanup_tmux_worker_sessions,
         runtime_script=pathlib.Path(__file__).resolve(),
     )
 

@@ -65,6 +65,7 @@ The intended architecture is now:
 | Host behavioral workspace sessions | Completed | host adapters now prepare per-agent workspace/context artifacts instead of emitting metadata only. |
 | Task-level external worker delegation | Completed | `tmux` mode now delegates analyst tasks plus compatible reviewer execution tasks through the shared external worker transport. |
 | Mailbox bridge for reviewer challenge tasks | Completed | `peer_challenge` and `evidence_pack` can now run in external workers through a filesystem mailbox bridge. |
+| Worker-wide tmux session recovery/cleanup | Completed | Session lease, resume recovery, and shutdown cleanup now sweep all teammate workers instead of analyst-only sessions. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work

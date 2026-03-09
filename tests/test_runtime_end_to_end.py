@@ -370,7 +370,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
             cleanup_summary_path = output_dir / "tmux_session_cleanup_summary.json"
             self.assertTrue(cleanup_summary_path.exists())
             cleanup_summary = json.loads(cleanup_summary_path.read_text(encoding="utf-8"))
-            self.assertEqual(cleanup_summary.get("sessions"), ["agent_analyst_alpha", "agent_analyst_beta"])
+            self.assertEqual(
+                cleanup_summary.get("sessions"),
+                ["agent_analyst_alpha", "agent_analyst_beta", "agent_reviewer_gamma"],
+            )
             self.assertIn("cleaned", cleanup_summary)
             self.assertIn("already_exited", cleanup_summary)
             self.assertIn("failed", cleanup_summary)
@@ -391,6 +394,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             leases = json.loads(leases_path.read_text(encoding="utf-8"))
             self.assertIn("analyst_alpha", leases)
             self.assertIn("analyst_beta", leases)
+            self.assertIn("reviewer_gamma", leases)
             self.assertIn(
                 leases["analyst_alpha"].get("status"),
                 {"cleanup_skipped_tmux_unavailable", "cleanup_swept", "cleanup_failed"},
