@@ -338,6 +338,9 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
     mailbox_bridge_payload = payload.get("mailbox_bridge", {})
     if not isinstance(mailbox_bridge_payload, dict):
         mailbox_bridge_payload = {}
+    host_session_payload = payload.get("host_session", {})
+    if not isinstance(host_session_payload, dict):
+        host_session_payload = {}
     event_bridge_path = str(payload.get("event_bridge_path", "") or "")
     provider, _ = build_provider(
         provider_name=str(model_payload.get("provider_name", model_payload.get("provider", "heuristic"))),
@@ -358,13 +361,17 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         )
     if event_bridge_path:
         logger = _WorkerEventBridge(pathlib.Path(event_bridge_path))
+    target_dir = pathlib.Path(str(payload.get("target_dir", "."))).absolute()
+    effective_target_dir = pathlib.Path(
+        str(host_session_payload.get("effective_target_dir", target_dir))
+    ).absolute()
     return SimpleNamespace(
         profile=AgentProfile(
             name=str(profile_payload.get("name", "worker")),
             skills={str(skill) for skill in profile_payload.get("skills", [])},
             agent_type=str(profile_payload.get("agent_type", "general")),
         ),
-        target_dir=pathlib.Path(str(payload.get("target_dir", "."))).absolute(),
+        target_dir=effective_target_dir,
         output_dir=pathlib.Path(str(payload.get("output_dir", "."))).absolute(),
         goal=str(payload.get("goal", "")),
         provider=provider,
@@ -373,6 +380,7 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         shared_state=_WorkerSharedState(shared_state_payload),
         mailbox=mailbox,
         logger=logger,
+        host_session=dict(host_session_payload),
     )
 
 

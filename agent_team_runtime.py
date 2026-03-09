@@ -461,6 +461,7 @@ def _run_external_agent_task(
             "shared_state": context.shared_state.snapshot(),
             "runtime_config": context.runtime_config.to_dict(),
             "profile": context.profile.to_dict(),
+            "host_session": dict(context.host_session),
             "provider_config": dict(model_config),
             "task_results": _task_results_snapshot(context.board),
             "task_ids": _task_ids_snapshot(context.board),

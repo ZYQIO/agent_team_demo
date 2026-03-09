@@ -2716,6 +2716,35 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(context.target_dir, pathlib.Path(host_session["effective_target_dir"]).resolve())
             self.assertEqual(context.host_session["context_file"], host_session["context_file"])
 
+    def test_tmux_worker_context_preserves_host_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            host_target = root / "workspace" / "target"
+            host_target.mkdir(parents=True, exist_ok=True)
+            host_session = {
+                "effective_target_dir": str(host_target.resolve()),
+                "context_file": str((root / "AGENT_TEAM_CONTEXT.md").resolve()),
+                "host_kind": "claude-code",
+            }
+            payload = {
+                "runtime_config": runtime.RuntimeConfig().to_dict(),
+                "shared_state": {},
+                "task_results": {},
+                "task_ids": [],
+                "profile": {"name": "reviewer_gamma", "skills": ["review"], "agent_type": "reviewer"},
+                "provider_config": {"provider_name": "heuristic", "model": "heuristic-v1"},
+                "target_dir": str(root / "fallback_target"),
+                "output_dir": str(root / "out"),
+                "goal": "test",
+                "host_session": host_session,
+            }
+
+            context = runtime.tmux_transport._build_worker_context(payload)
+
+            self.assertEqual(context.target_dir, host_target.resolve())
+            self.assertEqual(context.host_session["context_file"], host_session["context_file"])
+            self.assertEqual(context.host_session["host_kind"], "claude-code")
+
     def test_apply_resume_runtime_defaults_uses_checkpoint_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
