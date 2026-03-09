@@ -98,6 +98,7 @@ from agent_team.models import build_provider
 
 
 TMUX_ANALYST_TASK_TYPES = tmux_transport.TMUX_ANALYST_TASK_TYPES
+TMUX_EXTERNAL_TASK_TYPES = tmux_transport.TMUX_EXTERNAL_TASK_TYPES
 
 
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -120,6 +121,7 @@ class TeammateAgent(InProcessTeammateAgent):
         stop_event: threading.Event,
         handlers: Optional[Mapping[str, TaskHandler]] = None,
         claim_tasks: bool = True,
+        external_task_runner: Optional[Any] = None,
     ) -> None:
         selected_handlers = dict(handlers or HANDLERS)
         super().__init__(
@@ -130,6 +132,7 @@ class TeammateAgent(InProcessTeammateAgent):
             get_lead_name_fn=get_lead_name,
             profile_has_skill_fn=profile_has_skill,
             traceback_module=traceback,
+            external_task_runner=external_task_runner,
         )
 
 
@@ -220,6 +223,224 @@ def run_tmux_analyst_task_once(
     )
 
 
+def _task_results_snapshot(board: Any) -> Dict[str, Any]:
+    snapshot = board.snapshot()
+    results: Dict[str, Any] = {}
+    for item in snapshot.get("tasks", []):
+        task_id = str(item.get("task_id", ""))
+        if not task_id:
+            continue
+        results[task_id] = item.get("result")
+    return results
+
+
+def _task_ids_snapshot(board: Any) -> List[str]:
+    snapshot = board.snapshot()
+    return [str(item.get("task_id", "")) for item in snapshot.get("tasks", []) if item.get("task_id")]
+
+
+def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Dict[str, Any]]:
+    if context.runtime_config.teammate_mode != "tmux":
+        return None
+    if task.task_type not in TMUX_EXTERNAL_TASK_TYPES:
+        return None
+
+    workflow = context.shared_state.get("workflow", {})
+    if not isinstance(workflow, dict):
+        workflow = {}
+    agent_team_config = context.shared_state.get("agent_team_config", {})
+    if not isinstance(agent_team_config, dict):
+        agent_team_config = {}
+    model_config = agent_team_config.get("model", {})
+    if not isinstance(model_config, dict):
+        model_config = {}
+
+    retain_session_for_reuse = False
+    allow_existing_session_reuse = False
+    if context.profile.agent_type == "analyst" and task.task_type in TMUX_ANALYST_TASK_TYPES:
+        board_snapshot = context.board.snapshot()
+        retain_session_for_reuse = any(
+            str(item.get("task_id", "")) != task.task_id
+            and str(item.get("task_type", "")) in TMUX_ANALYST_TASK_TYPES
+            and str(item.get("status", "")) in {"pending", "blocked"}
+            for item in board_snapshot.get("tasks", [])
+        )
+        allow_existing_session_reuse = tmux_transport._lease_allows_preferred_session_reuse(
+            shared_state=context.shared_state,
+            worker_name=context.profile.name,
+        )
+
+    context.logger.log(
+        "tmux_worker_task_dispatched",
+        worker=context.profile.name,
+        task_id=task.task_id,
+        task_type=task.task_type,
+        retain_session_for_reuse=retain_session_for_reuse,
+        allow_existing_session_reuse=allow_existing_session_reuse,
+    )
+    execution = _run_tmux_worker_task(
+        runtime_script=pathlib.Path(__file__).resolve(),
+        output_dir=context.output_dir,
+        runtime_config=context.runtime_config,
+        payload={
+            "task_id": task.task_id,
+            "task_title": task.title,
+            "task_type": task.task_type,
+            "task_payload": dict(task.payload),
+            "task_required_skills": sorted(task.required_skills),
+            "task_dependencies": list(task.dependencies),
+            "task_locked_paths": list(task.locked_paths),
+            "task_allowed_agent_types": sorted(task.allowed_agent_types),
+            "workflow_pack": str(workflow.get("pack", "markdown-audit")),
+            "goal": context.goal,
+            "target_dir": str(context.target_dir),
+            "output_dir": str(context.output_dir),
+            "shared_state": context.shared_state.snapshot(),
+            "runtime_config": context.runtime_config.to_dict(),
+            "profile": context.profile.to_dict(),
+            "provider_config": dict(model_config),
+            "task_results": _task_results_snapshot(context.board),
+            "task_ids": _task_ids_snapshot(context.board),
+        },
+        worker_name=context.profile.name,
+        logger=context.logger,
+        timeout_sec=context.runtime_config.tmux_worker_timeout_sec,
+        retain_session_for_reuse=retain_session_for_reuse,
+        allow_existing_session_reuse=allow_existing_session_reuse,
+    )
+    execution_diagnostics = execution.get("diagnostics", {})
+    transport = str(execution.get("transport", ""))
+
+    if context.profile.agent_type == "analyst":
+        if execution.get("ok"):
+            retained_for_reuse = bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False))
+            lease_status = "retained" if retained_for_reuse else "released"
+            if "subprocess" in transport:
+                lease_status = "fallback_subprocess"
+            tmux_transport._update_tmux_session_lease(
+                lead_context=context,
+                worker_name=context.profile.name,
+                session_name=str(
+                    execution_diagnostics.get("tmux_preferred_session_name", "")
+                    or tmux_transport.preferred_tmux_session_name(context.profile.name)
+                ),
+                status=lease_status,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport,
+                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+                retained_for_reuse=retained_for_reuse,
+                reused_existing=bool(
+                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+                ),
+                reuse_authorized=allow_existing_session_reuse,
+            )
+        else:
+            lease_status = "failed"
+            if "subprocess" in transport:
+                lease_status = "fallback_subprocess"
+            tmux_transport._update_tmux_session_lease(
+                lead_context=context,
+                worker_name=context.profile.name,
+                session_name=str(
+                    execution_diagnostics.get("tmux_preferred_session_name", "")
+                    or tmux_transport.preferred_tmux_session_name(context.profile.name)
+                ),
+                status=lease_status,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport,
+                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+                retained_for_reuse=bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False)),
+                reused_existing=bool(
+                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+                ),
+                reuse_authorized=allow_existing_session_reuse,
+                error=str(execution.get("error", "")),
+            )
+
+    event_name = "tmux_worker_task_completed" if execution.get("ok") else "tmux_worker_task_failed"
+    context.logger.log(
+        event_name,
+        worker=context.profile.name,
+        task_id=task.task_id,
+        transport=transport,
+        fallback_used=bool(execution_diagnostics.get("fallback_used", False)),
+        fallback_reason=str(execution_diagnostics.get("fallback_reason", "")),
+        execution_timed_out=bool(execution_diagnostics.get("execution_timed_out", False)),
+        timeout_phase=str(execution_diagnostics.get("timeout_phase", "")),
+        tmux_timed_out=bool(execution_diagnostics.get("tmux_timed_out", False)),
+        tmux_session_name_strategy=str(execution_diagnostics.get("tmux_session_name_strategy", "")),
+        tmux_preferred_session_found_preflight=bool(
+            execution_diagnostics.get("tmux_preferred_session_found_preflight", False)
+        ),
+        tmux_preferred_session_retried=bool(
+            execution_diagnostics.get("tmux_preferred_session_retried", False)
+        ),
+        tmux_preferred_session_reused=bool(
+            execution_diagnostics.get("tmux_preferred_session_reused", False)
+        ),
+        tmux_preferred_session_reuse_attempted=bool(
+            execution_diagnostics.get("tmux_preferred_session_reuse_attempted", False)
+        ),
+        tmux_preferred_session_reuse_result=str(
+            execution_diagnostics.get("tmux_preferred_session_reuse_result", "")
+        ),
+        tmux_preferred_session_reuse_authorized=bool(
+            execution_diagnostics.get("tmux_preferred_session_reuse_authorized", False)
+        ),
+        tmux_preferred_session_reused_existing=bool(
+            execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+        ),
+        tmux_session_retained_for_reuse=bool(
+            execution_diagnostics.get("tmux_session_retained_for_reuse", False)
+        ),
+        tmux_orphan_sessions_found=int(execution_diagnostics.get("tmux_orphan_sessions_found", 0) or 0),
+        tmux_orphan_sessions_cleaned=int(execution_diagnostics.get("tmux_orphan_sessions_cleaned", 0) or 0),
+        tmux_spawn_attempts=int(execution_diagnostics.get("tmux_spawn_attempts", 0) or 0),
+        tmux_spawn_retried=bool(execution_diagnostics.get("tmux_spawn_retried", False)),
+        tmux_stale_session_cleanup_attempted=bool(
+            execution_diagnostics.get("tmux_stale_session_cleanup_attempted", False)
+        ),
+        tmux_stale_session_cleanup_result=str(
+            execution_diagnostics.get("tmux_stale_session_cleanup_result", "")
+        ),
+        tmux_stale_session_cleanup_retry_attempted=bool(
+            execution_diagnostics.get("tmux_stale_session_cleanup_retry_attempted", False)
+        ),
+        tmux_stale_session_cleanup_retry_result=str(
+            execution_diagnostics.get("tmux_stale_session_cleanup_retry_result", "")
+        ),
+        tmux_cleanup_retry_attempted=bool(execution_diagnostics.get("tmux_cleanup_retry_attempted", False)),
+        tmux_cleanup_retry_result=str(execution_diagnostics.get("tmux_cleanup_retry_result", "")),
+        tmux_cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+        error=str(execution.get("error", "")) if not execution.get("ok") else "",
+    )
+    if not execution.get("ok"):
+        return {
+            "ok": False,
+            "error": str(execution.get("error", "unknown worker error")),
+        }
+
+    worker_payload = execution.get("payload", {})
+    result = worker_payload.get("result", {})
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+    state_updates = worker_payload.get("state_updates", {})
+    if not isinstance(state_updates, dict):
+        state_updates = {}
+    board_mutations = worker_payload.get("board_mutations", {})
+    if not isinstance(board_mutations, dict):
+        board_mutations = {}
+    return {
+        "ok": True,
+        "result": result,
+        "state_updates": state_updates,
+        "board_mutations": board_mutations,
+        "transport": transport,
+    }
+
+
 def build_tasks(
     output_dir: pathlib.Path,
     runtime_config: RuntimeConfig,
@@ -285,6 +506,7 @@ def run_team(
         branch_run_id=branch_run_id,
         agent_team_config=agent_team_config,
         teammate_agent_factory=TeammateAgent,
+        external_teammate_task_runner=run_external_teammate_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
         recover_tmux_analyst_sessions_fn=recover_tmux_analyst_sessions,
         cleanup_tmux_analyst_sessions_fn=cleanup_tmux_analyst_sessions,

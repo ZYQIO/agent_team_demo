@@ -1410,6 +1410,85 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(beta_lease.get("status"), "recovery_inactive")
             self.assertEqual(beta_lease.get("recovery_result"), "inactive")
 
+    def test_tmux_worker_payload_supports_dynamic_planning_board_mutations(self) -> None:
+        payload = {
+            "task_id": "dynamic_planning",
+            "task_type": "dynamic_planning",
+            "task_payload": {},
+            "runtime_config": runtime.RuntimeConfig(enable_dynamic_tasks=True).to_dict(),
+            "workflow_pack": "markdown-audit",
+            "goal": "test",
+            "target_dir": ".",
+            "output_dir": ".",
+            "profile": {"name": "reviewer_gamma", "skills": ["review"], "agent_type": "reviewer"},
+            "provider_config": {"provider_name": "heuristic", "model": "heuristic-v1"},
+            "task_ids": ["dynamic_planning", "peer_challenge"],
+            "task_results": {},
+            "shared_state": {
+                "heading_issues": [{"path": "a.md"}],
+                "length_issues": [{"path": "b.md"}],
+            },
+        }
+
+        result = runtime.tmux_transport.run_tmux_worker_payload(payload)
+
+        self.assertEqual(
+            set(result["result"]["inserted_tasks"]),
+            {"heading_structure_followup", "length_risk_followup"},
+        )
+        mutations = result["board_mutations"]
+        added_task_ids = {item["task_id"] for item in mutations["add_tasks"]}
+        self.assertEqual(added_task_ids, {"heading_structure_followup", "length_risk_followup"})
+        added_dependencies = {(item["task_id"], item["dependency_id"]) for item in mutations["add_dependencies"]}
+        self.assertEqual(
+            added_dependencies,
+            {
+                ("peer_challenge", "heading_structure_followup"),
+                ("peer_challenge", "length_risk_followup"),
+            },
+        )
+
+    def test_tmux_worker_payload_supports_markdown_llm_synthesis(self) -> None:
+        payload = {
+            "task_id": "llm_synthesis",
+            "task_type": "llm_synthesis",
+            "task_payload": {},
+            "runtime_config": runtime.RuntimeConfig().to_dict(),
+            "workflow_pack": "markdown-audit",
+            "goal": "test",
+            "target_dir": ".",
+            "output_dir": ".",
+            "profile": {"name": "reviewer_gamma", "skills": ["review", "llm"], "agent_type": "reviewer"},
+            "provider_config": {"provider_name": "heuristic", "model": "heuristic-v1"},
+            "task_ids": [
+                "heading_audit",
+                "length_audit",
+                "dynamic_planning",
+                "peer_challenge",
+                "lead_adjudication",
+                "lead_re_adjudication",
+                "evidence_pack",
+            ],
+            "task_results": {
+                "heading_audit": {"files_without_headings": 1},
+                "length_audit": {"long_files": 1},
+                "dynamic_planning": {"inserted_tasks": ["length_risk_followup"]},
+                "peer_challenge": {"targets": ["analyst_alpha"]},
+                "lead_adjudication": {"verdict": "accept", "score": 82},
+                "lead_re_adjudication": {"verdict": "accept", "score": 84},
+                "evidence_pack": {"triggered": False},
+            },
+            "shared_state": {
+                "heading_issues": [{"path": "a.md"}],
+                "length_issues": [{"path": "b.md"}],
+            },
+        }
+
+        result = runtime.tmux_transport.run_tmux_worker_payload(payload)
+
+        self.assertIn("preview", result["result"])
+        self.assertIn("llm_synthesis", result["state_updates"])
+
     def test_run_team_tmux_invokes_recovery_callback_before_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

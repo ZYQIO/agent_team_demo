@@ -328,7 +328,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertTrue(diagnostics_path.exists())
             diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
             self.assertGreaterEqual(len(diagnostics_lines), 1)
-            first_record = json.loads(diagnostics_lines[0])
+            diagnostics_payloads = [json.loads(line) for line in diagnostics_lines if line.strip()]
+            self.assertIn("reviewer_gamma", {item.get("worker") for item in diagnostics_payloads})
+            first_record = diagnostics_payloads[0]
             self.assertIn(first_record.get("result"), {"success", "execution_failed", "invalid_json"})
             self.assertIn("transport_used", first_record)
             self.assertIn("tmux_timed_out", first_record)

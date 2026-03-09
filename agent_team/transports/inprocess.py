@@ -5,9 +5,9 @@ import pathlib
 import threading
 import time
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task
+from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -20,6 +20,7 @@ class InProcessTeammateAgent(threading.Thread):
         profile_has_skill_fn: Callable[[Any, str], bool],
         traceback_module: ModuleType,
         claim_tasks: bool = True,
+        external_task_runner: Optional[Callable[[Any, Task], Optional[Dict[str, Any]]]] = None,
     ) -> None:
         super().__init__(name=context.profile.name, daemon=True)
         self.context = context
@@ -29,7 +30,32 @@ class InProcessTeammateAgent(threading.Thread):
         self._get_lead_name_fn = get_lead_name_fn
         self._profile_has_skill_fn = profile_has_skill_fn
         self._traceback_module = traceback_module
+        self._external_task_runner = external_task_runner
         self._local_memory: List[Dict[str, str]] = []
+
+    def _apply_board_mutations(self, mutations: Dict[str, Any]) -> None:
+        if not isinstance(mutations, dict):
+            return
+        raw_tasks = mutations.get("add_tasks", [])
+        inserted_by = str(mutations.get("inserted_by", self.context.profile.name))
+        tasks: List[Task] = []
+        if isinstance(raw_tasks, list):
+            for item in raw_tasks:
+                if isinstance(item, dict):
+                    tasks.append(task_from_dict(dict(item)))
+        if tasks:
+            self.context.board.add_tasks(tasks=tasks, inserted_by=inserted_by)
+
+        raw_dependencies = mutations.get("add_dependencies", [])
+        if isinstance(raw_dependencies, list):
+            for item in raw_dependencies:
+                if not isinstance(item, dict):
+                    continue
+                self.context.board.add_dependency(
+                    task_id=str(item.get("task_id", "")),
+                    dependency_id=str(item.get("dependency_id", "")),
+                    updated_by=str(item.get("updated_by", self.context.profile.name)),
+                )
 
     def _reply_with_provider(
         self,
@@ -124,7 +150,31 @@ class InProcessTeammateAgent(threading.Thread):
             return
 
         try:
-            result = handler(self.context, task)
+            delegated = None
+            if self._external_task_runner is not None:
+                delegated = self._external_task_runner(self.context, task)
+            if delegated is not None:
+                if not delegated.get("ok", False):
+                    error = str(delegated.get("error", "external task failed"))
+                    self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
+                    self.context.mailbox.send(
+                        sender=self.context.profile.name,
+                        recipient=self._get_lead_name_fn(self.context),
+                        subject="task_failed",
+                        body=error,
+                        task_id=task.task_id,
+                    )
+                    return
+                state_updates = delegated.get("state_updates", {})
+                if isinstance(state_updates, dict):
+                    for key, value in state_updates.items():
+                        self.context.shared_state.set(str(key), value)
+                self._apply_board_mutations(delegated.get("board_mutations", {}))
+                result = delegated.get("result", {})
+            else:
+                result = handler(self.context, task)
+            if not isinstance(result, dict):
+                result = {"raw_result": result}
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
             self.context.mailbox.send(
                 sender=self.context.profile.name,

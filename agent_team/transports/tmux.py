@@ -8,10 +8,22 @@ import subprocess
 import sys
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 from ..config import RuntimeConfig
-from ..core import AgentProfile, EventLogger, utc_now
+from ..core import AgentProfile, EventLogger, Task, utc_now
+from ..models import build_provider
+from ..workflows.markdown_audit_analysis import handle_dynamic_planning as handle_markdown_dynamic_planning
+from ..workflows.markdown_audit_reporting import (
+    handle_llm_synthesis as handle_markdown_llm_synthesis,
+    handle_recommendation_pack as handle_markdown_recommendation_pack,
+)
+from ..workflows.repo_audit_analysis import handle_repo_dynamic_planning
+from ..workflows.repo_audit_reporting import (
+    handle_llm_synthesis as handle_repo_llm_synthesis,
+    handle_repo_recommendation_pack,
+)
 
 
 TMUX_ANALYST_TASK_TYPES = {
@@ -26,11 +38,183 @@ TMUX_ANALYST_TASK_TYPES = {
     "extension_hotspot_followup",
     "directory_hotspot_followup",
 }
+TMUX_REVIEWER_EXTERNAL_TASK_TYPES = {
+    "dynamic_planning",
+    "repo_dynamic_planning",
+    "llm_synthesis",
+    "recommendation_pack",
+    "repo_recommendation_pack",
+}
+TMUX_EXTERNAL_TASK_TYPES = TMUX_ANALYST_TASK_TYPES | TMUX_REVIEWER_EXTERNAL_TASK_TYPES
 TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
 TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
 TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
 TMUX_SESSION_SPAWN_MAX_ATTEMPTS = 3
 TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
+
+
+class _WorkerNullLogger:
+    def log(self, _event: str, **_fields: Any) -> None:
+        return
+
+
+class _WorkerSharedState:
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        self._original = json.loads(json.dumps(payload, ensure_ascii=False))
+        self._data = json.loads(json.dumps(payload, ensure_ascii=False))
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._data.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._data[key] = value
+
+    def snapshot(self) -> Dict[str, Any]:
+        return json.loads(json.dumps(self._data, ensure_ascii=False))
+
+    def changed_values(self) -> Dict[str, Any]:
+        changes: Dict[str, Any] = {}
+        keys = set(self._original.keys()) | set(self._data.keys())
+        for key in keys:
+            if self._original.get(key) != self._data.get(key):
+                changes[str(key)] = self._data.get(key)
+        return changes
+
+
+class _WorkerBoardView:
+    def __init__(self, task_results: Dict[str, Any], task_ids: Sequence[str]) -> None:
+        self._task_results = dict(task_results)
+        self._task_ids = {str(task_id) for task_id in task_ids}
+        self._inserted_tasks: List[Task] = []
+        self._added_dependencies: List[Dict[str, str]] = []
+
+    def get_task_result(self, task_id: str) -> Optional[Dict[str, Any]]:
+        result = self._task_results.get(task_id)
+        if isinstance(result, dict):
+            return dict(result)
+        return result
+
+    def has_task(self, task_id: str) -> bool:
+        if task_id in self._task_ids:
+            return True
+        return any(task.task_id == task_id for task in self._inserted_tasks)
+
+    def add_tasks(self, tasks: Sequence[Task], inserted_by: str) -> List[str]:
+        inserted_ids: List[str] = []
+        for task in tasks:
+            if self.has_task(task.task_id):
+                continue
+            inserted = Task(
+                task_id=task.task_id,
+                title=task.title,
+                task_type=task.task_type,
+                required_skills=set(task.required_skills),
+                dependencies=list(task.dependencies),
+                payload=dict(task.payload),
+                locked_paths=list(task.locked_paths),
+                allowed_agent_types=set(task.allowed_agent_types),
+            )
+            self._inserted_tasks.append(inserted)
+            self._task_ids.add(inserted.task_id)
+            inserted_ids.append(inserted.task_id)
+        self._inserted_by = str(inserted_by)
+        return inserted_ids
+
+    def add_dependency(self, task_id: str, dependency_id: str, updated_by: str) -> bool:
+        record = {
+            "task_id": str(task_id),
+            "dependency_id": str(dependency_id),
+            "updated_by": str(updated_by),
+        }
+        if record in self._added_dependencies:
+            return False
+        if not self.has_task(record["task_id"]) or not self.has_task(record["dependency_id"]):
+            return False
+        self._added_dependencies.append(record)
+        return True
+
+    def mutations(self) -> Dict[str, Any]:
+        return {
+            "inserted_by": getattr(self, "_inserted_by", ""),
+            "add_tasks": [task.to_dict() for task in self._inserted_tasks],
+            "add_dependencies": list(self._added_dependencies),
+        }
+
+
+def _build_worker_context(payload: Dict[str, Any]) -> Any:
+    runtime_payload = payload.get("runtime_config", {})
+    if not isinstance(runtime_payload, dict):
+        runtime_payload = {}
+    runtime_config = RuntimeConfig(
+        **{
+            key: value
+            for key, value in runtime_payload.items()
+            if key in RuntimeConfig.__annotations__
+        }
+    )
+    shared_state_payload = payload.get("shared_state", {})
+    if not isinstance(shared_state_payload, dict):
+        shared_state_payload = {}
+    board_results = payload.get("task_results", {})
+    if not isinstance(board_results, dict):
+        board_results = {}
+    task_ids = payload.get("task_ids", [])
+    if not isinstance(task_ids, list):
+        task_ids = []
+    profile_payload = payload.get("profile", {})
+    if not isinstance(profile_payload, dict):
+        profile_payload = {}
+    model_payload = payload.get("provider_config", {})
+    if not isinstance(model_payload, dict):
+        model_payload = {}
+    provider, _ = build_provider(
+        provider_name=str(model_payload.get("provider_name", model_payload.get("provider", "heuristic"))),
+        model=str(model_payload.get("model", "heuristic-v1")),
+        openai_api_key_env=str(model_payload.get("openai_api_key_env", "OPENAI_API_KEY")),
+        openai_base_url=str(model_payload.get("openai_base_url", "https://api.openai.com/v1")),
+        require_llm=bool(model_payload.get("require_llm", False)),
+        timeout_sec=int(model_payload.get("timeout_sec", 60)),
+    )
+    return SimpleNamespace(
+        profile=AgentProfile(
+            name=str(profile_payload.get("name", "worker")),
+            skills={str(skill) for skill in profile_payload.get("skills", [])},
+            agent_type=str(profile_payload.get("agent_type", "general")),
+        ),
+        target_dir=pathlib.Path(str(payload.get("target_dir", "."))).absolute(),
+        output_dir=pathlib.Path(str(payload.get("output_dir", "."))).absolute(),
+        goal=str(payload.get("goal", "")),
+        provider=provider,
+        runtime_config=runtime_config,
+        board=_WorkerBoardView(task_results=board_results, task_ids=task_ids),
+        shared_state=_WorkerSharedState(shared_state_payload),
+        logger=_WorkerNullLogger(),
+    )
+
+
+def _run_handler_backed_worker(payload: Dict[str, Any], handler: Callable[[Any, Task], Dict[str, Any]]) -> Dict[str, Any]:
+    context = _build_worker_context(payload)
+    task_payload = payload.get("task_payload", {})
+    if not isinstance(task_payload, dict):
+        task_payload = {}
+    task = Task(
+        task_id=str(payload.get("task_id", payload.get("task_type", "worker_task"))),
+        title=str(payload.get("task_title", payload.get("task_type", "worker task"))),
+        task_type=str(payload.get("task_type", "")),
+        required_skills={str(skill) for skill in payload.get("task_required_skills", [])},
+        dependencies=[str(dep) for dep in payload.get("task_dependencies", [])],
+        payload=task_payload,
+        locked_paths=[str(path) for path in payload.get("task_locked_paths", [])],
+        allowed_agent_types={str(name) for name in payload.get("task_allowed_agent_types", [])},
+    )
+    result = handler(context, task)
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+    return {
+        "result": result,
+        "state_updates": context.shared_state.changed_values(),
+        "board_mutations": context.board.mutations(),
+    }
 
 
 def preferred_tmux_session_name(worker_name: str) -> str:
@@ -980,6 +1164,19 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if task_type == "directory_hotspot_followup":
         top_n = int(task_payload.get("top_n", 6))
         return _worker_directory_hotspot_followup(inventory=repository_inventory, top_n=top_n)
+    if task_type == "dynamic_planning":
+        return _run_handler_backed_worker(payload, handle_markdown_dynamic_planning)
+    if task_type == "repo_dynamic_planning":
+        return _run_handler_backed_worker(payload, handle_repo_dynamic_planning)
+    if task_type == "llm_synthesis":
+        workflow_pack = str(payload.get("workflow_pack", "markdown-audit"))
+        if workflow_pack == "repo-audit":
+            return _run_handler_backed_worker(payload, handle_repo_llm_synthesis)
+        return _run_handler_backed_worker(payload, handle_markdown_llm_synthesis)
+    if task_type == "recommendation_pack":
+        return _run_handler_backed_worker(payload, handle_markdown_recommendation_pack)
+    if task_type == "repo_recommendation_pack":
+        return _run_handler_backed_worker(payload, handle_repo_recommendation_pack)
 
     raise ValueError(f"unsupported tmux worker task type: {task_type}")
 

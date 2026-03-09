@@ -61,6 +61,7 @@ class AgentContext:
 TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
 TaskHandlers = Mapping[str, TaskHandler]
 TeammateFactory = Callable[..., threading.Thread]
+ExternalTaskRunner = Callable[[AgentContext, Task], Optional[Dict[str, Any]]]
 TmuxRunner = Callable[[AgentContext, Sequence[AgentProfile], pathlib.Path, int], bool]
 TmuxCleanupRunner = Callable[[AgentContext, Sequence[AgentProfile]], Any]
 TmuxRecoveryRunner = Callable[[AgentContext, Sequence[AgentProfile], Optional[pathlib.Path]], Any]
@@ -145,6 +146,7 @@ def _default_teammate_agent_factory(
     stop_event: threading.Event,
     handlers: TaskHandlers,
     claim_tasks: bool = True,
+    external_task_runner: Optional[ExternalTaskRunner] = None,
 ) -> threading.Thread:
     return InProcessTeammateAgent(
         context=context,
@@ -154,6 +156,7 @@ def _default_teammate_agent_factory(
         get_lead_name_fn=get_lead_name,
         profile_has_skill_fn=profile_has_skill,
         traceback_module=traceback,
+        external_task_runner=external_task_runner,
     )
 
 
@@ -275,6 +278,7 @@ def run_team(
     branch_run_id: str = "",
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
+    external_teammate_task_runner: Optional[ExternalTaskRunner] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
     recover_tmux_analyst_sessions_fn: Optional[TmuxRecoveryRunner] = None,
     cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
@@ -298,8 +302,7 @@ def run_team(
     lead_task_order = [str(task_id) for task_id in workflow_runtime_metadata.lead_task_order]
     report_task_ids = [str(task_id) for task_id in workflow_runtime_metadata.report_task_ids]
     worker_factory = teammate_agent_factory or _default_teammate_agent_factory
-    tmux_runner = run_tmux_analyst_task_once_fn or _missing_tmux_runner
-    runtime_script_path = runtime_script or pathlib.Path(__file__).resolve()
+    del run_tmux_analyst_task_once_fn, runtime_script
 
     resume_payload: Dict[str, Any] = {}
     if resume_from is not None:
@@ -592,9 +595,8 @@ def run_team(
             ),
             stop_event=stop_event,
             handlers=workflow_handlers,
-            claim_tasks=not (
-                runtime_config.teammate_mode == "tmux" and profile.agent_type == "analyst"
-            ),
+            claim_tasks=True,
+            external_task_runner=external_teammate_task_runner,
         )
         for profile in profiles
     ]
@@ -635,21 +637,11 @@ def run_team(
     max_completed_tasks = max(0, int(max_completed_tasks))
     try:
         while True:
-            ran_tmux_task = False
-            if runtime_config.teammate_mode == "tmux":
-                while tmux_runner(
-                    lead_context=lead_context,
-                    analyst_profiles=analyst_profiles,
-                    runtime_script=runtime_script_path,
-                    worker_timeout_sec=runtime_config.tmux_worker_timeout_sec,
-                ):
-                    ran_tmux_task = True
             ran_lead_task = run_lead_tasks_once(
                 lead_context=lead_context,
                 lead_task_order=lead_task_order,
                 handlers=workflow_handlers,
             )
-            ran_lead_task = ran_lead_task or ran_tmux_task
             messages = mailbox.pull(lead_context.profile.name)
             for message in messages:
                 logger.log(
