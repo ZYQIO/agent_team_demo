@@ -1,6 +1,6 @@
 # Agent Team Parity Snapshot
 
-This file tracks practical parity against Claude Code Agent Teams as of 2026-03-08.
+This file tracks practical parity against Claude Code Agent Teams as of 2026-03-09.
 
 ## Legend
 
@@ -19,6 +19,8 @@ This file tracks practical parity against Claude Code Agent Teams as of 2026-03-
 | Peer challenge loop | Implemented | Round1/round2/optional round3 with configurable wait and thresholds. |
 | Lead adjudication + re-adjudication | Implemented | Initial verdict plus evidence bonus and final verdict. |
 | Hook events for multi-agent workflows | Implemented | Emits `TeammateIdle` and `TaskCompleted` in `events.jsonl`. |
+| Lead/team progress visibility | Implemented | Runtime now emits `team_progress.json` + `team_progress.md` and appends a per-agent summary into `final_report.md`. |
+| Clear teammate context boundaries | Partial | Runtime now prepares task-scoped context views and emits `context_boundaries.json`, but handlers still share one in-process runtime and isolation is policy-based rather than process-hard. |
 | Provider abstraction | Implemented | `heuristic` plus OpenAI-compatible endpoint with strict/fallback modes. |
 | Host/model/workflow config separation | Implemented | Host, model, team, workflow, and policy config are now separated under `agent_team/config.py`. |
 | Multiple workflow packs on one runtime | Implemented | Built-in packs now include `markdown-audit` and `repo-audit`, both running on the same engine, verifier, and transport layers. |

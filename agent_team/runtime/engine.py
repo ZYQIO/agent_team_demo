@@ -55,6 +55,7 @@ class AgentContext:
     file_locks: FileLockRegistry
     shared_state: SharedState
     logger: EventLogger
+    task_context: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]

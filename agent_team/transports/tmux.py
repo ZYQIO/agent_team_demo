@@ -12,6 +12,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tu
 
 from ..config import RuntimeConfig
 from ..core import AgentProfile, EventLogger, utc_now
+from ..runtime.task_context import build_task_context_snapshot
 
 
 TMUX_ANALYST_TASK_TYPES = {
@@ -932,7 +933,10 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     task_payload = payload.get("task_payload", {})
     if not isinstance(task_payload, dict):
         task_payload = {}
-    shared_state = payload.get("shared_state", {})
+    task_context = payload.get("task_context", {})
+    if not isinstance(task_context, dict):
+        task_context = {}
+    shared_state = task_context.get("visible_shared_state", payload.get("shared_state", {}))
     if not isinstance(shared_state, dict):
         shared_state = {}
 
@@ -1768,8 +1772,13 @@ def run_tmux_analyst_task_once(
             "task_payload": task.payload,
             "target_dir": str(lead_context.target_dir),
             "output_dir": str(lead_context.output_dir),
-            "shared_state": lead_context.shared_state.snapshot(),
+            "task_context": build_task_context_snapshot(
+                context=lead_context,
+                task=task,
+                profile=profile,
+            ),
         }
+        payload["shared_state"] = payload["task_context"].get("visible_shared_state", {})
         board_snapshot = lead_context.board.snapshot()
         retain_session_for_reuse = any(
             str(item.get("task_id", "")) != task.task_id
@@ -1788,6 +1797,19 @@ def run_tmux_analyst_task_once(
             task_type=task.task_type,
             retain_session_for_reuse=retain_session_for_reuse,
             allow_existing_session_reuse=allow_existing_session_reuse,
+        )
+        task_context = payload.get("task_context", {})
+        lead_context.logger.log(
+            "task_context_prepared",
+            agent=profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            scope=str(task_context.get("scope", "")),
+            visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])),
+            visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)),
+            omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)),
+            dependency_task_ids=list(task_context.get("dependencies", [])),
+            transport="tmux",
         )
         execution = run_worker_task_fn(
             runtime_script=runtime_script,

@@ -69,10 +69,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
 
             expected_artifacts = [
+                output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
                 output_dir / "shared_state.json",
                 output_dir / "file_locks.json",
+                output_dir / runtime.TEAM_PROGRESS_FILENAME,
+                output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME,
                 output_dir / "run_summary.json",
                 output_dir / "final_report.md",
                 output_dir / runtime.CHECKPOINT_FILENAME,
@@ -100,10 +103,25 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(provider.get("provider"), "heuristic")
             self.assertIn("runtime_config", summary)
             self.assertIn("checkpoint_history_dir", summary)
+            self.assertEqual(
+                summary.get("context_boundary_path"),
+                str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
+            )
+            self.assertEqual(summary.get("team_progress_path"), str(output_dir / runtime.TEAM_PROGRESS_FILENAME))
+            self.assertEqual(
+                summary.get("team_progress_report_path"),
+                str(output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME),
+            )
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("markdown_inventory", shared_state)
             self.assertIn("llm_synthesis", shared_state)
+
+            team_progress = json.loads(
+                (output_dir / runtime.TEAM_PROGRESS_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertIn("agents", team_progress)
+            self.assertGreaterEqual(len(team_progress["agents"]), 1)
 
             events = []
             with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
@@ -115,11 +133,18 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("run_started", event_names)
             self.assertIn("lead_adjudication_published", event_names)
             self.assertIn("run_finished", event_names)
+            self.assertIn("task_context_prepared", event_names)
             self.assertIn(runtime.HOOK_EVENT_TASK_COMPLETED, event_names)
             self.assertIn("task_inserted", event_names)
             self.assertIn("task_dependency_added", event_names)
 
+            context_boundary = json.loads(
+                (output_dir / runtime.CONTEXT_BOUNDARY_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreater(context_boundary.get("context_count", 0), 0)
+
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Team Progress", report_text)
             self.assertIn("## Dynamic Tasking", report_text)
             self.assertIn("## Evidence Pack", report_text)
             self.assertIn("## Lead Adjudication", report_text)
@@ -166,10 +191,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
 
             expected_artifacts = [
+                output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
                 output_dir / "shared_state.json",
                 output_dir / "file_locks.json",
+                output_dir / runtime.TEAM_PROGRESS_FILENAME,
+                output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME,
                 output_dir / "run_summary.json",
                 output_dir / "final_report.md",
                 output_dir / runtime.CHECKPOINT_FILENAME,
@@ -187,6 +215,11 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("workflow", {}).get("pack"), "repo-audit")
+            self.assertEqual(
+                summary.get("context_boundary_path"),
+                str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
+            )
+            self.assertEqual(summary.get("team_progress_path"), str(output_dir / runtime.TEAM_PROGRESS_FILENAME))
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("repository_inventory", shared_state)
@@ -203,9 +236,11 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("run_started", event_names)
             self.assertIn("lead_adjudication_published", event_names)
             self.assertIn("run_finished", event_names)
+            self.assertIn("task_context_prepared", event_names)
             self.assertIn("task_inserted", event_names)
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Team Progress", report_text)
             self.assertIn("## Repository Findings", report_text)
             self.assertIn("## Dynamic Tasking", report_text)
             self.assertIn("## Evidence Pack", report_text)

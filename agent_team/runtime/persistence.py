@@ -9,6 +9,7 @@ from ..config import RuntimeConfig
 from ..core import (
     EventLogger,
     FileLockRegistry,
+    HOOK_EVENT_TEAMMATE_IDLE,
     Mailbox,
     SharedState,
     Task,
@@ -22,6 +23,9 @@ from ..models import ProviderMetadata
 CHECKPOINT_VERSION = 1
 CHECKPOINT_FILENAME = "run_checkpoint.json"
 CHECKPOINT_HISTORY_DIRNAME = "_checkpoint_history"
+CONTEXT_BOUNDARY_FILENAME = "context_boundaries.json"
+TEAM_PROGRESS_FILENAME = "team_progress.json"
+TEAM_PROGRESS_REPORT_FILENAME = "team_progress.md"
 
 
 def checkpoint_history_dir(output_dir: pathlib.Path) -> pathlib.Path:
@@ -545,6 +549,405 @@ def write_event_replay_report(
     }
 
 
+def _team_profiles_from_state_snapshot(state_snapshot: Dict[str, Any]) -> List[Dict[str, Any]]:
+    lead_name = str(state_snapshot.get("lead_name", "lead") or "lead")
+    profiles: List[Dict[str, Any]] = [
+        {
+            "name": lead_name,
+            "agent_type": "lead",
+            "skills": ["lead"],
+        }
+    ]
+    seen = {lead_name}
+    raw_profiles = state_snapshot.get("team_profiles", [])
+    if not isinstance(raw_profiles, list):
+        return profiles
+    for item in raw_profiles:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "") or "")
+        if not name or name in seen:
+            continue
+        raw_skills = item.get("skills", [])
+        skills = [str(skill) for skill in raw_skills] if isinstance(raw_skills, list) else []
+        profiles.append(
+            {
+                "name": name,
+                "agent_type": str(item.get("agent_type", "general") or "general"),
+                "skills": skills,
+            }
+        )
+        seen.add(name)
+    return profiles
+
+
+def build_context_boundary_summary(
+    logger: EventLogger,
+) -> Dict[str, Any]:
+    summary = {
+        "generated_at": utc_now(),
+        "context_count": 0,
+        "agents": {},
+        "records": [],
+    }
+    if not logger.path.exists():
+        return summary
+    with logger.path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            if str(payload.get("event", "") or "") != "task_context_prepared":
+                continue
+            agent = str(payload.get("agent", "") or "")
+            transport = str(payload.get("transport", "") or "")
+            task_type = str(payload.get("task_type", "") or "")
+            visible_keys = payload.get("visible_shared_state_keys", [])
+            if not isinstance(visible_keys, list):
+                visible_keys = []
+            record = {
+                "event_index": int(payload.get("event_index", -1)),
+                "task_id": str(payload.get("task_id", "") or ""),
+                "task_type": task_type,
+                "agent": agent,
+                "transport": transport,
+                "scope": str(payload.get("scope", "") or ""),
+                "visible_shared_state_keys": [str(item) for item in visible_keys],
+                "visible_shared_state_key_count": int(payload.get("visible_shared_state_key_count", 0) or 0),
+                "omitted_shared_state_key_count": int(payload.get("omitted_shared_state_key_count", 0) or 0),
+                "dependency_task_ids": [str(item) for item in payload.get("dependency_task_ids", [])],
+            }
+            summary["records"].append(record)
+            summary["context_count"] += 1
+            bucket = summary["agents"].setdefault(
+                agent,
+                {
+                    "agent": agent,
+                    "context_count": 0,
+                    "task_types": [],
+                    "transports": [],
+                    "max_visible_shared_state_key_count": 0,
+                },
+            )
+            bucket["context_count"] += 1
+            if task_type and task_type not in bucket["task_types"]:
+                bucket["task_types"].append(task_type)
+            if transport and transport not in bucket["transports"]:
+                bucket["transports"].append(transport)
+            bucket["max_visible_shared_state_key_count"] = max(
+                int(bucket.get("max_visible_shared_state_key_count", 0)),
+                record["visible_shared_state_key_count"],
+            )
+    summary["agents"] = {
+        name: {
+            **data,
+            "task_types": sorted(data.get("task_types", [])),
+            "transports": sorted(data.get("transports", [])),
+        }
+        for name, data in sorted(summary["agents"].items())
+    }
+    return summary
+
+
+def _task_matches_profile(task_payload: Dict[str, Any], profile: Dict[str, Any]) -> bool:
+    required_skills = {str(skill) for skill in task_payload.get("required_skills", [])}
+    allowed_agent_types = {str(item) for item in task_payload.get("allowed_agent_types", [])}
+    profile_skills = {str(skill) for skill in profile.get("skills", [])}
+    profile_agent_type = str(profile.get("agent_type", "general") or "general")
+    if required_skills and not required_skills.issubset(profile_skills):
+        return False
+    if allowed_agent_types and profile_agent_type not in allowed_agent_types:
+        return False
+    return True
+
+
+def _empty_team_progress_rollup() -> Dict[str, Any]:
+    return {
+        "messages_sent": 0,
+        "messages_received": 0,
+        "tasks_claimed": 0,
+        "tasks_completed": 0,
+        "tasks_failed": 0,
+        "tasks_deferred": 0,
+        "idle_ticks": 0,
+        "last_event_at": "",
+    }
+
+
+def _update_last_event_at(rollup: Dict[str, Any], payload: Dict[str, Any]) -> None:
+    ts = str(payload.get("ts", "") or "")
+    if ts:
+        rollup["last_event_at"] = ts
+
+
+def _load_team_progress_event_rollups(
+    logger_path: Optional[pathlib.Path],
+    team_names: Sequence[str],
+) -> Dict[str, Dict[str, Any]]:
+    rollups = {name: _empty_team_progress_rollup() for name in team_names}
+    if logger_path is None or not logger_path.exists() or not logger_path.is_file():
+        return rollups
+    with logger_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            event_name = str(payload.get("event", "") or "")
+            sender = str(payload.get("sender", "") or "")
+            recipient = str(payload.get("recipient", "") or "")
+            agent = str(payload.get("agent", "") or "")
+            owner = str(payload.get("owner", "") or "")
+            from_agent = str(payload.get("from_agent", "") or "")
+
+            if sender in rollups:
+                if event_name == "mail_sent":
+                    rollups[sender]["messages_sent"] += 1
+                _update_last_event_at(rollups[sender], payload)
+            if recipient in rollups:
+                if event_name == "mail_sent":
+                    rollups[recipient]["messages_received"] += 1
+                _update_last_event_at(rollups[recipient], payload)
+            if agent in rollups:
+                if event_name == "task_claimed":
+                    rollups[agent]["tasks_claimed"] += 1
+                elif event_name == "task_deferred":
+                    rollups[agent]["tasks_deferred"] += 1
+                elif event_name == HOOK_EVENT_TEAMMATE_IDLE:
+                    rollups[agent]["idle_ticks"] += 1
+                _update_last_event_at(rollups[agent], payload)
+            if owner in rollups:
+                if event_name == "task_completed":
+                    rollups[owner]["tasks_completed"] += 1
+                elif event_name == "task_failed":
+                    rollups[owner]["tasks_failed"] += 1
+                _update_last_event_at(rollups[owner], payload)
+            if from_agent in rollups:
+                _update_last_event_at(rollups[from_agent], payload)
+    return rollups
+
+
+def build_team_progress_snapshot(
+    board: TaskBoard,
+    shared_state: SharedState,
+    logger: Optional[EventLogger] = None,
+) -> Dict[str, Any]:
+    board_snapshot = board.snapshot()
+    state_snapshot = shared_state.snapshot()
+    team_snapshot = state_snapshot.get("team", {})
+    if not isinstance(team_snapshot, dict):
+        team_snapshot = {}
+    profiles = _team_profiles_from_state_snapshot(state_snapshot)
+    tasks = [
+        item for item in board_snapshot.get("tasks", [])
+        if isinstance(item, dict)
+    ]
+    status_counts = {
+        "pending": 0,
+        "blocked": 0,
+        "in_progress": 0,
+        "completed": 0,
+        "failed": 0,
+        "other": 0,
+    }
+    for task in tasks:
+        status = str(task.get("status", "other") or "other")
+        if status not in status_counts:
+            status_counts["other"] += 1
+        else:
+            status_counts[status] += 1
+
+    team_names = [str(profile.get("name", "") or "") for profile in profiles]
+    rollups = _load_team_progress_event_rollups(
+        logger_path=(logger.path if logger is not None else None),
+        team_names=[name for name in team_names if name],
+    )
+
+    agent_rows: List[Dict[str, Any]] = []
+    for profile in profiles:
+        name = str(profile.get("name", "") or "")
+        if not name:
+            continue
+        active_task_ids: List[str] = []
+        completed_task_ids: List[str] = []
+        failed_task_ids: List[str] = []
+        available_task_ids: List[str] = []
+        blocked_task_ids: List[str] = []
+        for task in tasks:
+            task_id = str(task.get("task_id", "") or "")
+            status = str(task.get("status", "") or "")
+            owner = str(task.get("owner", "") or "")
+            if owner == name:
+                if status == "in_progress":
+                    active_task_ids.append(task_id)
+                elif status == "completed":
+                    completed_task_ids.append(task_id)
+                elif status == "failed":
+                    failed_task_ids.append(task_id)
+            if status == "pending" and _task_matches_profile(task, profile):
+                available_task_ids.append(task_id)
+            elif status == "blocked" and _task_matches_profile(task, profile):
+                blocked_task_ids.append(task_id)
+
+        rollup = rollups.get(name, _empty_team_progress_rollup())
+        closed_count = int(rollup.get("tasks_completed", 0)) + int(rollup.get("tasks_failed", 0))
+        success_rate = round(
+            float(rollup.get("tasks_completed", 0)) / max(1, closed_count),
+            3,
+        )
+        if active_task_ids:
+            activity_status = "active"
+        elif available_task_ids:
+            activity_status = "ready"
+        elif blocked_task_ids:
+            activity_status = "blocked"
+        else:
+            activity_status = "idle"
+        agent_rows.append(
+            {
+                "name": name,
+                "agent_type": str(profile.get("agent_type", "general") or "general"),
+                "skills": sorted({str(skill) for skill in profile.get("skills", [])}),
+                "activity_status": activity_status,
+                "tasks_claimed": int(rollup.get("tasks_claimed", 0)),
+                "tasks_completed": int(rollup.get("tasks_completed", 0)),
+                "tasks_failed": int(rollup.get("tasks_failed", 0)),
+                "tasks_deferred": int(rollup.get("tasks_deferred", 0)),
+                "active_tasks": len(active_task_ids),
+                "available_tasks": len(available_task_ids),
+                "blocked_tasks": len(blocked_task_ids),
+                "messages_sent": int(rollup.get("messages_sent", 0)),
+                "messages_received": int(rollup.get("messages_received", 0)),
+                "idle_ticks": int(rollup.get("idle_ticks", 0)),
+                "last_event_at": str(rollup.get("last_event_at", "") or ""),
+                "success_rate": success_rate,
+                "task_ids": {
+                    "active": active_task_ids,
+                    "completed_owned": completed_task_ids,
+                    "failed_owned": failed_task_ids,
+                    "available": available_task_ids,
+                    "blocked": blocked_task_ids,
+                },
+            }
+        )
+
+    total_tasks = len(tasks)
+    completed_ratio = round(status_counts["completed"] / max(1, total_tasks), 3)
+    return {
+        "generated_at": utc_now(),
+        "lead_name": str(state_snapshot.get("lead_name", "lead") or "lead"),
+        "mailbox_model": team_snapshot.get(
+            "mailbox_model",
+            "asynchronous pull-based inbox",
+        ),
+        "task_status_counts": status_counts,
+        "task_count": total_tasks,
+        "completed_ratio": completed_ratio,
+        "agents": agent_rows,
+    }
+
+
+def write_team_progress_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    lines: List[str] = []
+    lines.append("# Team Progress")
+    lines.append("")
+    lines.append(f"- Generated at: {snapshot.get('generated_at', utc_now())}")
+    lines.append(f"- Lead: {snapshot.get('lead_name', 'lead')}")
+    lines.append(f"- Task count: {snapshot.get('task_count', 0)}")
+    status_counts = snapshot.get("task_status_counts", {})
+    lines.append(
+        "- Task status counts: "
+        f"completed={status_counts.get('completed', 0)} "
+        f"failed={status_counts.get('failed', 0)} "
+        f"in_progress={status_counts.get('in_progress', 0)} "
+        f"pending={status_counts.get('pending', 0)} "
+        f"blocked={status_counts.get('blocked', 0)}"
+    )
+    lines.append(f"- Completed ratio: {snapshot.get('completed_ratio', 0)}")
+    lines.append("")
+    lines.append("## Agent Summary")
+    lines.append("")
+    lines.append("| Agent | Type | Claimed | Completed | Failed | Active | Ready | Blocked | Sent | Received | Status |")
+    lines.append("|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
+    for agent in snapshot.get("agents", []):
+        if not isinstance(agent, dict):
+            continue
+        lines.append(
+            f"| {agent.get('name', '')} | {agent.get('agent_type', '')} | "
+            f"{agent.get('tasks_claimed', 0)} | {agent.get('tasks_completed', 0)} | "
+            f"{agent.get('tasks_failed', 0)} | {agent.get('active_tasks', 0)} | "
+            f"{agent.get('available_tasks', 0)} | {agent.get('blocked_tasks', 0)} | "
+            f"{agent.get('messages_sent', 0)} | {agent.get('messages_received', 0)} | "
+            f"{agent.get('activity_status', 'idle')} |"
+        )
+    lines.append("")
+    lines.append("## Current Work")
+    lines.append("")
+    for agent in snapshot.get("agents", []):
+        if not isinstance(agent, dict):
+            continue
+        lines.append(
+            f"- {agent.get('name', '')}: active={', '.join(agent.get('task_ids', {}).get('active', [])) or 'none'}; "
+            f"ready={', '.join(agent.get('task_ids', {}).get('available', [])) or 'none'}; "
+            f"blocked={', '.join(agent.get('task_ids', {}).get('blocked', [])) or 'none'}; "
+            f"last_event_at={agent.get('last_event_at', '') or 'n/a'}"
+        )
+    lines.append("")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "report_path": str(report_path),
+        "agent_count": len(snapshot.get("agents", [])),
+    }
+
+
+def append_team_progress_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
+    if not report_path.exists():
+        return False
+    existing = report_path.read_text(encoding="utf-8")
+    if "## Team Progress" in existing:
+        return False
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## Team Progress")
+    lines.append("")
+    status_counts = snapshot.get("task_status_counts", {})
+    lines.append(
+        "- Team task states: "
+        f"completed={status_counts.get('completed', 0)} "
+        f"failed={status_counts.get('failed', 0)} "
+        f"in_progress={status_counts.get('in_progress', 0)} "
+        f"pending={status_counts.get('pending', 0)} "
+        f"blocked={status_counts.get('blocked', 0)}"
+    )
+    for agent in snapshot.get("agents", []):
+        if not isinstance(agent, dict):
+            continue
+        lines.append(
+            f"- {agent.get('name', '')} ({agent.get('agent_type', '')}): "
+            f"completed={agent.get('tasks_completed', 0)} "
+            f"failed={agent.get('tasks_failed', 0)} "
+            f"active={agent.get('active_tasks', 0)} "
+            f"ready={agent.get('available_tasks', 0)} "
+            f"blocked={agent.get('blocked_tasks', 0)} "
+            f"messages={agent.get('messages_sent', 0)}/{agent.get('messages_received', 0)} "
+            f"status={agent.get('activity_status', 'idle')}"
+        )
+    report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def write_artifacts(
     output_dir: pathlib.Path,
     board: TaskBoard,
@@ -580,6 +983,9 @@ def write_artifacts(
         json.dumps(state_snapshot, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    team_snapshot = state_snapshot.get("team", {})
+    if not isinstance(team_snapshot, dict):
+        team_snapshot = {}
 
     def append_history_entry(path: pathlib.Path, summary: Dict[str, Any], kind: str) -> str:
         entry = {
@@ -644,6 +1050,33 @@ def write_artifacts(
         encoding="utf-8",
     )
 
+    team_progress_snapshot = build_team_progress_snapshot(
+        board=board,
+        shared_state=shared_state,
+        logger=logger,
+    )
+    team_progress_path = output_dir / TEAM_PROGRESS_FILENAME
+    team_progress_path.write_text(
+        json.dumps(team_progress_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    team_progress_report_path = output_dir / TEAM_PROGRESS_REPORT_FILENAME
+    write_team_progress_report(
+        report_path=team_progress_report_path,
+        snapshot=team_progress_snapshot,
+    )
+    append_team_progress_to_final_report(
+        report_path=output_dir / "final_report.md",
+        snapshot=team_progress_snapshot,
+    )
+
+    context_boundary_summary = build_context_boundary_summary(logger=logger)
+    context_boundary_path = output_dir / CONTEXT_BOUNDARY_FILENAME
+    context_boundary_path.write_text(
+        json.dumps(context_boundary_summary, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
     summary_path = output_dir / "run_summary.json"
     summary = {
         "generated_at": utc_now(),
@@ -652,12 +1085,15 @@ def write_artifacts(
         "shared_state_path": str(state_path),
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
+        "context_boundary_path": str(context_boundary_path),
+        "team_progress_path": str(team_progress_path),
+        "team_progress_report_path": str(team_progress_report_path),
         "tmux_session_cleanup_summary_path": tmux_cleanup_summary_path_str,
         "tmux_session_cleanup_history_path": tmux_cleanup_history_path_str,
         "tmux_session_recovery_summary_path": tmux_recovery_summary_path_str,
         "tmux_session_recovery_history_path": tmux_recovery_history_path_str,
         "tmux_session_leases_path": tmux_session_leases_path_str,
-        "mailbox_model": state_snapshot.get("team", {}).get(
+        "mailbox_model": team_snapshot.get(
             "mailbox_model",
             "asynchronous pull-based inbox",
         ),

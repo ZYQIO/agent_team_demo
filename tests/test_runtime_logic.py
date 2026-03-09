@@ -414,6 +414,29 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(length["result"]["line_threshold"], 2)
             self.assertGreaterEqual(length["result"]["long_files"], 1)
 
+    def test_tmux_worker_payload_prefers_task_context_visible_state(self) -> None:
+        length = runtime.run_tmux_worker_payload(
+            {
+                "task_type": "length_audit",
+                "task_payload": {"line_threshold": 2},
+                "task_context": {
+                    "visible_shared_state": {
+                        "markdown_inventory": [
+                            {"path": "a.md", "line_count": 3, "heading_count": 1},
+                            {"path": "b.md", "line_count": 1, "heading_count": 0},
+                        ]
+                    }
+                },
+                "shared_state": {
+                    "markdown_inventory": [
+                        {"path": "ignored.md", "line_count": 1, "heading_count": 1},
+                    ]
+                },
+            }
+        )
+        self.assertEqual(length["result"]["long_files"], 1)
+        self.assertEqual(length["result"]["examples"], ["a.md"])
+
     def test_tmux_worker_payload_repo_discover_and_large_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -2125,6 +2148,257 @@ class RuntimeLogicTests(unittest.TestCase):
         status_counts = replay.get("status_counts", {})
         self.assertEqual(status_counts.get("completed"), 1)
         self.assertEqual(status_counts.get("failed"), 1)
+
+    def test_build_team_progress_snapshot_summarizes_agent_work(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="analyst_done",
+                        title="Analyst done",
+                        task_type="analysis",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                    runtime.Task(
+                        task_id="review_failed",
+                        title="Review failed",
+                        task_type="review",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="lead_ready",
+                        title="Lead ready",
+                        task_type="lead_task",
+                        required_skills={"lead"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                    ),
+                    runtime.Task(
+                        task_id="analyst_blocked",
+                        title="Analyst blocked",
+                        task_type="analysis",
+                        required_skills={"analysis"},
+                        dependencies=["lead_ready"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                ],
+                logger=logger,
+            )
+            analyst_task = board.claim_next(
+                agent_name="analyst_alpha",
+                agent_skills={"analysis"},
+                agent_type="analyst",
+            )
+            self.assertIsNotNone(analyst_task)
+            board.complete(
+                task_id="analyst_done",
+                owner="analyst_alpha",
+                result={"ok": True},
+            )
+            reviewer_task = board.claim_next(
+                agent_name="reviewer_gamma",
+                agent_skills={"review"},
+                agent_type="reviewer",
+            )
+            self.assertIsNotNone(reviewer_task)
+            board.fail(
+                task_id="review_failed",
+                owner="reviewer_gamma",
+                error="expected failure",
+            )
+            logger.log(
+                "mail_sent",
+                sender="lead",
+                recipient="analyst_alpha",
+                subject="assignment",
+                body="inspect docs",
+            )
+
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set(
+                "team",
+                {
+                    "lead_name": "lead",
+                    "mailbox_model": "asynchronous pull-based inbox",
+                },
+            )
+            shared_state.set(
+                "team_profiles",
+                [
+                    {
+                        "name": "analyst_alpha",
+                        "skills": ["analysis"],
+                        "agent_type": "analyst",
+                    },
+                    {
+                        "name": "reviewer_gamma",
+                        "skills": ["review", "writer"],
+                        "agent_type": "reviewer",
+                    },
+                ],
+            )
+
+            snapshot = runtime.build_team_progress_snapshot(
+                board=board,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            self.assertEqual(snapshot["task_status_counts"]["completed"], 1)
+            self.assertEqual(snapshot["task_status_counts"]["failed"], 1)
+            self.assertEqual(snapshot["task_status_counts"]["pending"], 1)
+            self.assertEqual(snapshot["task_status_counts"]["blocked"], 1)
+
+            agents = {item["name"]: item for item in snapshot["agents"]}
+            self.assertEqual(agents["lead"]["available_tasks"], 1)
+            self.assertEqual(agents["analyst_alpha"]["tasks_completed"], 1)
+            self.assertEqual(agents["analyst_alpha"]["blocked_tasks"], 1)
+            self.assertEqual(agents["analyst_alpha"]["messages_received"], 1)
+            self.assertEqual(agents["reviewer_gamma"]["tasks_failed"], 1)
+
+    def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            logger.log(
+                "task_context_prepared",
+                agent="analyst_alpha",
+                task_id="heading_audit",
+                task_type="heading_audit",
+                scope="task_scoped_shared_state_view",
+                visible_shared_state_keys=["lead_name", "markdown_inventory"],
+                visible_shared_state_key_count=2,
+                omitted_shared_state_key_count=3,
+                dependency_task_ids=["discover_markdown"],
+                transport="in-process",
+            )
+            logger.log(
+                "task_context_prepared",
+                agent="analyst_beta",
+                task_id="length_audit",
+                task_type="length_audit",
+                scope="task_scoped_shared_state_view",
+                visible_shared_state_keys=["lead_name", "markdown_inventory", "runtime_config"],
+                visible_shared_state_key_count=3,
+                omitted_shared_state_key_count=4,
+                dependency_task_ids=["discover_markdown"],
+                transport="tmux",
+            )
+
+            summary = runtime.build_context_boundary_summary(logger=logger)
+
+            self.assertEqual(summary["context_count"], 2)
+            self.assertEqual(len(summary["records"]), 2)
+            self.assertIn("analyst_alpha", summary["agents"])
+            self.assertIn("analyst_beta", summary["agents"])
+            self.assertEqual(summary["agents"]["analyst_alpha"]["context_count"], 1)
+            self.assertEqual(summary["agents"]["analyst_beta"]["transports"], ["tmux"])
+            self.assertEqual(
+                summary["agents"]["analyst_beta"]["max_visible_shared_state_key_count"],
+                3,
+            )
+
+    def test_build_task_context_snapshot_scopes_shared_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="discover_markdown",
+                        title="discover",
+                        task_type="discover_markdown",
+                        required_skills={"inventory"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                    runtime.Task(
+                        task_id="heading_audit",
+                        title="heading",
+                        task_type="heading_audit",
+                        required_skills={"analysis"},
+                        dependencies=["discover_markdown"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "analyst_alpha"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("team_profiles", [{"name": "analyst_alpha", "agent_type": "analyst", "skills": ["analysis"]}])
+            shared_state.set("markdown_inventory", [{"path": "a.md", "line_count": 3, "heading_count": 1}])
+            shared_state.set("unrelated_secret", {"token": "hidden"})
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            snapshot = runtime.build_task_context_snapshot(
+                context=context,
+                task=runtime.Task(
+                    task_id="heading_audit",
+                    title="heading",
+                    task_type="heading_audit",
+                    required_skills={"analysis"},
+                    dependencies=["discover_markdown"],
+                    payload={},
+                    locked_paths=[],
+                    allowed_agent_types={"analyst"},
+                ),
+            )
+            self.assertIn("markdown_inventory", snapshot["visible_shared_state"])
+            self.assertNotIn("unrelated_secret", snapshot["visible_shared_state"])
+            self.assertIn("unrelated_secret", snapshot["omitted_shared_state_keys"])
+            self.assertIn("discover_markdown", snapshot["dependency_results"])
+
+    def test_scoped_shared_state_hides_non_visible_keys(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set("visible", 1)
+        shared_state.set("hidden", 2)
+        scoped = runtime.ScopedSharedState(
+            _underlying=shared_state,
+            _visible_keys={"visible"},
+        )
+        self.assertEqual(scoped.get("visible"), 1)
+        self.assertIsNone(scoped.get("hidden"))
+        scoped.set("new_key", 3)
+        self.assertEqual(scoped.get("new_key"), 3)
 
     def test_build_runtime_config_rewind_branch_requires_rewind_index(self) -> None:
         args = type(

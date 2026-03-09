@@ -10,11 +10,14 @@ from typing import Dict, List
 
 
 REQUIRED_FILES = [
+    "context_boundaries.json",
     "final_report.md",
     "task_board.json",
     "events.jsonl",
     "shared_state.json",
     "file_locks.json",
+    "team_progress.json",
+    "team_progress.md",
     "run_summary.json",
 ]
 
@@ -108,7 +111,7 @@ def main() -> int:
             )
 
     report = (output_dir / "final_report.md").read_text(encoding="utf-8")
-    for section in ["## Peer Challenge Round", "## Evidence Pack", "## Lead Adjudication"]:
+    for section in ["## Peer Challenge Round", "## Evidence Pack", "## Lead Adjudication", "## Team Progress"]:
         if section not in report:
             return fail(f"Missing report section: {section}")
 
@@ -117,6 +120,30 @@ def main() -> int:
     runtime_config = summary.get("runtime_config", {})
     host = summary.get("host", {})
     workflow = summary.get("workflow", {})
+    raw_context_boundary_path = str(summary.get("context_boundary_path", "") or "")
+    if not raw_context_boundary_path:
+        return fail("Missing context boundary path in run_summary.json: context_boundary_path")
+    context_boundary_path = pathlib.Path(raw_context_boundary_path).resolve()
+    if not context_boundary_path.exists():
+        return fail(f"Referenced context boundary artifact does not exist: {context_boundary_path}")
+    context_boundaries = load_json(output_dir / "context_boundaries.json")
+    if int(context_boundaries.get("context_count", 0)) <= 0:
+        return fail("context_boundaries.json must contain at least one prepared task context")
+    for summary_key in ["team_progress_path", "team_progress_report_path"]:
+        raw_path = str(summary.get(summary_key, "") or "")
+        if not raw_path:
+            return fail(f"Missing team progress path in run_summary.json: {summary_key}")
+        artifact_path = pathlib.Path(raw_path).resolve()
+        if not artifact_path.exists():
+            return fail(f"Referenced team progress artifact does not exist: {artifact_path}")
+
+    team_progress = load_json(output_dir / "team_progress.json")
+    if not isinstance(team_progress.get("agents", []), list) or not team_progress.get("agents"):
+        return fail("team_progress.json must contain a non-empty agents list")
+    team_progress_report = (output_dir / "team_progress.md").read_text(encoding="utf-8")
+    if "## Agent Summary" not in team_progress_report:
+        return fail("team_progress.md is missing the Agent Summary section")
+
     if runtime_config.get("teammate_mode") == "tmux":
         diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
         if not diagnostics_path.exists():

@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping
 
 from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task
+from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -123,6 +124,26 @@ class InProcessTeammateAgent(threading.Thread):
                 self.context.file_locks.release(self.context.profile.name, lock_paths)
             return
 
+        original_shared_state = self.context.shared_state
+        task_context = build_task_context_snapshot(self.context, task)
+        scoped_shared_state = ScopedSharedState(
+            _underlying=original_shared_state,
+            _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
+        )
+        self.context.task_context = task_context
+        self.context.shared_state = scoped_shared_state
+        self.context.logger.log(
+            "task_context_prepared",
+            agent=self.context.profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            scope=str(task_context.get("scope", "")),
+            visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])),
+            visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)),
+            omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)),
+            dependency_task_ids=list(task_context.get("dependencies", [])),
+            transport="in-process",
+        )
         try:
             result = handler(self.context, task)
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
@@ -150,6 +171,8 @@ class InProcessTeammateAgent(threading.Thread):
                 traceback=self._traceback_module.format_exc(),
             )
         finally:
+            self.context.shared_state = original_shared_state
+            self.context.task_context = {}
             if lock_paths:
                 self.context.file_locks.release(self.context.profile.name, lock_paths)
 

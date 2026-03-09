@@ -1,6 +1,6 @@
 # Agent Team Runtime Roadmap
 
-Current status snapshot: `2026-03-08`
+Current status snapshot: `2026-03-09`
 
 This document tracks the working plan, completed refactors, validation status, and the recommended next tasks for `agent_team_demo`.
 
@@ -62,6 +62,8 @@ The intended architecture is now:
 | tmux deferred cleanup + artifact history | Completed | pause-for-resume runs now defer tmux cleanup, preserve retained leases for resume, and persist cleanup/recovery history alongside the latest summary snapshot. |
 | resume runtime-config inheritance | Completed | resumed runs now inherit checkpoint runtime settings by default and only change behavior when current CLI/config explicitly overrides them. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
+| Team progress artifacts | Completed | Runtime now writes `team_progress.json` + `team_progress.md` and appends a per-agent progress section into `final_report.md`. |
+| Task-context boundaries | Completed | Runtime now prepares task-scoped shared-state views, emits `task_context_prepared`, and writes `context_boundaries.json` for per-agent/task visibility auditing. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -348,7 +350,7 @@ Key runtime artifact added during M8:
 
 ## 6. Validation Status
 
-Latest verified on `2026-03-08`.
+Latest verified on `2026-03-09`.
 
 ### Tests
 
@@ -360,7 +362,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `63/63` tests passed
+- `68/68` tests passed
 
 ### Smoke Runs
 
@@ -567,13 +569,14 @@ Completed slice:
 - Added deferred cleanup semantics for intentional pause-for-resume runs so retained tmux sessions survive until resume instead of being swept at pause time
 - Added persisted cleanup/recovery history artifacts so pause/resume cycles keep audit-visible sweep history instead of overwriting prior summaries
 - Added checkpoint-backed runtime-config inheritance so resumed runs keep prior wait/rounding/tmux behavior instead of silently drifting back to CLI defaults
+- Added task-scoped shared-state views so teammate execution receives explicit bounded context instead of the full shared-state snapshot
+- Added `task_context_prepared` events plus `context_boundaries.json` for per-agent/task visibility auditing
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:
 
 - stronger tmux execution isolation
 - better interruption/recovery semantics
-- clearer teammate context boundaries
 
 ### M9: Second Workflow Pack
 

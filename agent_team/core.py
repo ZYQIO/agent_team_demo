@@ -17,7 +17,7 @@ TEAMMATE_IDLE_HOOK_INTERVAL_SEC = 1.0
 
 
 def utc_now() -> str:
-    return dt.datetime.utcnow().isoformat(timespec="seconds") + "Z"
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
 
 @dataclasses.dataclass
