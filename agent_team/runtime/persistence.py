@@ -250,6 +250,38 @@ def summarize_teammate_transport(
     }
 
 
+def summarize_agent_session_registry(state_snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    raw_registry = state_snapshot.get("agent_session_registry", {})
+    if not isinstance(raw_registry, dict):
+        raw_registry = {}
+    agents = sorted(str(name) for name in raw_registry.keys())
+    counts_by_type: Dict[str, int] = {}
+    active_transports: Dict[str, int] = {}
+    external_agents: List[str] = []
+    fallback_agents: List[str] = []
+    for agent_name in agents:
+        entry = raw_registry.get(agent_name, {})
+        if not isinstance(entry, dict):
+            continue
+        agent_type = str(entry.get("agent_type", "") or "unknown")
+        counts_by_type[agent_type] = counts_by_type.get(agent_type, 0) + 1
+        current_transport = str(entry.get("current_transport", "") or "")
+        if current_transport:
+            active_transports[current_transport] = active_transports.get(current_transport, 0) + 1
+        if int(entry.get("external_runs", 0) or 0) > 0:
+            external_agents.append(agent_name)
+        if int(entry.get("fallback_runs", 0) or 0) > 0:
+            fallback_agents.append(agent_name)
+    return {
+        "agent_count": len(agents),
+        "agents": agents,
+        "counts_by_type": counts_by_type,
+        "active_transports": active_transports,
+        "external_agents": sorted(external_agents),
+        "fallback_agents": sorted(fallback_agents),
+    }
+
+
 def seed_branch_events_from_source(
     source_output_dir: pathlib.Path,
     target_output_dir: pathlib.Path,
@@ -673,6 +705,7 @@ def write_artifacts(
         runtime_config=runtime_config,
         state_snapshot=state_snapshot,
     )
+    agent_session_registry_summary = summarize_agent_session_registry(state_snapshot)
 
     def append_history_entry(path: pathlib.Path, summary: Dict[str, Any], kind: str) -> str:
         entry = {
@@ -731,6 +764,16 @@ def write_artifacts(
         )
         tmux_session_leases_path_str = str(tmux_session_leases_path)
 
+    agent_session_registry_path = output_dir / "agent_session_registry.json"
+    agent_session_registry = state_snapshot.get("agent_session_registry", {})
+    agent_session_registry_path_str = ""
+    if isinstance(agent_session_registry, dict) and agent_session_registry:
+        agent_session_registry_path.write_text(
+            json.dumps(agent_session_registry, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        agent_session_registry_path_str = str(agent_session_registry_path)
+
     lock_path = output_dir / "file_locks.json"
     lock_path.write_text(
         json.dumps(file_locks.snapshot(), ensure_ascii=False, indent=2),
@@ -759,6 +802,8 @@ def write_artifacts(
         "teammate_transport_summary": teammate_transport_summary,
         "teammate_mode_effective": teammate_transport_summary.get("effective_mode", ""),
         "teammate_transport_degraded": bool(teammate_transport_summary.get("degraded", False)),
+        "agent_session_registry_path": agent_session_registry_path_str,
+        "agent_session_registry_summary": agent_session_registry_summary,
         "host": state_snapshot.get("host", {}),
         "team": state_snapshot.get("team", {}),
         "workflow": state_snapshot.get("workflow", {}),

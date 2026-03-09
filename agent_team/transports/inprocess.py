@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
+from ..runtime.sessions import update_agent_session_registry
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -127,6 +128,17 @@ class InProcessTeammateAgent(threading.Thread):
             agent=self.context.profile.name,
             task_type=task.task_type,
         )
+        update_agent_session_registry(
+            shared_state=self.context.shared_state,
+            agent_name=self.context.profile.name,
+            agent_type=self.context.profile.agent_type,
+            requested_mode=self.context.runtime_config.teammate_mode,
+            host_session=self.context.host_session,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            status="started",
+            task_started_delta=1,
+        )
         self.context.mailbox.send(
             sender=self.context.profile.name,
             recipient=self._get_lead_name_fn(self.context),
@@ -157,6 +169,16 @@ class InProcessTeammateAgent(threading.Thread):
                 if not delegated.get("ok", False):
                     error = str(delegated.get("error", "external task failed"))
                     self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
+                    update_agent_session_registry(
+                        shared_state=self.context.shared_state,
+                        agent_name=self.context.profile.name,
+                        agent_type=self.context.profile.agent_type,
+                        task_id=task.task_id,
+                        task_type=task.task_type,
+                        status="failed",
+                        transport=str(delegated.get("transport", "")),
+                        task_failed_delta=1,
+                    )
                     self.context.mailbox.send(
                         sender=self.context.profile.name,
                         recipient=self._get_lead_name_fn(self.context),
@@ -176,6 +198,18 @@ class InProcessTeammateAgent(threading.Thread):
             if not isinstance(result, dict):
                 result = {"raw_result": result}
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
+            update_agent_session_registry(
+                shared_state=self.context.shared_state,
+                agent_name=self.context.profile.name,
+                agent_type=self.context.profile.agent_type,
+                host_session=self.context.host_session,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                status="completed",
+                transport=str(delegated.get("transport", "")) if delegated is not None else "thread",
+                current_transport=str(delegated.get("transport", "")) if delegated is not None else "thread",
+                task_completed_delta=1,
+            )
             self.context.mailbox.send(
                 sender=self.context.profile.name,
                 recipient=self._get_lead_name_fn(self.context),
@@ -186,6 +220,18 @@ class InProcessTeammateAgent(threading.Thread):
         except Exception as exc:  # pragma: no cover - defensive path
             error = f"{type(exc).__name__}: {exc}"
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
+            update_agent_session_registry(
+                shared_state=self.context.shared_state,
+                agent_name=self.context.profile.name,
+                agent_type=self.context.profile.agent_type,
+                host_session=self.context.host_session,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                status="failed",
+                transport="thread" if delegated is None else str(delegated.get("transport", "")),
+                current_transport="thread" if delegated is None else str(delegated.get("transport", "")),
+                task_failed_delta=1,
+            )
             self.context.mailbox.send(
                 sender=self.context.profile.name,
                 recipient=self._get_lead_name_fn(self.context),

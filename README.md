@@ -179,7 +179,7 @@ python3 agent_team_demo/agent_team_runtime.py \
 ```
 
 In `tmux` mode, analyst tasks and reviewer execution tasks now delegate through the same external worker transport.
-`peer_challenge`, `evidence_pack`, `lead_adjudication`, and `lead_re_adjudication` now run through external workers, mailbox-backed coordination is preserved, worker-side events are replayed into the main event log, host session metadata/effective workspaces are passed into external worker contexts, tmux lease/recovery/cleanup artifacts cover lead plus teammate workers, and `run_summary.json` explicitly marks when the requested tmux mode degraded to subprocess fallback.
+`peer_challenge`, `evidence_pack`, `lead_adjudication`, and `lead_re_adjudication` now run through external workers, mailbox-backed coordination is preserved, worker-side events are replayed into the main event log, host session metadata/effective workspaces are passed into external worker contexts, tmux lease/recovery/cleanup artifacts cover lead plus teammate workers, and `run_summary.json` now includes both degraded-mode reporting and an `agent_session_registry` view that consolidates per-agent session/execution state.
 
 Tune tmux worker timeout/fallback:
 

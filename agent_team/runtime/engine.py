@@ -41,6 +41,7 @@ from .persistence import (
     write_artifacts,
     write_checkpoint,
 )
+from .sessions import initialize_agent_session_registry, update_agent_session_registry
 
 
 @dataclasses.dataclass
@@ -193,6 +194,17 @@ def run_lead_task_once(
         agent=lead_context.profile.name,
         task_type=task.task_type,
     )
+    update_agent_session_registry(
+        shared_state=lead_context.shared_state,
+        agent_name=lead_context.profile.name,
+        agent_type=lead_context.profile.agent_type,
+        requested_mode=lead_context.runtime_config.teammate_mode,
+        host_session=lead_context.host_session,
+        task_id=task.task_id,
+        task_type=task.task_type,
+        status="started",
+        task_started_delta=1,
+    )
     lead_context.mailbox.send(
         sender=lead_context.profile.name,
         recipient=lead_context.profile.name,
@@ -220,6 +232,16 @@ def run_lead_task_once(
             if not delegated.get("ok", False):
                 error = str(delegated.get("error", "external task failed"))
                 lead_context.board.fail(task_id=task.task_id, owner=lead_context.profile.name, error=error)
+                update_agent_session_registry(
+                    shared_state=lead_context.shared_state,
+                    agent_name=lead_context.profile.name,
+                    agent_type=lead_context.profile.agent_type,
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    status="failed",
+                    transport=str(delegated.get("transport", "")),
+                    task_failed_delta=1,
+                )
                 lead_context.mailbox.send(
                     sender=lead_context.profile.name,
                     recipient=lead_context.profile.name,
@@ -259,6 +281,18 @@ def run_lead_task_once(
         if not isinstance(result, dict):
             result = {"raw_result": result}
         lead_context.board.complete(task_id=task.task_id, owner=lead_context.profile.name, result=result)
+        update_agent_session_registry(
+            shared_state=lead_context.shared_state,
+            agent_name=lead_context.profile.name,
+            agent_type=lead_context.profile.agent_type,
+            host_session=lead_context.host_session,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            status="completed",
+            transport=str(delegated.get("transport", "")) if delegated is not None else "thread",
+            current_transport=str(delegated.get("transport", "")) if delegated is not None else "thread",
+            task_completed_delta=1,
+        )
         lead_context.mailbox.send(
             sender=lead_context.profile.name,
             recipient=lead_context.profile.name,
@@ -269,6 +303,18 @@ def run_lead_task_once(
     except Exception as exc:  # pragma: no cover - defensive path
         error = f"{type(exc).__name__}: {exc}"
         lead_context.board.fail(task_id=task.task_id, owner=lead_context.profile.name, error=error)
+        update_agent_session_registry(
+            shared_state=lead_context.shared_state,
+            agent_name=lead_context.profile.name,
+            agent_type=lead_context.profile.agent_type,
+            host_session=lead_context.host_session,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            status="failed",
+            transport="thread" if delegated is None else str(delegated.get("transport", "")),
+            current_transport="thread" if delegated is None else str(delegated.get("transport", "")),
+            task_failed_delta=1,
+        )
         lead_context.mailbox.send(
             sender=lead_context.profile.name,
             recipient=lead_context.profile.name,
@@ -598,6 +644,12 @@ def run_team(
             workflow_preset=workflow_config.preset,
         )
     shared_state.set("agent_host_sessions", host_sessions)
+    initialize_agent_session_registry(
+        shared_state=shared_state,
+        profiles=[lead_profile] + list(profiles),
+        host_sessions=host_sessions,
+        requested_mode=runtime_config.teammate_mode,
+    )
 
     lead_context = build_agent_context(
         profile=lead_profile,

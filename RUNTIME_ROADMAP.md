@@ -69,6 +69,7 @@ The intended architecture is now:
 | Explicit tmux degraded-mode reporting | Completed | `run_summary.json` now records whether requested tmux execution actually degraded to subprocess fallback and why. |
 | Lead adjudication externalization | Completed | `lead_adjudication` and `lead_re_adjudication` now execute through external workers and replay worker events into the main event log. |
 | Host session propagation into workers | Completed | External worker contexts now receive `host_session` metadata and the host-specific effective target directory. |
+| Agent session registry artifact | Completed | `agent_session_registry.json` now consolidates per-agent host session, transport, tmux lease, and task execution state. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work

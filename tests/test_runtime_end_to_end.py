@@ -103,6 +103,18 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(summary.get("teammate_mode_effective"), "in-process")
             self.assertFalse(summary.get("teammate_transport_degraded"))
             self.assertEqual(summary.get("teammate_transport_summary", {}).get("worker_task_count"), 0)
+            session_registry_path = pathlib.Path(summary.get("agent_session_registry_path", "")).resolve()
+            self.assertTrue(session_registry_path.exists())
+            session_registry = json.loads(session_registry_path.read_text(encoding="utf-8"))
+            self.assertIn("lead", session_registry)
+            self.assertIn("reviewer_gamma", session_registry)
+            self.assertEqual(session_registry["reviewer_gamma"].get("current_transport"), "thread")
+            self.assertGreaterEqual(int(session_registry["reviewer_gamma"].get("tasks_completed", 0)), 1)
+            registry_summary = summary.get("agent_session_registry_summary", {})
+            self.assertEqual(registry_summary.get("agent_count"), 4)
+            self.assertEqual(registry_summary.get("counts_by_type", {}).get("lead"), 1)
+            self.assertEqual(registry_summary.get("active_transports", {}).get("thread"), 4)
+            self.assertEqual(registry_summary.get("external_agents"), [])
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("markdown_inventory", shared_state)
@@ -439,6 +451,24 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 pathlib.Path(transport_summary.get("diagnostics_path", "")).resolve(),
                 diagnostics_path.resolve(),
             )
+            session_registry_path = pathlib.Path(summary.get("agent_session_registry_path", "")).resolve()
+            self.assertTrue(session_registry_path.exists())
+            session_registry = json.loads(session_registry_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                sorted(session_registry),
+                ["analyst_alpha", "analyst_beta", "lead", "reviewer_gamma"],
+            )
+            self.assertGreaterEqual(int(session_registry["lead"].get("external_runs", 0)), 1)
+            self.assertGreaterEqual(int(session_registry["reviewer_gamma"].get("fallback_runs", 0)), 1)
+            self.assertIn(
+                session_registry["lead"].get("current_transport"),
+                {"subprocess", "tmux->subprocess_fallback"},
+            )
+            self.assertTrue(session_registry["lead"].get("tmux_session_status"))
+            registry_summary = summary.get("agent_session_registry_summary", {})
+            self.assertEqual(registry_summary.get("agent_count"), 4)
+            self.assertIn("lead", registry_summary.get("external_agents", []))
+            self.assertIn("reviewer_gamma", registry_summary.get("fallback_agents", []))
 
             verify_cmd = [
                 sys.executable,

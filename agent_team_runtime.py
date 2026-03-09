@@ -66,6 +66,7 @@ from agent_team.runtime import (
     write_event_replay_report,
     write_history_replay_report,
 )
+from agent_team.runtime.sessions import update_agent_session_registry
 from agent_team.runtime.engine import (
     AgentContext,
     TaskHandler,
@@ -528,6 +529,23 @@ def _run_external_agent_task(
             reuse_authorized=allow_existing_session_reuse,
             error=str(execution.get("error", "")),
         )
+    update_agent_session_registry(
+        shared_state=context.shared_state,
+        agent_name=context.profile.name,
+        agent_type=context.profile.agent_type,
+        host_session=context.host_session,
+        task_id=task.task_id,
+        task_type=task.task_type,
+        transport=transport,
+        current_transport=transport,
+        fallback_reason=(
+            str(execution_diagnostics.get("fallback_reason", ""))
+            if execution_diagnostics.get("fallback_used", False)
+            else None
+        ),
+        external_run_delta=1,
+        fallback_run_delta=1 if execution_diagnostics.get("fallback_used", False) else 0,
+    )
 
     event_name = "tmux_worker_task_completed" if execution.get("ok") else "tmux_worker_task_failed"
     context.logger.log(

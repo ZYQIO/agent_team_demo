@@ -14,6 +14,7 @@ from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tu
 from ..config import RuntimeConfig
 from ..core import AgentProfile, EventLogger, Message, Task, utc_now
 from ..models import build_provider
+from ..runtime.sessions import update_agent_session_registry
 from ..workflows.markdown_audit_analysis import handle_dynamic_planning as handle_markdown_dynamic_planning
 from ..workflows.markdown_audit_reporting import (
     handle_llm_synthesis as handle_markdown_llm_synthesis,
@@ -488,6 +489,16 @@ def _update_tmux_session_lease(
     }
     leases[worker_name] = entry
     _save_tmux_session_leases(shared_state=lead_context.shared_state, leases=leases)
+    update_agent_session_registry(
+        shared_state=lead_context.shared_state,
+        agent_name=worker_name,
+        tmux_preferred_session_name=preferred_tmux_session_name(worker_name),
+        tmux_session_name=next_session_name,
+        tmux_session_status=status,
+        reuse_authorized=reuse_authorized,
+        reused_existing=reused_existing,
+        retained_for_reuse=retained_for_reuse,
+    )
     lead_context.logger.log(
         "tmux_worker_session_lease_updated",
         worker=worker_name,

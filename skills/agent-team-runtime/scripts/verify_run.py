@@ -10,6 +10,7 @@ from typing import Dict, List
 
 
 REQUIRED_FILES = [
+    "agent_session_registry.json",
     "final_report.md",
     "task_board.json",
     "events.jsonl",
@@ -117,6 +118,17 @@ def main() -> int:
     runtime_config = summary.get("runtime_config", {})
     host = summary.get("host", {})
     workflow = summary.get("workflow", {})
+    agent_session_registry_path = pathlib.Path(str(summary.get("agent_session_registry_path", "") or "")).resolve()
+    if not agent_session_registry_path.exists():
+        return fail("Missing agent session registry artifact reference in run_summary.json")
+    agent_session_registry = load_json(agent_session_registry_path)
+    if not agent_session_registry:
+        return fail("agent_session_registry.json should not be empty")
+    registry_summary = summary.get("agent_session_registry_summary", {})
+    if not isinstance(registry_summary, dict):
+        return fail("agent_session_registry_summary must be an object")
+    if int(registry_summary.get("agent_count", 0)) != len(agent_session_registry):
+        return fail("agent_session_registry_summary.agent_count does not match registry size")
     if runtime_config.get("teammate_mode") == "tmux":
         diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
         if not diagnostics_path.exists():

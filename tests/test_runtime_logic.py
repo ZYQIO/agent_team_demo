@@ -2745,6 +2745,65 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(context.host_session["context_file"], host_session["context_file"])
             self.assertEqual(context.host_session["host_kind"], "claude-code")
 
+    def test_agent_session_registry_tracks_external_runtime_details(self) -> None:
+        from agent_team.runtime.sessions import (
+            initialize_agent_session_registry,
+            load_agent_session_registry,
+            update_agent_session_registry,
+        )
+
+        shared_state = runtime.SharedState()
+        profiles = [
+            runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+            runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
+        ]
+        host_sessions = {
+            "lead": {"host_kind": "generic-cli", "effective_target_dir": "/tmp/lead"},
+            "reviewer_gamma": {
+                "host_kind": "claude-code",
+                "effective_target_dir": "/tmp/reviewer",
+                "workspace_isolated": True,
+            },
+        }
+
+        initialize_agent_session_registry(
+            shared_state=shared_state,
+            profiles=profiles,
+            host_sessions=host_sessions,
+            requested_mode="tmux",
+        )
+        update_agent_session_registry(
+            shared_state=shared_state,
+            agent_name="reviewer_gamma",
+            agent_type="reviewer",
+            task_id="peer_challenge",
+            task_type="peer_challenge",
+            status="completed",
+            transport="tmux->subprocess_fallback",
+            current_transport="tmux->subprocess_fallback",
+            fallback_reason="tmux binary not found",
+            tmux_preferred_session_name="agent_reviewer_gamma",
+            tmux_session_name="agent_reviewer_gamma",
+            tmux_session_status="fallback_subprocess",
+            reuse_authorized=True,
+            retained_for_reuse=False,
+            task_started_delta=1,
+            task_completed_delta=1,
+            external_run_delta=1,
+            fallback_run_delta=1,
+        )
+
+        registry = load_agent_session_registry(shared_state)
+        reviewer = registry["reviewer_gamma"]
+        self.assertEqual(reviewer["host_kind"], "claude-code")
+        self.assertEqual(reviewer["current_transport"], "tmux->subprocess_fallback")
+        self.assertEqual(reviewer["last_fallback_reason"], "tmux binary not found")
+        self.assertEqual(reviewer["tmux_session_status"], "fallback_subprocess")
+        self.assertEqual(reviewer["tasks_started"], 1)
+        self.assertEqual(reviewer["tasks_completed"], 1)
+        self.assertEqual(reviewer["external_runs"], 1)
+        self.assertEqual(reviewer["fallback_runs"], 1)
+
     def test_apply_resume_runtime_defaults_uses_checkpoint_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
