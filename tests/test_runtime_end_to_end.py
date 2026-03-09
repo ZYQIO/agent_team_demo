@@ -330,6 +330,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertGreaterEqual(len(diagnostics_lines), 1)
             diagnostics_payloads = [json.loads(line) for line in diagnostics_lines if line.strip()]
             self.assertIn("reviewer_gamma", {item.get("worker") for item in diagnostics_payloads})
+            reviewer_task_types = {
+                item.get("task_type")
+                for item in diagnostics_payloads
+                if item.get("worker") == "reviewer_gamma"
+            }
+            self.assertIn("peer_challenge", reviewer_task_types)
+            self.assertIn("evidence_pack", reviewer_task_types)
             first_record = diagnostics_payloads[0]
             self.assertIn(first_record.get("result"), {"success", "execution_failed", "invalid_json"})
             self.assertIn("transport_used", first_record)

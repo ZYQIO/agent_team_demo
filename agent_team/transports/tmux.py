@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 from ..config import RuntimeConfig
-from ..core import AgentProfile, EventLogger, Task, utc_now
+from ..core import AgentProfile, EventLogger, Message, Task, utc_now
 from ..models import build_provider
 from ..workflows.markdown_audit_analysis import handle_dynamic_planning as handle_markdown_dynamic_planning
 from ..workflows.markdown_audit_reporting import (
@@ -23,6 +23,10 @@ from ..workflows.repo_audit_analysis import handle_repo_dynamic_planning
 from ..workflows.repo_audit_reporting import (
     handle_llm_synthesis as handle_repo_llm_synthesis,
     handle_repo_recommendation_pack,
+)
+from ..workflows.shared_challenge import (
+    handle_evidence_pack as handle_shared_evidence_pack,
+    handle_peer_challenge as handle_shared_peer_challenge,
 )
 
 
@@ -41,6 +45,8 @@ TMUX_ANALYST_TASK_TYPES = {
 TMUX_REVIEWER_EXTERNAL_TASK_TYPES = {
     "dynamic_planning",
     "repo_dynamic_planning",
+    "peer_challenge",
+    "evidence_pack",
     "llm_synthesis",
     "recommendation_pack",
     "repo_recommendation_pack",
@@ -56,6 +62,147 @@ TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
 class _WorkerNullLogger:
     def log(self, _event: str, **_fields: Any) -> None:
         return
+
+
+class _WorkerMailboxNull:
+    def send(
+        self,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        task_id: Optional[str] = None,
+    ) -> None:
+        del sender, recipient, subject, body, task_id
+
+    def broadcast(self, sender: str, subject: str, body: str) -> None:
+        del sender, subject, body
+
+    def pull(self, recipient: str) -> List[Message]:
+        del recipient
+        return []
+
+    def pull_matching(
+        self,
+        recipient: str,
+        matcher: Callable[[Message], bool],
+    ) -> List[Message]:
+        del recipient, matcher
+        return []
+
+
+class _WorkerMailboxBridge:
+    def __init__(
+        self,
+        *,
+        requests_dir: pathlib.Path,
+        responses_dir: pathlib.Path,
+        poll_interval_sec: float = 0.05,
+        timeout_sec: float = 30.0,
+    ) -> None:
+        self._requests_dir = requests_dir
+        self._responses_dir = responses_dir
+        self._poll_interval_sec = poll_interval_sec
+        self._timeout_sec = timeout_sec
+        self._local_queues: Dict[str, List[Message]] = {}
+        self._requests_dir.mkdir(parents=True, exist_ok=True)
+        self._responses_dir.mkdir(parents=True, exist_ok=True)
+
+    def _request(self, op: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        request_path = self._requests_dir / f"{request_id}.json"
+        response_path = self._responses_dir / f"{request_id}.json"
+        request_path.write_text(
+            json.dumps({"request_id": request_id, "op": op, "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        deadline = time.time() + self._timeout_sec
+        while time.time() < deadline:
+            if response_path.exists():
+                response = json.loads(response_path.read_text(encoding="utf-8"))
+                response_path.unlink(missing_ok=True)
+                if not isinstance(response, dict):
+                    raise RuntimeError(f"mailbox bridge invalid response for op={op}")
+                if not response.get("ok", False):
+                    raise RuntimeError(str(response.get("error", f"mailbox bridge {op} failed")))
+                payload = response.get("payload", {})
+                if isinstance(payload, dict):
+                    return payload
+                return {"value": payload}
+            time.sleep(self._poll_interval_sec)
+        raise TimeoutError(f"mailbox bridge timeout for op={op}")
+
+    def send(
+        self,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        task_id: Optional[str] = None,
+    ) -> None:
+        self._request(
+            "send",
+            {
+                "sender": sender,
+                "recipient": recipient,
+                "subject": subject,
+                "body": body,
+                "task_id": task_id,
+            },
+        )
+
+    def broadcast(self, sender: str, subject: str, body: str) -> None:
+        self._request(
+            "broadcast",
+            {
+                "sender": sender,
+                "subject": subject,
+                "body": body,
+            },
+        )
+
+    def _pull_remote(self, recipient: str) -> List[Message]:
+        payload = self._request("pull", {"recipient": recipient})
+        messages = payload.get("messages", [])
+        if not isinstance(messages, list):
+            return []
+        result: List[Message] = []
+        for item in messages:
+            if isinstance(item, dict):
+                result.append(
+                    Message(
+                        message_id=str(item.get("message_id", "")),
+                        sent_at=str(item.get("sent_at", "")),
+                        sender=str(item.get("sender", "")),
+                        recipient=str(item.get("recipient", "")),
+                        subject=str(item.get("subject", "")),
+                        body=str(item.get("body", "")),
+                        task_id=item.get("task_id"),
+                    )
+                )
+        return result
+
+    def pull(self, recipient: str) -> List[Message]:
+        queued = list(self._local_queues.pop(recipient, []))
+        queued.extend(self._pull_remote(recipient))
+        return queued
+
+    def pull_matching(
+        self,
+        recipient: str,
+        matcher: Callable[[Message], bool],
+    ) -> List[Message]:
+        queue = list(self._local_queues.pop(recipient, []))
+        queue.extend(self._pull_remote(recipient))
+        matched: List[Message] = []
+        rest: List[Message] = []
+        for message in queue:
+            if matcher(message):
+                matched.append(message)
+            else:
+                rest.append(message)
+        self._local_queues[recipient] = rest
+        return matched
 
 
 class _WorkerSharedState:
@@ -167,6 +314,9 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
     model_payload = payload.get("provider_config", {})
     if not isinstance(model_payload, dict):
         model_payload = {}
+    mailbox_bridge_payload = payload.get("mailbox_bridge", {})
+    if not isinstance(mailbox_bridge_payload, dict):
+        mailbox_bridge_payload = {}
     provider, _ = build_provider(
         provider_name=str(model_payload.get("provider_name", model_payload.get("provider", "heuristic"))),
         model=str(model_payload.get("model", "heuristic-v1")),
@@ -175,6 +325,14 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         require_llm=bool(model_payload.get("require_llm", False)),
         timeout_sec=int(model_payload.get("timeout_sec", 60)),
     )
+    mailbox: Any = _WorkerMailboxNull()
+    requests_dir = str(mailbox_bridge_payload.get("requests_dir", "") or "")
+    responses_dir = str(mailbox_bridge_payload.get("responses_dir", "") or "")
+    if requests_dir and responses_dir:
+        mailbox = _WorkerMailboxBridge(
+            requests_dir=pathlib.Path(requests_dir),
+            responses_dir=pathlib.Path(responses_dir),
+        )
     return SimpleNamespace(
         profile=AgentProfile(
             name=str(profile_payload.get("name", "worker")),
@@ -188,6 +346,7 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         runtime_config=runtime_config,
         board=_WorkerBoardView(task_results=board_results, task_ids=task_ids),
         shared_state=_WorkerSharedState(shared_state_payload),
+        mailbox=mailbox,
         logger=_WorkerNullLogger(),
     )
 
@@ -1168,6 +1327,10 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _run_handler_backed_worker(payload, handle_markdown_dynamic_planning)
     if task_type == "repo_dynamic_planning":
         return _run_handler_backed_worker(payload, handle_repo_dynamic_planning)
+    if task_type == "peer_challenge":
+        return _run_handler_backed_worker(payload, handle_shared_peer_challenge)
+    if task_type == "evidence_pack":
+        return _run_handler_backed_worker(payload, handle_shared_evidence_pack)
     if task_type == "llm_synthesis":
         workflow_pack = str(payload.get("workflow_pack", "markdown-audit"))
         if workflow_pack == "repo-audit":

@@ -178,8 +178,8 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode tmux
 ```
 
-In `tmux` mode, analyst tasks and compatible reviewer execution tasks now delegate through the same external worker transport.
-Mailbox-heavy tasks such as `peer_challenge` and `evidence_pack` still run in-process.
+In `tmux` mode, analyst tasks and reviewer execution tasks now delegate through the same external worker transport.
+`peer_challenge` and `evidence_pack` also run through external workers via a mailbox bridge, while lead adjudication remains in-process.
 
 Tune tmux worker timeout/fallback:
 

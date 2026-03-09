@@ -20,7 +20,9 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import traceback
+import uuid
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 from agent_team.config import (
@@ -99,6 +101,7 @@ from agent_team.models import build_provider
 
 TMUX_ANALYST_TASK_TYPES = tmux_transport.TMUX_ANALYST_TASK_TYPES
 TMUX_EXTERNAL_TASK_TYPES = tmux_transport.TMUX_EXTERNAL_TASK_TYPES
+TMUX_MAILBOX_BRIDGE_TASK_TYPES = {"peer_challenge", "evidence_pack"}
 
 
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -239,6 +242,72 @@ def _task_ids_snapshot(board: Any) -> List[str]:
     return [str(item.get("task_id", "")) for item in snapshot.get("tasks", []) if item.get("task_id")]
 
 
+def _serve_mailbox_bridge(
+    context: AgentContext,
+    requests_dir: pathlib.Path,
+    responses_dir: pathlib.Path,
+    stop_event: threading.Event,
+    poll_interval_sec: float = 0.05,
+) -> None:
+    requests_dir.mkdir(parents=True, exist_ok=True)
+    responses_dir.mkdir(parents=True, exist_ok=True)
+    while not stop_event.is_set() or any(requests_dir.glob("*.json")):
+        request_paths = sorted(requests_dir.glob("*.json"))
+        if not request_paths:
+            time.sleep(poll_interval_sec)
+            continue
+        for request_path in request_paths:
+            try:
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                request_path.unlink(missing_ok=True)
+                continue
+            request_id = str(payload.get("request_id", "") or "")
+            op = str(payload.get("op", "") or "")
+            request_payload = payload.get("payload", {})
+            if not request_id or not isinstance(request_payload, dict):
+                request_path.unlink(missing_ok=True)
+                continue
+            response_path = responses_dir / f"{request_id}.json"
+            response: Dict[str, Any] = {"ok": True, "payload": {}}
+            try:
+                if op == "send":
+                    context.mailbox.send(
+                        sender=str(request_payload.get("sender", "")),
+                        recipient=str(request_payload.get("recipient", "")),
+                        subject=str(request_payload.get("subject", "")),
+                        body=str(request_payload.get("body", "")),
+                        task_id=request_payload.get("task_id"),
+                    )
+                elif op == "broadcast":
+                    context.mailbox.broadcast(
+                        sender=str(request_payload.get("sender", "")),
+                        subject=str(request_payload.get("subject", "")),
+                        body=str(request_payload.get("body", "")),
+                    )
+                elif op == "pull":
+                    messages = context.mailbox.pull(str(request_payload.get("recipient", "")))
+                    response["payload"] = {
+                        "messages": [message.to_dict() for message in messages],
+                    }
+                else:
+                    raise ValueError(f"unsupported mailbox bridge op: {op}")
+                context.logger.log(
+                    "tmux_mailbox_bridge_request_served",
+                    worker=context.profile.name,
+                    op=op,
+                )
+            except Exception as exc:
+                response = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            response_path.write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
+            request_path.unlink(missing_ok=True)
+
+
 def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Dict[str, Any]]:
     if context.runtime_config.teammate_mode != "tmux":
         return None
@@ -257,12 +326,16 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
 
     retain_session_for_reuse = False
     allow_existing_session_reuse = False
-    if context.profile.agent_type == "analyst" and task.task_type in TMUX_ANALYST_TASK_TYPES:
+    if task.task_type in TMUX_EXTERNAL_TASK_TYPES:
         board_snapshot = context.board.snapshot()
         retain_session_for_reuse = any(
             str(item.get("task_id", "")) != task.task_id
-            and str(item.get("task_type", "")) in TMUX_ANALYST_TASK_TYPES
+            and str(item.get("task_type", "")) in TMUX_EXTERNAL_TASK_TYPES
             and str(item.get("status", "")) in {"pending", "blocked"}
+            and (
+                not item.get("allowed_agent_types")
+                or context.profile.agent_type in set(item.get("allowed_agent_types", []))
+            )
             for item in board_snapshot.get("tasks", [])
         )
         allow_existing_session_reuse = tmux_transport._lease_allows_preferred_session_reuse(
@@ -278,6 +351,33 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
         retain_session_for_reuse=retain_session_for_reuse,
         allow_existing_session_reuse=allow_existing_session_reuse,
     )
+    bridge_stop_event: Optional[threading.Event] = None
+    bridge_thread: Optional[threading.Thread] = None
+    mailbox_bridge_payload: Dict[str, Any] = {}
+    if task.task_type in TMUX_MAILBOX_BRIDGE_TASK_TYPES:
+        bridge_root = (
+            context.output_dir
+            / "_tmux_worker_mailbox"
+            / f"{context.profile.name}_{task.task_id}_{uuid.uuid4().hex}"
+        )
+        requests_dir = bridge_root / "requests"
+        responses_dir = bridge_root / "responses"
+        mailbox_bridge_payload = {
+            "requests_dir": str(requests_dir.resolve()),
+            "responses_dir": str(responses_dir.resolve()),
+        }
+        bridge_stop_event = threading.Event()
+        bridge_thread = threading.Thread(
+            target=_serve_mailbox_bridge,
+            kwargs={
+                "context": context,
+                "requests_dir": requests_dir,
+                "responses_dir": responses_dir,
+                "stop_event": bridge_stop_event,
+            },
+            daemon=True,
+        )
+        bridge_thread.start()
     execution = _run_tmux_worker_task(
         runtime_script=pathlib.Path(__file__).resolve(),
         output_dir=context.output_dir,
@@ -301,6 +401,7 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
             "provider_config": dict(model_config),
             "task_results": _task_results_snapshot(context.board),
             "task_ids": _task_ids_snapshot(context.board),
+            "mailbox_bridge": mailbox_bridge_payload,
         },
         worker_name=context.profile.name,
         logger=context.logger,
@@ -308,56 +409,59 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
         retain_session_for_reuse=retain_session_for_reuse,
         allow_existing_session_reuse=allow_existing_session_reuse,
     )
+    if bridge_stop_event is not None:
+        bridge_stop_event.set()
+    if bridge_thread is not None:
+        bridge_thread.join(timeout=2.0)
     execution_diagnostics = execution.get("diagnostics", {})
     transport = str(execution.get("transport", ""))
 
-    if context.profile.agent_type == "analyst":
-        if execution.get("ok"):
-            retained_for_reuse = bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False))
-            lease_status = "retained" if retained_for_reuse else "released"
-            if "subprocess" in transport:
-                lease_status = "fallback_subprocess"
-            tmux_transport._update_tmux_session_lease(
-                lead_context=context,
-                worker_name=context.profile.name,
-                session_name=str(
-                    execution_diagnostics.get("tmux_preferred_session_name", "")
-                    or tmux_transport.preferred_tmux_session_name(context.profile.name)
-                ),
-                status=lease_status,
-                task_id=task.task_id,
-                task_type=task.task_type,
-                transport=transport,
-                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
-                retained_for_reuse=retained_for_reuse,
-                reused_existing=bool(
-                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
-                ),
-                reuse_authorized=allow_existing_session_reuse,
-            )
-        else:
-            lease_status = "failed"
-            if "subprocess" in transport:
-                lease_status = "fallback_subprocess"
-            tmux_transport._update_tmux_session_lease(
-                lead_context=context,
-                worker_name=context.profile.name,
-                session_name=str(
-                    execution_diagnostics.get("tmux_preferred_session_name", "")
-                    or tmux_transport.preferred_tmux_session_name(context.profile.name)
-                ),
-                status=lease_status,
-                task_id=task.task_id,
-                task_type=task.task_type,
-                transport=transport,
-                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
-                retained_for_reuse=bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False)),
-                reused_existing=bool(
-                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
-                ),
-                reuse_authorized=allow_existing_session_reuse,
-                error=str(execution.get("error", "")),
-            )
+    if execution.get("ok"):
+        retained_for_reuse = bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False))
+        lease_status = "retained" if retained_for_reuse else "released"
+        if "subprocess" in transport:
+            lease_status = "fallback_subprocess"
+        tmux_transport._update_tmux_session_lease(
+            lead_context=context,
+            worker_name=context.profile.name,
+            session_name=str(
+                execution_diagnostics.get("tmux_preferred_session_name", "")
+                or tmux_transport.preferred_tmux_session_name(context.profile.name)
+            ),
+            status=lease_status,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            transport=transport,
+            cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+            retained_for_reuse=retained_for_reuse,
+            reused_existing=bool(
+                execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+            ),
+            reuse_authorized=allow_existing_session_reuse,
+        )
+    else:
+        lease_status = "failed"
+        if "subprocess" in transport:
+            lease_status = "fallback_subprocess"
+        tmux_transport._update_tmux_session_lease(
+            lead_context=context,
+            worker_name=context.profile.name,
+            session_name=str(
+                execution_diagnostics.get("tmux_preferred_session_name", "")
+                or tmux_transport.preferred_tmux_session_name(context.profile.name)
+            ),
+            status=lease_status,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            transport=transport,
+            cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+            retained_for_reuse=bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False)),
+            reused_existing=bool(
+                execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+            ),
+            reuse_authorized=allow_existing_session_reuse,
+            error=str(execution.get("error", "")),
+        )
 
     event_name = "tmux_worker_task_completed" if execution.get("ok") else "tmux_worker_task_failed"
     context.logger.log(

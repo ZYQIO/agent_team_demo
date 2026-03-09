@@ -1489,6 +1489,75 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("preview", result["result"])
         self.assertIn("llm_synthesis", result["state_updates"])
 
+    def test_mailbox_bridge_proxy_round_trips_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            requests_dir = root / "requests"
+            responses_dir = root / "responses"
+            logger = runtime.EventLogger(output_dir=root / "out")
+            mailbox = runtime.Mailbox(
+                participants=["reviewer_gamma", "analyst_alpha"],
+                logger=logger,
+            )
+            context = type(
+                "Context",
+                (),
+                {
+                    "profile": runtime.AgentProfile(
+                        name="reviewer_gamma",
+                        skills={"review"},
+                        agent_type="reviewer",
+                    ),
+                    "mailbox": mailbox,
+                    "logger": logger,
+                },
+            )()
+            stop_event = threading.Event()
+            server = threading.Thread(
+                target=runtime._serve_mailbox_bridge,
+                kwargs={
+                    "context": context,
+                    "requests_dir": requests_dir,
+                    "responses_dir": responses_dir,
+                    "stop_event": stop_event,
+                },
+                daemon=True,
+            )
+            server.start()
+            proxy = runtime.tmux_transport._WorkerMailboxBridge(
+                requests_dir=requests_dir,
+                responses_dir=responses_dir,
+            )
+
+            proxy.send(
+                sender="reviewer_gamma",
+                recipient="analyst_alpha",
+                subject="hello",
+                body="world",
+                task_id="peer_challenge",
+            )
+            pulled = mailbox.pull("analyst_alpha")
+            self.assertEqual(len(pulled), 1)
+            self.assertEqual(pulled[0].subject, "hello")
+
+            mailbox.send(
+                sender="analyst_alpha",
+                recipient="reviewer_gamma",
+                subject="peer_challenge_round1_reply",
+                body="reply body",
+                task_id="peer_challenge",
+            )
+            matched = proxy.pull_matching(
+                "reviewer_gamma",
+                lambda message: message.subject == "peer_challenge_round1_reply"
+                and message.task_id == "peer_challenge",
+            )
+            self.assertEqual(len(matched), 1)
+            self.assertEqual(matched[0].body, "reply body")
+
+            stop_event.set()
+            server.join(timeout=2.0)
+
     def test_run_team_tmux_invokes_recovery_callback_before_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
