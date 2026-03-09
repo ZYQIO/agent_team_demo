@@ -32,6 +32,7 @@ from agent_team.config import (
     default_host_config,
     load_agent_team_config,
 )
+from agent_team.host import build_host_adapter
 from agent_team.core import (
     AgentProfile,
     EventLogger,
@@ -66,6 +67,7 @@ from agent_team.runtime import (
 from agent_team.runtime.engine import (
     AgentContext,
     TaskHandler,
+    build_agent_context,
     build_profiles,
     get_lead_name,
     get_team_member_names,

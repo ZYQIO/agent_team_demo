@@ -2306,6 +2306,76 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(team_config.workflow.preset, "custom")
             self.assertEqual(team_config.team.agents[0].name, "doc_analyst")
 
+    def test_host_adapter_prepares_isolated_workspace_and_context_for_claude_code(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "README.md").write_text("# Title\n", encoding="utf-8")
+            adapter = runtime.build_host_adapter(runtime.default_host_config("claude-code"))
+
+            session = adapter.prepare_agent_session(
+                output_dir=output_dir,
+                target_dir=target_dir,
+                agent_name="analyst_alpha",
+                agent_type="analyst",
+                goal="audit repo",
+                workflow_pack="markdown-audit",
+                workflow_preset="default",
+            )
+
+            self.assertTrue(session["workspace_isolated"])
+            self.assertTrue(session["auto_context_enabled"])
+            self.assertNotEqual(session["effective_target_dir"], str(target_dir.resolve()))
+            self.assertTrue(pathlib.Path(session["effective_target_dir"]).exists())
+            self.assertTrue(pathlib.Path(session["context_file"]).exists())
+            context_text = pathlib.Path(session["context_file"]).read_text(encoding="utf-8")
+            self.assertIn("Host kind: claude-code", context_text)
+            self.assertIn("Workflow pack: markdown-audit", context_text)
+
+    def test_build_agent_context_uses_host_effective_target_dir(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "out"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(participants=["lead"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            host_session = {
+                "effective_target_dir": str((output_dir / "workspace" / "target").resolve()),
+                "context_file": str((output_dir / "AGENT_TEAM_CONTEXT.md").resolve()),
+            }
+
+            context = runtime.build_agent_context(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=target_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                host_session=host_session,
+            )
+
+            self.assertEqual(context.target_dir, pathlib.Path(host_session["effective_target_dir"]).resolve())
+            self.assertEqual(context.host_session["context_file"], host_session["context_file"])
+
     def test_apply_resume_runtime_defaults_uses_checkpoint_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

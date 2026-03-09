@@ -55,6 +55,7 @@ class AgentContext:
     file_locks: FileLockRegistry
     shared_state: SharedState
     logger: EventLogger
+    host_session: Dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
 TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
@@ -104,6 +105,39 @@ def get_lead_name(context: AgentContext) -> str:
 def build_profiles(team_config: Optional[TeamConfig] = None) -> List[AgentProfile]:
     effective_team = team_config or default_team_config()
     return effective_team.to_profiles()
+
+
+def build_agent_context(
+    profile: AgentProfile,
+    *,
+    target_dir: pathlib.Path,
+    output_dir: pathlib.Path,
+    goal: str,
+    provider: LLMProvider,
+    runtime_config: RuntimeConfig,
+    board: TaskBoard,
+    mailbox: Mailbox,
+    file_locks: FileLockRegistry,
+    shared_state: SharedState,
+    logger: EventLogger,
+    host_session: Optional[Dict[str, Any]] = None,
+) -> AgentContext:
+    session = dict(host_session or {})
+    effective_target_dir = pathlib.Path(str(session.get("effective_target_dir", target_dir))).absolute()
+    return AgentContext(
+        profile=profile,
+        target_dir=effective_target_dir,
+        output_dir=output_dir,
+        goal=goal,
+        provider=provider,
+        runtime_config=runtime_config,
+        board=board,
+        mailbox=mailbox,
+        file_locks=file_locks,
+        shared_state=shared_state,
+        logger=logger,
+        host_session=session,
+    )
 
 
 def _default_teammate_agent_factory(
@@ -487,7 +521,31 @@ def run_team(
     shared_state.set("tmux_cleanup_deferred_for_resume", False)
     shared_state.set("tmux_cleanup_deferred_reason", "")
     file_locks = FileLockRegistry(logger=logger)
-    lead_context = AgentContext(
+    workflow_config = effective_agent_team_config.workflow
+    host_sessions = {
+        lead_name: host_adapter.prepare_agent_session(
+            output_dir=output_dir,
+            target_dir=target_dir,
+            agent_name=lead_name,
+            agent_type="lead",
+            goal=goal,
+            workflow_pack=workflow_config.pack,
+            workflow_preset=workflow_config.preset,
+        )
+    }
+    for profile in profiles:
+        host_sessions[profile.name] = host_adapter.prepare_agent_session(
+            output_dir=output_dir,
+            target_dir=target_dir,
+            agent_name=profile.name,
+            agent_type=profile.agent_type,
+            goal=goal,
+            workflow_pack=workflow_config.pack,
+            workflow_preset=workflow_config.preset,
+        )
+    shared_state.set("agent_host_sessions", host_sessions)
+
+    lead_context = build_agent_context(
         profile=AgentProfile(name=lead_name, skills={"lead"}, agent_type="lead"),
         target_dir=target_dir,
         output_dir=output_dir,
@@ -499,6 +557,7 @@ def run_team(
         file_locks=file_locks,
         shared_state=shared_state,
         logger=logger,
+        host_session=host_sessions.get(lead_name, {}),
     )
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
         try:
@@ -517,7 +576,7 @@ def run_team(
     stop_event = threading.Event()
     workers = [
         worker_factory(
-            context=AgentContext(
+            context=build_agent_context(
                 profile=profile,
                 target_dir=target_dir,
                 output_dir=output_dir,
@@ -529,6 +588,7 @@ def run_team(
                 file_locks=file_locks,
                 shared_state=shared_state,
                 logger=logger,
+                host_session=host_sessions.get(profile.name, {}),
             ),
             stop_event=stop_event,
             handlers=workflow_handlers,
