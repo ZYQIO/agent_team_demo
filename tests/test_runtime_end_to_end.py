@@ -100,6 +100,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(provider.get("provider"), "heuristic")
             self.assertIn("runtime_config", summary)
             self.assertIn("checkpoint_history_dir", summary)
+            self.assertEqual(summary.get("teammate_mode_effective"), "in-process")
+            self.assertFalse(summary.get("teammate_transport_degraded"))
+            self.assertEqual(summary.get("teammate_transport_summary", {}).get("worker_task_count"), 0)
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("markdown_inventory", shared_state)
@@ -414,6 +417,17 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 pathlib.Path(summary.get("tmux_session_leases_path", "")).resolve(),
                 leases_path.resolve(),
+            )
+            self.assertTrue(summary.get("teammate_transport_degraded"))
+            self.assertEqual(summary.get("teammate_mode_effective"), "tmux_degraded_subprocess")
+            transport_summary = summary.get("teammate_transport_summary", {})
+            self.assertTrue(transport_summary.get("fallback_used"))
+            self.assertIn("reviewer_gamma", transport_summary.get("workers", []))
+            self.assertIn("subprocess", transport_summary.get("transports_seen", []))
+            self.assertIn("tmux binary not found", transport_summary.get("fallback_reasons", []))
+            self.assertEqual(
+                pathlib.Path(transport_summary.get("diagnostics_path", "")).resolve(),
+                diagnostics_path.resolve(),
             )
 
             verify_cmd = [

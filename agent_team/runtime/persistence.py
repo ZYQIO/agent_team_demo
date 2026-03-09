@@ -22,6 +22,7 @@ from ..models import ProviderMetadata
 CHECKPOINT_VERSION = 1
 CHECKPOINT_FILENAME = "run_checkpoint.json"
 CHECKPOINT_HISTORY_DIRNAME = "_checkpoint_history"
+TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
 
 
 def checkpoint_history_dir(output_dir: pathlib.Path) -> pathlib.Path:
@@ -160,6 +161,93 @@ def default_history_replay_report_path(output_dir: pathlib.Path) -> pathlib.Path
 
 def events_file(output_dir: pathlib.Path) -> pathlib.Path:
     return output_dir / "events.jsonl"
+
+
+def _load_jsonl_objects(path: pathlib.Path) -> List[Dict[str, Any]]:
+    if not path.exists():
+        return []
+    rows: List[Dict[str, Any]] = []
+    with path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(payload, dict):
+                rows.append(payload)
+    return rows
+
+
+def summarize_teammate_transport(
+    *,
+    output_dir: pathlib.Path,
+    runtime_config: RuntimeConfig,
+    state_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    diagnostics_path = output_dir / TMUX_WORKER_DIAGNOSTICS_FILENAME
+    diagnostics_rows = _load_jsonl_objects(diagnostics_path)
+    workers = sorted(
+        {
+            str(row.get("worker", "") or "")
+            for row in diagnostics_rows
+            if str(row.get("worker", "") or "")
+        }
+    )
+    transports_seen = sorted(
+        {
+            str(row.get("transport_used", "") or "")
+            for row in diagnostics_rows
+            if str(row.get("transport_used", "") or "")
+        }
+    )
+    fallback_reasons = sorted(
+        {
+            str(row.get("fallback_reason", "") or "")
+            for row in diagnostics_rows
+            if row.get("fallback_used") and str(row.get("fallback_reason", "") or "")
+        }
+    )
+    degraded_reasons = list(fallback_reasons)
+    cleanup_summary = state_snapshot.get("tmux_session_cleanup_summary", {})
+    recovery_summary = state_snapshot.get("tmux_session_recovery_summary", {})
+    for summary in (cleanup_summary, recovery_summary):
+        if not isinstance(summary, dict):
+            continue
+        skipped = str(summary.get("skipped", "") or "")
+        if skipped == "tmux_unavailable" and skipped not in degraded_reasons:
+            degraded_reasons.append(skipped)
+
+    requested_mode = str(runtime_config.teammate_mode)
+    degraded = False
+    effective_mode = requested_mode
+    if requested_mode == "tmux":
+        degraded = bool(degraded_reasons) or any(transport != "tmux" for transport in transports_seen)
+        if not diagnostics_rows and "tmux_unavailable" in degraded_reasons:
+            effective_mode = "tmux_unavailable"
+        elif not transports_seen:
+            effective_mode = "tmux"
+        elif all(transport == "tmux" for transport in transports_seen):
+            effective_mode = "tmux"
+        elif all(transport in {"subprocess", "tmux->subprocess_fallback"} for transport in transports_seen):
+            effective_mode = "tmux_degraded_subprocess"
+        else:
+            effective_mode = "tmux_mixed_fallback"
+
+    return {
+        "requested_mode": requested_mode,
+        "effective_mode": effective_mode,
+        "degraded": degraded,
+        "worker_task_count": len(diagnostics_rows),
+        "workers": workers,
+        "transports_seen": transports_seen,
+        "fallback_used": bool(fallback_reasons),
+        "fallback_reasons": fallback_reasons,
+        "degraded_reasons": degraded_reasons,
+        "diagnostics_path": str(diagnostics_path) if diagnostics_path.exists() else "",
+    }
 
 
 def seed_branch_events_from_source(
@@ -580,6 +668,11 @@ def write_artifacts(
         json.dumps(state_snapshot, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    teammate_transport_summary = summarize_teammate_transport(
+        output_dir=output_dir,
+        runtime_config=runtime_config,
+        state_snapshot=state_snapshot,
+    )
 
     def append_history_entry(path: pathlib.Path, summary: Dict[str, Any], kind: str) -> str:
         entry = {
@@ -663,6 +756,9 @@ def write_artifacts(
         ),
         "provider": provider_meta.to_dict(),
         "runtime_config": runtime_config.to_dict(),
+        "teammate_transport_summary": teammate_transport_summary,
+        "teammate_mode_effective": teammate_transport_summary.get("effective_mode", ""),
+        "teammate_transport_degraded": bool(teammate_transport_summary.get("degraded", False)),
         "host": state_snapshot.get("host", {}),
         "team": state_snapshot.get("team", {}),
         "workflow": state_snapshot.get("workflow", {}),
