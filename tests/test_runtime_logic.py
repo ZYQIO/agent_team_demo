@@ -2270,6 +2270,87 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(agents["analyst_alpha"]["messages_received"], 1)
             self.assertEqual(agents["reviewer_gamma"]["tasks_failed"], 1)
 
+    def test_teammate_session_registry_tracks_agent_activity(self) -> None:
+        shared_state = runtime.SharedState()
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        profile = runtime.AgentProfile(
+            name="analyst_alpha",
+            skills={"analysis"},
+            agent_type="analyst",
+        )
+        registry.ensure_profile(profile=profile, transport="in-process", status="created")
+        task = runtime.Task(
+            task_id="heading_audit",
+            title="heading",
+            task_type="heading_audit",
+            required_skills={"analysis"},
+            dependencies=[],
+            payload={},
+            locked_paths=[],
+            allowed_agent_types={"analyst"},
+        )
+        registry.record_status(agent_name="analyst_alpha", transport="in-process", status="ready")
+        registry.bind_task(
+            agent_name="analyst_alpha",
+            task=task,
+            transport="in-process",
+            task_context={
+                "visible_shared_state_keys": ["lead_name", "markdown_inventory"],
+                "visible_shared_state_key_count": 2,
+            },
+        )
+        registry.record_message_seen(
+            agent_name="analyst_alpha",
+            message=runtime.Message(
+                message_id="m1",
+                sent_at=runtime.utc_now(),
+                sender="lead",
+                recipient="analyst_alpha",
+                subject="assignment",
+                body="inspect headings",
+                task_id="heading_audit",
+            ),
+        )
+        registry.record_provider_reply(
+            agent_name="analyst_alpha",
+            topic="peer_challenge_round1",
+            reply="Use parser fallback",
+            memory_turns=4,
+        )
+        registry.record_task_result(
+            agent_name="analyst_alpha",
+            task=task,
+            transport="in-process",
+            success=True,
+            status="ready",
+        )
+
+        session = registry.session_for("analyst_alpha")
+        self.assertTrue(session["session_id"])
+        self.assertEqual(session["tasks_started"], 1)
+        self.assertEqual(session["tasks_completed"], 1)
+        self.assertEqual(session["messages_seen"], 1)
+        self.assertEqual(session["provider_replies"], 1)
+        self.assertEqual(session["last_visible_shared_state_key_count"], 2)
+        self.assertEqual(len(session["provider_memory"]), 1)
+        self.assertEqual(session["provider_memory"][0]["topic"], "peer_challenge_round1")
+
+    def test_build_teammate_sessions_snapshot_summarizes_registry(self) -> None:
+        shared_state = runtime.SharedState()
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+        registry.ensure_profile(profile=analyst, transport="tmux", status="retained")
+        registry.ensure_profile(profile=reviewer, transport="in-process", status="ready")
+
+        snapshot = runtime.build_teammate_sessions_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_count"], 2)
+        self.assertEqual(snapshot["transport_counts"]["tmux"], 1)
+        self.assertEqual(snapshot["transport_counts"]["in-process"], 1)
+        self.assertEqual(snapshot["status_counts"]["retained"], 1)
+        self.assertEqual(snapshot["status_counts"]["ready"], 1)
+
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)

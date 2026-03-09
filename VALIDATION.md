@@ -14,6 +14,7 @@ This document tracks repeatable checks for the local `agent_team_runtime.py` imp
 - Checkpoint persistence, history timeline, rewind/resume flow, rewind branching, and event-index rewind mapping
   (`run_checkpoint.json` + `_checkpoint_history` + `--resume-from` + `--rewind-to-history-index` + `--rewind-to-event-index` + `--rewind-branch`)
 - Artifact completeness and event traceability
+- Teammate session ledger generation and final report append behavior
 - Team progress artifact generation and report append behavior
 - Task-context boundary generation and context summary artifact
 - Config-driven host/model/team/workflow loading via `--config`
@@ -73,6 +74,7 @@ Verify artifacts in output directory:
 - `shared_state.json`
 - `file_locks.json`
 - `context_boundaries.json`
+- `teammate_sessions.json`
 - `team_progress.json`
 - `team_progress.md`
 - `run_summary.json`
@@ -199,5 +201,7 @@ python3 agent_team_demo/agent_team_runtime.py \
 - Event replay mode should generate `event_replay.md` with reconstructed status counts and transitions.
 - Final report should include a `Team Progress` section and `run_summary.json` should point to
   `team_progress.json` and `team_progress.md`.
+- Final report should include a `Teammate Sessions` section and `run_summary.json` should point to
+  `teammate_sessions.json`.
 - Event log should emit `task_context_prepared` and `run_summary.json` should point to
   `context_boundaries.json`.

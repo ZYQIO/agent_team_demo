@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "events.jsonl",
     "shared_state.json",
     "file_locks.json",
+    "teammate_sessions.json",
     "team_progress.json",
     "team_progress.md",
     "run_summary.json",
@@ -111,7 +112,13 @@ def main() -> int:
             )
 
     report = (output_dir / "final_report.md").read_text(encoding="utf-8")
-    for section in ["## Peer Challenge Round", "## Evidence Pack", "## Lead Adjudication", "## Team Progress"]:
+    for section in [
+        "## Peer Challenge Round",
+        "## Evidence Pack",
+        "## Lead Adjudication",
+        "## Team Progress",
+        "## Teammate Sessions",
+    ]:
         if section not in report:
             return fail(f"Missing report section: {section}")
 
@@ -129,6 +136,15 @@ def main() -> int:
     context_boundaries = load_json(output_dir / "context_boundaries.json")
     if int(context_boundaries.get("context_count", 0)) <= 0:
         return fail("context_boundaries.json must contain at least one prepared task context")
+    raw_teammate_sessions_path = str(summary.get("teammate_sessions_path", "") or "")
+    if not raw_teammate_sessions_path:
+        return fail("Missing teammate sessions path in run_summary.json: teammate_sessions_path")
+    teammate_sessions_path = pathlib.Path(raw_teammate_sessions_path).resolve()
+    if not teammate_sessions_path.exists():
+        return fail(f"Referenced teammate sessions artifact does not exist: {teammate_sessions_path}")
+    teammate_sessions = load_json(output_dir / "teammate_sessions.json")
+    if int(teammate_sessions.get("session_count", 0)) <= 0:
+        return fail("teammate_sessions.json must contain at least one teammate session")
     for summary_key in ["team_progress_path", "team_progress_report_path"]:
         raw_path = str(summary.get(summary_key, "") or "")
         if not raw_path:

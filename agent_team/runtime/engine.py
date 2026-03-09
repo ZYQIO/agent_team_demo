@@ -40,6 +40,10 @@ from .persistence import (
     write_artifacts,
     write_checkpoint,
 )
+from .session_state import (
+    TeammateSessionRegistry,
+    teammate_transport_for_profile,
+)
 
 
 @dataclasses.dataclass
@@ -56,6 +60,8 @@ class AgentContext:
     shared_state: SharedState
     logger: EventLogger
     task_context: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    session_state: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    session_registry: Optional[TeammateSessionRegistry] = None
 
 
 TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
@@ -487,6 +493,13 @@ def run_team(
     shared_state.set("run_rewind_seed_event_count", effective_rewind_seed_event_count)
     shared_state.set("tmux_cleanup_deferred_for_resume", False)
     shared_state.set("tmux_cleanup_deferred_reason", "")
+    session_registry = TeammateSessionRegistry(shared_state=shared_state)
+    for profile in profiles:
+        session_registry.ensure_profile(
+            profile=profile,
+            transport=teammate_transport_for_profile(profile=profile, runtime_config=runtime_config),
+            status="created",
+        )
     file_locks = FileLockRegistry(logger=logger)
     lead_context = AgentContext(
         profile=AgentProfile(name=lead_name, skills={"lead"}, agent_type="lead"),
@@ -500,6 +513,7 @@ def run_team(
         file_locks=file_locks,
         shared_state=shared_state,
         logger=logger,
+        session_registry=session_registry,
     )
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
         try:
@@ -530,6 +544,8 @@ def run_team(
                 file_locks=file_locks,
                 shared_state=shared_state,
                 logger=logger,
+                session_state=session_registry.session_for(profile.name),
+                session_registry=session_registry,
             ),
             stop_event=stop_event,
             handlers=workflow_handlers,

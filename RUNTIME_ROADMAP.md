@@ -64,6 +64,7 @@ The intended architecture is now:
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
 | Team progress artifacts | Completed | Runtime now writes `team_progress.json` + `team_progress.md` and appends a per-agent progress section into `final_report.md`. |
 | Task-context boundaries | Completed | Runtime now prepares task-scoped shared-state views, emits `task_context_prepared`, and writes `context_boundaries.json` for per-agent/task visibility auditing. |
+| Teammate session ledger | Completed | Runtime now maintains durable per-agent session ids, transport, recent task history, message history, and provider memory in `teammate_sessions.json`. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -362,7 +363,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `68/68` tests passed
+- `70/70` tests passed
 
 ### Smoke Runs
 
@@ -571,12 +572,14 @@ Completed slice:
 - Added checkpoint-backed runtime-config inheritance so resumed runs keep prior wait/rounding/tmux behavior instead of silently drifting back to CLI defaults
 - Added task-scoped shared-state views so teammate execution receives explicit bounded context instead of the full shared-state snapshot
 - Added `task_context_prepared` events plus `context_boundaries.json` for per-agent/task visibility auditing
+- Added a durable teammate session ledger so every agent now has a persistent session id, transport, recent tasks, recent messages, and provider memory snapshot in runtime artifacts
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:
 
 - stronger tmux execution isolation
 - better interruption/recovery semantics
+- stronger host/session transport boundaries on top of the new teammate session ledger
 
 ### M9: Second Workflow Pack
 

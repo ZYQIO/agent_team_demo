@@ -31,6 +31,24 @@ class InProcessTeammateAgent(threading.Thread):
         self._profile_has_skill_fn = profile_has_skill_fn
         self._traceback_module = traceback_module
         self._local_memory: List[Dict[str, str]] = []
+        self._refresh_session_state()
+
+    def _refresh_session_state(self) -> None:
+        if self.context.session_registry is None:
+            return
+        self.context.session_state = self.context.session_registry.session_for(self.context.profile.name)
+        raw_memory = self.context.session_state.get("provider_memory", [])
+        if not isinstance(raw_memory, list):
+            self._local_memory = []
+            return
+        self._local_memory = [
+            {
+                "topic": str(item.get("topic", "") or ""),
+                "reply": str(item.get("reply", "") or ""),
+            }
+            for item in raw_memory
+            if isinstance(item, dict)
+        ]
 
     def _reply_with_provider(
         self,
@@ -41,6 +59,7 @@ class InProcessTeammateAgent(threading.Thread):
         if not self.context.runtime_config.teammate_provider_replies:
             return fallback_reply
 
+        self._refresh_session_state()
         memory_turns = max(1, int(self.context.runtime_config.teammate_memory_turns))
         recent_memory = self._local_memory[-memory_turns:]
         memory_text = "\n".join(
@@ -67,13 +86,30 @@ class InProcessTeammateAgent(threading.Thread):
             generated = self.context.provider.complete(system_prompt=system_prompt, user_prompt=user_prompt).strip()
             if not generated:
                 return fallback_reply
-            self._local_memory.append({"topic": topic, "reply": generated})
+            if self.context.session_registry is not None:
+                self.context.session_state = self.context.session_registry.record_provider_reply(
+                    agent_name=self.context.profile.name,
+                    topic=topic,
+                    reply=generated,
+                    memory_turns=memory_turns,
+                )
+                self._refresh_session_state()
+            else:
+                self._local_memory.append({"topic": topic, "reply": generated})
+                self._local_memory = self._local_memory[-memory_turns:]
             self.context.logger.log(
                 "teammate_provider_reply_generated",
                 agent=self.context.profile.name,
                 topic=topic,
                 provider=self.context.provider.metadata.provider,
                 model=self.context.provider.metadata.model,
+            )
+            self.context.logger.log(
+                "teammate_session_memory_updated",
+                agent=self.context.profile.name,
+                topic=topic,
+                memory_turns=memory_turns,
+                cached_replies=len(self._local_memory),
             )
             return generated
         except Exception as exc:
@@ -130,6 +166,13 @@ class InProcessTeammateAgent(threading.Thread):
             _underlying=original_shared_state,
             _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
         )
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.bind_task(
+                agent_name=self.context.profile.name,
+                task=task,
+                transport="in-process",
+                task_context=task_context,
+            )
         self.context.task_context = task_context
         self.context.shared_state = scoped_shared_state
         self.context.logger.log(
@@ -146,6 +189,14 @@ class InProcessTeammateAgent(threading.Thread):
         )
         try:
             result = handler(self.context, task)
+            if self.context.session_registry is not None:
+                self.context.session_state = self.context.session_registry.record_task_result(
+                    agent_name=self.context.profile.name,
+                    task=task,
+                    transport="in-process",
+                    success=True,
+                    status="ready",
+                )
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
             self.context.mailbox.send(
                 sender=self.context.profile.name,
@@ -156,6 +207,14 @@ class InProcessTeammateAgent(threading.Thread):
             )
         except Exception as exc:  # pragma: no cover - defensive path
             error = f"{type(exc).__name__}: {exc}"
+            if self.context.session_registry is not None:
+                self.context.session_state = self.context.session_registry.record_task_result(
+                    agent_name=self.context.profile.name,
+                    task=task,
+                    transport="in-process",
+                    success=False,
+                    status="error",
+                )
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
             self.context.mailbox.send(
                 sender=self.context.profile.name,
@@ -378,6 +437,18 @@ class InProcessTeammateAgent(threading.Thread):
         )
 
     def run(self) -> None:
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_status(
+                agent_name=self.context.profile.name,
+                transport="in-process",
+                status="ready",
+            )
+        self.context.logger.log(
+            "teammate_session_started",
+            agent=self.context.profile.name,
+            transport="in-process",
+            session_id=str(self.context.session_state.get("session_id", "") or ""),
+        )
         self.context.mailbox.send(
             sender=self.context.profile.name,
             recipient=self._get_lead_name_fn(self.context),
@@ -388,6 +459,11 @@ class InProcessTeammateAgent(threading.Thread):
         while not self.stop_event.is_set():
             messages = self.context.mailbox.pull(self.context.profile.name)
             for message in messages:
+                if self.context.session_registry is not None:
+                    self.context.session_state = self.context.session_registry.record_message_seen(
+                        agent_name=self.context.profile.name,
+                        message=message,
+                    )
                 self.context.logger.log(
                     "agent_mail_seen",
                     agent=self.context.profile.name,
@@ -422,6 +498,18 @@ class InProcessTeammateAgent(threading.Thread):
             time.sleep(0.1)
 
         self.context.file_locks.release(self.context.profile.name)
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_status(
+                agent_name=self.context.profile.name,
+                transport="in-process",
+                status="stopped",
+            )
+        self.context.logger.log(
+            "teammate_session_stopped",
+            agent=self.context.profile.name,
+            transport="in-process",
+            session_id=str(self.context.session_state.get("session_id", "") or ""),
+        )
         self.context.mailbox.send(
             sender=self.context.profile.name,
             recipient=self._get_lead_name_fn(self.context),

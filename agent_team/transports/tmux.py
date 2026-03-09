@@ -1778,6 +1778,14 @@ def run_tmux_analyst_task_once(
                 profile=profile,
             ),
         }
+        if lead_context.session_registry is not None:
+            lead_context.session_state = lead_context.session_registry.bind_task(
+                agent_name=profile.name,
+                task=task,
+                transport="tmux",
+                task_context=payload["task_context"],
+            )
+            payload["session_state"] = dict(lead_context.session_state)
         payload["shared_state"] = payload["task_context"].get("visible_shared_state", {})
         board_snapshot = lead_context.board.snapshot()
         retain_session_for_reuse = any(
@@ -1848,6 +1856,14 @@ def run_tmux_analyst_task_once(
                 reuse_authorized=allow_existing_session_reuse,
                 error=error,
             )
+            if lead_context.session_registry is not None:
+                lead_context.session_state = lead_context.session_registry.record_task_result(
+                    agent_name=profile.name,
+                    task=task,
+                    transport=transport or "tmux",
+                    success=False,
+                    status="error",
+                )
             lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
             lead_context.mailbox.send(
                 sender=profile.name,
@@ -1932,6 +1948,9 @@ def run_tmux_analyst_task_once(
         lease_status = "retained" if retained_for_reuse else "released"
         if "subprocess" in transport:
             lease_status = "fallback_subprocess"
+        session_status = "retained" if retained_for_reuse else "ready"
+        if "subprocess" in transport:
+            session_status = "fallback_subprocess"
         _update_tmux_session_lease(
             lead_context=lead_context,
             worker_name=profile.name,
@@ -1948,6 +1967,14 @@ def run_tmux_analyst_task_once(
             reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
             reuse_authorized=allow_existing_session_reuse,
         )
+        if lead_context.session_registry is not None:
+            lead_context.session_state = lead_context.session_registry.record_task_result(
+                agent_name=profile.name,
+                task=task,
+                transport=transport or "tmux",
+                success=True,
+                status=session_status,
+            )
         lead_context.board.complete(task_id=task.task_id, owner=profile.name, result=result)
         lead_context.mailbox.send(
             sender=profile.name,

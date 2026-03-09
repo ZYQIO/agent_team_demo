@@ -17,6 +17,7 @@ This folder now contains two layers:
   - compatibility hook events: `TeammateIdle` and `TaskCompleted`
   - team progress artifacts and lead-facing progress summary
   - explicit teammate task-context boundaries with per-run context summary artifact
+  - durable teammate session ledger with per-agent task/memory/activity snapshots
   - teammate execution mode toggle (`in-process` / `tmux`, with subprocess fallback when tmux binary is unavailable)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
@@ -262,10 +263,12 @@ After runtime execution, output directory contains:
 - `shared_state.json`: shared runtime data
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
+- `teammate_sessions.json`: persistent per-agent session ids, transport, memory, and recent task/message history
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity
 - `team_progress.md`: lead-facing team progress dashboard
 - `run_summary.json`: pointers to all artifacts
 - `run_summary.json` now also includes `host`, `team`, `workflow`, `policies`, and `agent_team_config`
+- `run_summary.json` also includes `teammate_sessions_path`
 - `run_summary.json` also includes `team_progress_path` and `team_progress_report_path`
 - `run_summary.json` also includes `context_boundary_path`
 - `run_checkpoint.json`: resumable runtime checkpoint snapshot
@@ -292,6 +295,7 @@ The report now includes:
 - Lead adjudication initial/final verdict, score, thresholds, and rubric weights
 - LLM synthesis
 - Final recommended actions
+- Teammate session summary (per-agent session status, transport, memory depth, recent task history)
 - Team progress summary (per-agent completed/failed/ready/blocked counts)
 - Context boundary summary (task-scoped shared-state visibility by agent/task in `context_boundaries.json`)
 

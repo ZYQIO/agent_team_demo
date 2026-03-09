@@ -9,6 +9,12 @@ from .task_context import (
     build_task_context_snapshot,
     visible_state_keys_for_task,
 )
+from .session_state import (
+    TEAMMATE_SESSIONS_FILENAME,
+    TeammateSessionRegistry,
+    build_teammate_sessions_snapshot,
+    teammate_transport_for_profile,
+)
 from .persistence import (
     CHECKPOINT_FILENAME,
     CHECKPOINT_HISTORY_DIRNAME,
@@ -47,11 +53,14 @@ __all__ = [
     "CHECKPOINT_VERSION",
     "CONTEXT_BOUNDARY_FILENAME",
     "ScopedSharedState",
+    "TEAMMATE_SESSIONS_FILENAME",
     "TEAM_PROGRESS_FILENAME",
     "TEAM_PROGRESS_REPORT_FILENAME",
+    "TeammateSessionRegistry",
     "build_targeted_evidence_question",
     "build_context_boundary_summary",
     "build_task_context_snapshot",
+    "build_teammate_sessions_snapshot",
     "build_team_progress_snapshot",
     "checkpoint_history_dir",
     "checkpoint_history_file",
@@ -72,6 +81,7 @@ __all__ = [
     "restore_shared_state_from_checkpoint_payload",
     "restore_tasks_from_checkpoint_payload",
     "seed_branch_events_from_source",
+    "teammate_transport_for_profile",
     "visible_state_keys_for_task",
     "write_artifacts",
     "write_checkpoint",

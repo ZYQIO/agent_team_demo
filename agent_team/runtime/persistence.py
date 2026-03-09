@@ -18,6 +18,10 @@ from ..core import (
     utc_now,
 )
 from ..models import ProviderMetadata
+from .session_state import (
+    TEAMMATE_SESSIONS_FILENAME,
+    build_teammate_sessions_snapshot,
+)
 
 
 CHECKPOINT_VERSION = 1
@@ -149,12 +153,12 @@ def resolve_checkpoint_by_event_index(output_dir: pathlib.Path, event_index: int
 
 
 def default_rewind_branch_output_dir(source_output_dir: pathlib.Path, history_index: int) -> pathlib.Path:
-    stamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return source_output_dir / "branches" / f"rewind_{history_index:06d}_{stamp}"
 
 
 def default_event_rewind_branch_output_dir(source_output_dir: pathlib.Path, event_index: int) -> pathlib.Path:
-    stamp = dt.datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     return source_output_dir / "branches" / f"rewind_event_{event_index:08d}_{stamp}"
 
 
@@ -948,6 +952,51 @@ def append_team_progress_to_final_report(report_path: pathlib.Path, snapshot: Di
     return True
 
 
+def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
+    if not report_path.exists():
+        return False
+    existing = report_path.read_text(encoding="utf-8")
+    if "## Teammate Sessions" in existing:
+        return False
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## Teammate Sessions")
+    lines.append("")
+    lines.append(f"- Session count: {snapshot.get('session_count', 0)}")
+    transport_counts = snapshot.get("transport_counts", {})
+    if isinstance(transport_counts, dict) and transport_counts:
+        lines.append(
+            "- Session transports: "
+            + " ".join(
+                f"{transport}={count}" for transport, count in sorted(transport_counts.items())
+            )
+        )
+    status_counts = snapshot.get("status_counts", {})
+    if isinstance(status_counts, dict) and status_counts:
+        lines.append(
+            "- Session states: "
+            + " ".join(
+                f"{status}={count}" for status, count in sorted(status_counts.items())
+            )
+        )
+    for session in snapshot.get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        lines.append(
+            f"- {session.get('agent', '')}: "
+            f"session_id={session.get('session_id', '')} "
+            f"transport={session.get('transport', '')} "
+            f"status={session.get('status', '')} "
+            f"started={session.get('tasks_started', 0)} "
+            f"completed={session.get('tasks_completed', 0)} "
+            f"failed={session.get('tasks_failed', 0)} "
+            f"messages_seen={session.get('messages_seen', 0)} "
+            f"provider_memory={len(session.get('provider_memory', []))}"
+        )
+    report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def write_artifacts(
     output_dir: pathlib.Path,
     board: TaskBoard,
@@ -1069,6 +1118,16 @@ def write_artifacts(
         report_path=output_dir / "final_report.md",
         snapshot=team_progress_snapshot,
     )
+    teammate_sessions_snapshot = build_teammate_sessions_snapshot(shared_state=shared_state)
+    teammate_sessions_path = output_dir / TEAMMATE_SESSIONS_FILENAME
+    teammate_sessions_path.write_text(
+        json.dumps(teammate_sessions_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    append_teammate_sessions_to_final_report(
+        report_path=output_dir / "final_report.md",
+        snapshot=teammate_sessions_snapshot,
+    )
 
     context_boundary_summary = build_context_boundary_summary(logger=logger)
     context_boundary_path = output_dir / CONTEXT_BOUNDARY_FILENAME
@@ -1086,6 +1145,7 @@ def write_artifacts(
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
         "context_boundary_path": str(context_boundary_path),
+        "teammate_sessions_path": str(teammate_sessions_path),
         "team_progress_path": str(team_progress_path),
         "team_progress_report_path": str(team_progress_report_path),
         "tmux_session_cleanup_summary_path": tmux_cleanup_summary_path_str,
