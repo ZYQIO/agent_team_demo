@@ -34,6 +34,8 @@ TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
 TMUX_SESSION_SPAWN_MAX_ATTEMPTS = 3
 TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
 TMUX_SESSION_WORKSPACE_DIRNAME = "_tmux_session_workspaces"
+TMUX_SESSION_TARGET_SNAPSHOT_DIRNAME = "target_snapshot"
+TMUX_SESSION_TARGET_METADATA_FILENAME = "target_snapshot.json"
 
 
 def preferred_tmux_session_name(worker_name: str) -> str:
@@ -59,6 +61,19 @@ def _get_tmux_session_lease(shared_state: Any, worker_name: str) -> Dict[str, An
     return dict(_load_tmux_session_leases(shared_state).get(str(worker_name), {}))
 
 
+def _path_is_within(candidate: pathlib.Path, root: pathlib.Path) -> bool:
+    try:
+        candidate_value = str(candidate.resolve())
+        root_value = str(root.resolve())
+    except OSError:
+        candidate_value = str(candidate)
+        root_value = str(root)
+    try:
+        return os.path.commonpath([candidate_value, root_value]) == root_value
+    except ValueError:
+        return False
+
+
 def _lease_allows_preferred_session_reuse(shared_state: Any, worker_name: str) -> bool:
     lease = _get_tmux_session_lease(shared_state=shared_state, worker_name=worker_name)
     return (
@@ -82,6 +97,7 @@ def _update_tmux_session_lease(
     session_name: str = "",
     recovery_result: str = "",
     workspace_root: str = "",
+    workspace_target_dir: str = "",
     workspace_tmp_dir: str = "",
     workspace_scope: str = "",
     workspace_isolation_active: bool = False,
@@ -115,6 +131,7 @@ def _update_tmux_session_lease(
         "recovery_result": str(recovery_result or current.get("recovery_result", "")),
         "recovered_at": utc_now() if recovery_result else str(current.get("recovered_at", "")),
         "workspace_root": str(workspace_root or current.get("workspace_root", "")),
+        "workspace_target_dir": str(workspace_target_dir or current.get("workspace_target_dir", "")),
         "workspace_tmp_dir": str(workspace_tmp_dir or current.get("workspace_tmp_dir", "")),
         "workspace_scope": str(workspace_scope or current.get("workspace_scope", "")),
         "workspace_isolation_active": bool(
@@ -160,6 +177,7 @@ def _sync_session_boundary_from_lease(
         transport=transport,
         transport_session_name=str(lease_entry.get("session_name", "") or preferred_tmux_session_name(worker_name)),
         workspace_root=str(lease_entry.get("workspace_root", "") or ""),
+        workspace_target_dir=str(lease_entry.get("workspace_target_dir", "") or ""),
         workspace_tmp_dir=str(lease_entry.get("workspace_tmp_dir", "") or ""),
         workspace_scope=str(lease_entry.get("workspace_scope", "") or ""),
         workspace_isolation_active=bool(lease_entry.get("workspace_isolation_active", False)),
@@ -336,6 +354,124 @@ def _worker_subprocess_env(worker_env: Optional[Dict[str, str]]) -> Optional[Dic
     return env
 
 
+def _load_tmux_target_snapshot_metadata(metadata_path: pathlib.Path) -> Dict[str, Any]:
+    if not metadata_path.exists():
+        return {}
+    try:
+        payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _tmux_snapshot_ignore_names(excluded_roots: Sequence[pathlib.Path]) -> Callable[[str, List[str]], List[str]]:
+    resolved_roots = [path.resolve() for path in excluded_roots]
+
+    def _ignore(dir_path: str, names: List[str]) -> List[str]:
+        current = pathlib.Path(dir_path)
+        ignored: List[str] = []
+        for name in names:
+            candidate = current / name
+            if name == ".git":
+                ignored.append(name)
+                continue
+            if any(_path_is_within(candidate, root) for root in resolved_roots):
+                ignored.append(name)
+        return ignored
+
+    return _ignore
+
+
+def _prepare_tmux_workspace_target_dir(
+    output_dir: pathlib.Path,
+    workspace_root: pathlib.Path,
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    raw_target_dir = str(payload.get("target_dir", "") or "").strip()
+    if not raw_target_dir:
+        return {
+            "workspace_target_dir": "",
+            "workspace_target_source_dir": "",
+            "workspace_target_status": "skipped_missing_target_dir",
+            "workspace_target_reused": False,
+        }
+
+    source_target_dir = pathlib.Path(raw_target_dir).resolve()
+    if not source_target_dir.exists() or not source_target_dir.is_dir():
+        raise FileNotFoundError(f"tmux target_dir does not exist or is not a directory: {source_target_dir}")
+
+    output_dir_resolved = output_dir.resolve()
+    if source_target_dir == output_dir_resolved:
+        return {
+            "workspace_target_dir": "",
+            "workspace_target_source_dir": str(source_target_dir),
+            "workspace_target_status": "skipped_target_equals_output_dir",
+            "workspace_target_reused": False,
+        }
+    if _path_is_within(source_target_dir, workspace_root):
+        return {
+            "workspace_target_dir": str(source_target_dir),
+            "workspace_target_source_dir": str(source_target_dir),
+            "workspace_target_status": "already_session_scoped",
+            "workspace_target_reused": True,
+        }
+
+    snapshot_dir = workspace_root / TMUX_SESSION_TARGET_SNAPSHOT_DIRNAME
+    build_dir = workspace_root / f"{TMUX_SESSION_TARGET_SNAPSHOT_DIRNAME}_build"
+    metadata_path = workspace_root / TMUX_SESSION_TARGET_METADATA_FILENAME
+    metadata = _load_tmux_target_snapshot_metadata(metadata_path)
+    source_target_dir_str = str(source_target_dir)
+
+    if (
+        snapshot_dir.exists()
+        and snapshot_dir.is_dir()
+        and str(metadata.get("source_target_dir", "") or "") == source_target_dir_str
+    ):
+        return {
+            "workspace_target_dir": str(snapshot_dir),
+            "workspace_target_source_dir": source_target_dir_str,
+            "workspace_target_status": "reused",
+            "workspace_target_reused": True,
+        }
+
+    if build_dir.exists():
+        shutil.rmtree(build_dir)
+    if snapshot_dir.exists():
+        shutil.rmtree(snapshot_dir)
+
+    excluded_roots: List[pathlib.Path] = []
+    if output_dir_resolved != source_target_dir and _path_is_within(output_dir_resolved, source_target_dir):
+        excluded_roots.append(output_dir_resolved)
+
+    shutil.copytree(
+        source_target_dir,
+        build_dir,
+        ignore=_tmux_snapshot_ignore_names(excluded_roots=excluded_roots),
+    )
+    build_dir.replace(snapshot_dir)
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "prepared_at": utc_now(),
+                "source_target_dir": source_target_dir_str,
+                "workspace_target_dir": str(snapshot_dir),
+                "excluded_roots": [str(path) for path in excluded_roots],
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return {
+        "workspace_target_dir": str(snapshot_dir),
+        "workspace_target_source_dir": source_target_dir_str,
+        "workspace_target_status": "created",
+        "workspace_target_reused": False,
+    }
+
+
 def _build_tmux_session_environment(
     output_dir: pathlib.Path,
     worker_name: str,
@@ -349,6 +485,11 @@ def _build_tmux_session_environment(
     workspace_tmp_dir = workspace_root / "tmp"
     workspace_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_dir.mkdir(parents=True, exist_ok=True)
+    workspace_target = _prepare_tmux_workspace_target_dir(
+        output_dir=output_dir,
+        workspace_root=workspace_root,
+        payload=payload,
+    )
     worker_env = {
         "AGENT_TEAM_AGENT": str(worker_name),
         "AGENT_TEAM_SESSION_ID": session_id,
@@ -359,10 +500,20 @@ def _build_tmux_session_environment(
         "TMP": str(workspace_tmp_dir),
         "TEMP": str(workspace_tmp_dir),
     }
+    if workspace_target.get("workspace_target_dir"):
+        worker_env["AGENT_TEAM_WORKSPACE_TARGET_DIR"] = str(workspace_target.get("workspace_target_dir", ""))
+    if workspace_target.get("workspace_target_source_dir"):
+        worker_env["AGENT_TEAM_WORKSPACE_SOURCE_DIR"] = str(
+            workspace_target.get("workspace_target_source_dir", "")
+        )
     return {
         "worker_env": worker_env,
         "transport_session_name": transport_session_name,
         "workspace_root": str(workspace_root),
+        "workspace_target_dir": str(workspace_target.get("workspace_target_dir", "")),
+        "workspace_target_source_dir": str(workspace_target.get("workspace_target_source_dir", "")),
+        "workspace_target_status": str(workspace_target.get("workspace_target_status", "")),
+        "workspace_target_reused": bool(workspace_target.get("workspace_target_reused", False)),
         "workspace_tmp_dir": str(workspace_tmp_dir),
         "workspace_scope": "tmux_session_workspace",
         "workspace_isolation_active": True,
@@ -780,10 +931,9 @@ def _cleanup_tmux_ipc_files(paths: Sequence[pathlib.Path]) -> Dict[str, Any]:
 
 def _worker_discover_markdown(target_dir: pathlib.Path, output_dir: pathlib.Path) -> Dict[str, Any]:
     inventory: List[Dict[str, Any]] = []
-    ignore_prefix = str(output_dir.resolve())
+    ignore_output_dir = output_dir.resolve() != target_dir.resolve() and _path_is_within(output_dir, target_dir)
     for path in sorted(p for p in target_dir.rglob("*.md") if p.is_file()):
-        absolute = str(path.resolve())
-        if absolute.startswith(ignore_prefix):
+        if ignore_output_dir and _path_is_within(path, output_dir):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore")
         lines = text.splitlines()
@@ -803,10 +953,9 @@ def _worker_discover_markdown(target_dir: pathlib.Path, output_dir: pathlib.Path
 
 def _worker_discover_repository(target_dir: pathlib.Path, output_dir: pathlib.Path) -> Dict[str, Any]:
     inventory: List[Dict[str, Any]] = []
-    ignore_prefix = str(output_dir.resolve())
+    ignore_output_dir = output_dir.resolve() != target_dir.resolve() and _path_is_within(output_dir, target_dir)
     for path in sorted(p for p in target_dir.rglob("*") if p.is_file()):
-        absolute = str(path.resolve())
-        if absolute.startswith(ignore_prefix):
+        if ignore_output_dir and _path_is_within(path, output_dir):
             continue
         relative_path = path.relative_to(target_dir)
         if ".git" in relative_path.parts:
@@ -1125,6 +1274,7 @@ def execute_worker_tmux(
     allow_existing_session_reuse: bool = False,
     worker_env: Optional[Dict[str, str]] = None,
     session_workspace_root: str = "",
+    session_workspace_target_dir: str = "",
     session_workspace_tmp_dir: str = "",
 ) -> subprocess.CompletedProcess[str]:
     ipc_dir = workdir / "_tmux_worker_ipc"
@@ -1177,6 +1327,7 @@ def execute_worker_tmux(
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
         "tmux_session_workspace_root": str(session_workspace_root or ""),
+        "tmux_session_workspace_target_dir": str(session_workspace_target_dir or ""),
         "tmux_session_workspace_tmp_dir": str(session_workspace_tmp_dir or ""),
         "tmux_session_workspace_scope": "tmux_session_workspace" if session_workspace_root else "",
         "tmux_session_workspace_isolated": bool(session_workspace_root),
@@ -1398,6 +1549,7 @@ def _merge_tmux_lifecycle_into_diagnostics(
         "tmux_ipc_cleanup_error",
         "tmux_ipc_files_removed",
         "tmux_session_workspace_root",
+        "tmux_session_workspace_target_dir",
         "tmux_session_workspace_tmp_dir",
         "tmux_session_workspace_scope",
         "tmux_session_workspace_isolated",
@@ -1435,7 +1587,7 @@ def run_tmux_worker_task(
     retain_session_for_reuse: bool = False,
     allow_existing_session_reuse: bool = False,
     execute_worker_tmux_fn: Callable[
-        [List[str], pathlib.Path, str, int, bool, bool, Optional[Dict[str, str]], str, str],
+        [List[str], pathlib.Path, str, int, bool, bool, Optional[Dict[str, str]], str, str, str],
         subprocess.CompletedProcess[str],
     ] = execute_worker_tmux,
     execute_worker_subprocess_fn: Callable[
@@ -1444,15 +1596,18 @@ def run_tmux_worker_task(
     ] = execute_worker_subprocess,
     which_fn: Callable[[str], str | None] = shutil.which,
 ) -> Dict[str, Any]:
-    payload_dir = output_dir / "_tmux_worker_payloads"
-    payload_dir.mkdir(parents=True, exist_ok=True)
-    payload_file = payload_dir / f"{worker_name}_{uuid.uuid4().hex}.json"
-    payload_file.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
     session_environment = _build_tmux_session_environment(
         output_dir=output_dir,
         worker_name=worker_name,
         payload=payload,
     )
+    payload_for_transport = dict(payload)
+    if session_environment.get("workspace_target_dir"):
+        payload_for_transport["target_dir"] = str(session_environment.get("workspace_target_dir", ""))
+    payload_dir = output_dir / "_tmux_worker_payloads"
+    payload_dir.mkdir(parents=True, exist_ok=True)
+    payload_file = payload_dir / f"{worker_name}_{uuid.uuid4().hex}.json"
+    payload_file.write_text(json.dumps(payload_for_transport, ensure_ascii=False), encoding="utf-8")
     worker_env = dict(session_environment.get("worker_env", {}))
 
     command = [
@@ -1532,7 +1687,11 @@ def run_tmux_worker_task(
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
         "tmux_session_workspace_root": str(session_environment.get("workspace_root", "")),
+        "tmux_session_workspace_target_dir": str(session_environment.get("workspace_target_dir", "")),
         "tmux_session_workspace_tmp_dir": str(session_environment.get("workspace_tmp_dir", "")),
+        "tmux_session_workspace_source_dir": str(session_environment.get("workspace_target_source_dir", "")),
+        "tmux_session_workspace_target_status": str(session_environment.get("workspace_target_status", "")),
+        "tmux_session_workspace_target_reused": bool(session_environment.get("workspace_target_reused", False)),
         "tmux_session_workspace_scope": str(session_environment.get("workspace_scope", "")),
         "tmux_session_workspace_isolated": bool(session_environment.get("workspace_isolation_active", False)),
         "tmux_session_env_keys": sorted({str(key) for key in worker_env.keys()}),
@@ -1617,6 +1776,7 @@ def run_tmux_worker_task(
                     allow_existing_session_reuse=allow_existing_session_reuse,
                     worker_env=worker_env,
                     session_workspace_root=str(session_environment.get("workspace_root", "")),
+                    session_workspace_target_dir=str(session_environment.get("workspace_target_dir", "")),
                     session_workspace_tmp_dir=str(session_environment.get("workspace_tmp_dir", "")),
                 )
             else:
@@ -1992,6 +2152,7 @@ def run_tmux_analyst_task_once(
                 reuse_authorized=allow_existing_session_reuse,
                 error=error,
                 workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
                 workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
                 workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
                 workspace_isolation_active=bool(
@@ -2116,6 +2277,7 @@ def run_tmux_analyst_task_once(
             reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
             reuse_authorized=allow_existing_session_reuse,
             workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+            workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
             workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
             workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
             workspace_isolation_active=bool(

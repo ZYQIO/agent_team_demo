@@ -1240,6 +1240,13 @@ class RuntimeLogicTests(unittest.TestCase):
                         "tmux_session_workspace_root": str(
                             output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"
                         ),
+                        "tmux_session_workspace_target_dir": str(
+                            output_dir
+                            / "_tmux_session_workspaces"
+                            / "analyst_alpha"
+                            / "session-alpha"
+                            / "target_snapshot"
+                        ),
                         "tmux_session_workspace_tmp_dir": str(
                             output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
                         ),
@@ -1269,6 +1276,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(session.get("transport_session_name"), "agent_analyst_alpha")
             self.assertEqual(session.get("workspace_scope"), "tmux_session_workspace")
             self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertTrue(str(session.get("workspace_target_dir", "")).endswith("target_snapshot"))
             self.assertTrue(session.get("reuse_authorized"))
             self.assertEqual(session.get("transport_reuse_count"), 1)
 
@@ -1362,6 +1370,9 @@ class RuntimeLogicTests(unittest.TestCase):
                         "session_name": "agent_analyst_alpha",
                         "status": "retained",
                         "workspace_root": str(output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"),
+                        "workspace_target_dir": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "target_snapshot"
+                        ),
                         "workspace_tmp_dir": str(
                             output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
                         ),
@@ -1411,7 +1422,12 @@ class RuntimeLogicTests(unittest.TestCase):
                         "worker": "analyst_alpha",
                         "session_name": "agent_analyst_alpha",
                         "status": "retained",
-                        "workspace_root": str(output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"),
+                        "workspace_root": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"
+                        ),
+                        "workspace_target_dir": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "target_snapshot"
+                        ),
                         "workspace_tmp_dir": str(
                             output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
                         ),
@@ -1465,6 +1481,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(session.get("workspace_scope"), "tmux_session_workspace")
             self.assertTrue(session.get("workspace_isolation_active"))
             self.assertTrue(str(session.get("workspace_root", "")).endswith("session-alpha"))
+            self.assertTrue(str(session.get("workspace_target_dir", "")).endswith("target_snapshot"))
             self.assertEqual(
                 shared_state.get("tmux_session_recovery_summary", {}).get("recovered"),
                 ["analyst_alpha"],
@@ -1909,7 +1926,13 @@ class RuntimeLogicTests(unittest.TestCase):
 
     def test_run_tmux_worker_task_builds_isolated_worker_env(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            output_dir = pathlib.Path(tmp)
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "guide.md").write_text("# Guide\nBody\n", encoding="utf-8")
+            output_dir = target_dir / "artifacts"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "should_ignore.md").write_text("# Ignore\n", encoding="utf-8")
             logger = runtime.EventLogger(output_dir=output_dir)
             config = runtime.RuntimeConfig(teammate_mode="subprocess")
             subprocess_ok = subprocess.CompletedProcess(
@@ -1918,14 +1941,22 @@ class RuntimeLogicTests(unittest.TestCase):
                 stdout=json.dumps({"result": {"ok": True}, "state_updates": {}}),
                 stderr="",
             )
+            captured_payload = {}
 
-            with mock.patch.object(runtime, "_execute_worker_subprocess", return_value=subprocess_ok) as run_subprocess:
+            def fake_run_subprocess(**kwargs):
+                nonlocal captured_payload
+                worker_payload_path = pathlib.Path(kwargs["command"][3])
+                captured_payload = json.loads(worker_payload_path.read_text(encoding="utf-8"))
+                return subprocess_ok
+
+            with mock.patch.object(runtime, "_execute_worker_subprocess", side_effect=fake_run_subprocess) as run_subprocess:
                 result = runtime._run_tmux_worker_task(
                     runtime_script=pathlib.Path(runtime.__file__).resolve(),
                     output_dir=output_dir,
                     runtime_config=config,
                     payload={
                         "task_type": "discover_markdown",
+                        "target_dir": str(target_dir),
                         "session_state": {
                             "session_id": "session-alpha",
                         },
@@ -1942,10 +1973,17 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(worker_env["AGENT_TEAM_SESSION_DIR"].endswith("session-alpha"))
             self.assertTrue(pathlib.Path(worker_env["AGENT_TEAM_SESSION_DIR"]).exists())
             self.assertTrue(pathlib.Path(worker_env["AGENT_TEAM_SESSION_TMP_DIR"]).exists())
+            isolated_target_dir = pathlib.Path(worker_env["AGENT_TEAM_WORKSPACE_TARGET_DIR"])
+            self.assertTrue(isolated_target_dir.exists())
             self.assertEqual(worker_env["TMPDIR"], worker_env["AGENT_TEAM_SESSION_TMP_DIR"])
+            self.assertEqual(captured_payload["target_dir"], str(isolated_target_dir))
+            self.assertTrue((isolated_target_dir / "guide.md").exists())
+            self.assertFalse((isolated_target_dir / "artifacts").exists())
             diagnostics = result.get("diagnostics", {})
             self.assertEqual(diagnostics.get("tmux_session_workspace_scope"), "tmux_session_workspace")
             self.assertTrue(diagnostics.get("tmux_session_workspace_isolated"))
+            self.assertEqual(diagnostics.get("tmux_session_workspace_target_dir"), str(isolated_target_dir))
+            self.assertEqual(diagnostics.get("tmux_session_workspace_target_status"), "created")
             self.assertIn("AGENT_TEAM_SESSION_ID", diagnostics.get("tmux_session_env_keys", []))
 
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
@@ -2694,6 +2732,7 @@ class RuntimeLogicTests(unittest.TestCase):
             transport="subprocess",
             transport_session_name="worker_subprocess_analyst_alpha",
             workspace_root="D:/tmp/session-alpha",
+            workspace_target_dir="D:/tmp/session-alpha/target_snapshot",
             workspace_tmp_dir="D:/tmp/session-alpha/tmp",
             workspace_scope="tmux_session_workspace",
             workspace_isolation_active=True,
@@ -2708,8 +2747,10 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(session["transport_session_name"], "worker_subprocess_analyst_alpha")
         self.assertEqual(session["workspace_scope"], "tmux_session_workspace")
         self.assertTrue(session["workspace_isolation_active"])
+        self.assertEqual(session["workspace_target_dir"], "D:/tmp/session-alpha/target_snapshot")
         self.assertEqual(session["transport_reuse_count"], 2)
         self.assertIn("session_workspace_scoped_tmpdir", session["notes"])
+        self.assertIn("session_workspace_scoped_target_dir", session["notes"])
 
     def test_tmux_mailbox_helper_does_not_override_worker_transport(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

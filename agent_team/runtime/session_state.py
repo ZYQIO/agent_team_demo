@@ -57,6 +57,7 @@ def _normalize_session_entry(agent_name: str, entry: Mapping[str, Any]) -> Dict[
         "current_task_type": str(entry.get("current_task_type", "") or ""),
         "transport_session_name": str(entry.get("transport_session_name", "") or ""),
         "workspace_root": str(entry.get("workspace_root", "") or ""),
+        "workspace_target_dir": str(entry.get("workspace_target_dir", "") or ""),
         "workspace_tmp_dir": str(entry.get("workspace_tmp_dir", "") or ""),
         "workspace_scope": str(entry.get("workspace_scope", "") or ""),
         "workspace_isolation_active": bool(entry.get("workspace_isolation_active", False)),
@@ -231,6 +232,7 @@ class TeammateSessionRegistry:
         transport: str = "",
         transport_session_name: str = "",
         workspace_root: str = "",
+        workspace_target_dir: str = "",
         workspace_tmp_dir: str = "",
         workspace_scope: str = "",
         workspace_isolation_active: bool = False,
@@ -250,6 +252,8 @@ class TeammateSessionRegistry:
                 entry["transport_session_name"] = str(transport_session_name)
             if workspace_root:
                 entry["workspace_root"] = str(workspace_root)
+            if workspace_target_dir:
+                entry["workspace_target_dir"] = str(workspace_target_dir)
             if workspace_tmp_dir:
                 entry["workspace_tmp_dir"] = str(workspace_tmp_dir)
             if workspace_scope:
@@ -507,6 +511,8 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             notes.append("host_independent_sessions_unavailable")
         if workspace_isolation_active:
             notes.append("session_workspace_scoped_tmpdir")
+        if str(session.get("workspace_target_dir", "") or ""):
+            notes.append("session_workspace_scoped_target_dir")
         record = {
             "agent": str(session.get("agent", "") or ""),
             "session_id": str(session.get("session_id", "") or ""),
@@ -520,6 +526,7 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             "host_independent_sessions": host_independent_sessions,
             "host_workspace_isolation": host_workspace_isolation,
             "workspace_root": str(session.get("workspace_root", "") or ""),
+            "workspace_target_dir": str(session.get("workspace_target_dir", "") or ""),
             "workspace_tmp_dir": str(session.get("workspace_tmp_dir", "") or ""),
             "workspace_scope": str(session.get("workspace_scope", "") or ""),
             "workspace_isolation_active": workspace_isolation_active,

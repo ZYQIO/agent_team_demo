@@ -1011,6 +1011,9 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
                 f" workspace_scope={session.get('workspace_scope', '')} "
                 f"workspace_isolated={session.get('workspace_isolation_active', False)}"
             )
+        workspace_target_dir = str(session.get("workspace_target_dir", "") or "")
+        if workspace_target_dir:
+            lines[-1] += f" workspace_target_dir={workspace_target_dir}"
         last_resume_from = str(session.get("last_resume_from", "") or "")
         if last_resume_from:
             lines[-1] += f" last_resume_from={last_resume_from}"
@@ -1062,6 +1065,7 @@ def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapsho
             f"status={session.get('status', '')} "
             f"workspace_scope={session.get('workspace_scope', '')} "
             f"workspace_isolated={session.get('workspace_isolation_active', False)} "
+            f"workspace_target_dir={session.get('workspace_target_dir', '') or 'n/a'} "
             f"notes={', '.join(str(item) for item in notes) or 'none'}"
         )
     report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")

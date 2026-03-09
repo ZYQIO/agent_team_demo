@@ -68,6 +68,7 @@ The intended architecture is now:
 | Session continuity on resume | Completed | Resumed runs now preserve prior teammate `session_id` values, increment session lifecycle counters, and emit explicit `teammate_session_resumed` events. |
 | Tmux session workspaces | Completed | Tmux-mode workers now get stable session-scoped workspace/temp directories that are surfaced in `teammate_sessions.json` and `session_boundaries.json`. |
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
+| Tmux target snapshot isolation | Completed | Tmux-mode workers now rewrite `target_dir` reads to a stable session-local source snapshot and persist the isolated `workspace_target_dir` in session artifacts. |
 | Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
