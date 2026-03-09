@@ -327,6 +327,73 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(ran_any)
             self.assertEqual(call_order, ["lead_re_adjudication", "lead_adjudication"])
 
+    def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="lead_adjudication",
+                        title="Lead adjudicates",
+                        task_type="lead_adjudication",
+                        required_skills={"lead"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead"], logger=logger)
+            shared_state = runtime.SharedState()
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            handler_called = []
+
+            def handler(_context, _task):
+                handler_called.append(True)
+                return {"should_not": "run"}
+
+            ran_any = run_lead_tasks_once(
+                lead_context=context,
+                lead_task_order=["lead_adjudication"],
+                handlers={"lead_adjudication": handler},
+                external_task_runner=lambda _context, task: {
+                    "ok": True,
+                    "result": {"verdict": "accept", "score": 81},
+                    "state_updates": {"lead_adjudication": {"verdict": "accept", "score": 81}},
+                    "board_mutations": {},
+                    "task_id": task.task_id,
+                },
+            )
+
+            self.assertTrue(ran_any)
+            self.assertEqual(handler_called, [])
+            self.assertEqual(board.get_task_result("lead_adjudication"), {"verdict": "accept", "score": 81})
+            self.assertEqual(shared_state.get("lead_adjudication", {}).get("verdict"), "accept")
+
     def test_teammate_provider_reply_generation_with_heuristic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -1514,6 +1581,78 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("preview", result["result"])
         self.assertIn("llm_synthesis", result["state_updates"])
 
+    def test_tmux_worker_payload_supports_lead_adjudication(self) -> None:
+        payload = {
+            "task_id": "lead_adjudication",
+            "task_type": "lead_adjudication",
+            "task_payload": {},
+            "runtime_config": runtime.RuntimeConfig().to_dict(),
+            "workflow_pack": "markdown-audit",
+            "goal": "test",
+            "target_dir": ".",
+            "output_dir": ".",
+            "profile": {"name": "lead", "skills": ["lead"], "agent_type": "lead"},
+            "provider_config": {"provider_name": "heuristic", "model": "heuristic-v1"},
+            "task_ids": ["peer_challenge", "lead_adjudication"],
+            "task_results": {
+                "peer_challenge": {
+                    "targets": ["analyst_alpha", "analyst_beta"],
+                    "round1": {"received_replies": {"analyst_alpha": "x", "analyst_beta": "y"}},
+                    "round2": {
+                        "received_replies": {
+                            "analyst_alpha": "z" * 220,
+                            "analyst_beta": "k" * 220,
+                        }
+                    },
+                }
+            },
+            "shared_state": {},
+        }
+
+        result = runtime.tmux_transport.run_tmux_worker_payload(payload)
+
+        self.assertEqual(result["result"]["verdict"], "accept")
+        self.assertEqual(result["state_updates"]["lead_adjudication"]["verdict"], "accept")
+
+    def test_tmux_worker_payload_supports_lead_re_adjudication(self) -> None:
+        payload = {
+            "task_id": "lead_re_adjudication",
+            "task_type": "lead_re_adjudication",
+            "task_payload": {},
+            "runtime_config": runtime.RuntimeConfig(re_adjudication_max_bonus=20).to_dict(),
+            "workflow_pack": "markdown-audit",
+            "goal": "test",
+            "target_dir": ".",
+            "output_dir": ".",
+            "profile": {"name": "lead", "skills": ["lead"], "agent_type": "lead"},
+            "provider_config": {"provider_name": "heuristic", "model": "heuristic-v1"},
+            "task_ids": ["lead_adjudication", "evidence_pack", "lead_re_adjudication"],
+            "task_results": {
+                "lead_adjudication": {
+                    "verdict": "challenge",
+                    "score": 70,
+                    "thresholds": {"accept": 75, "challenge": 50},
+                    "weights": {"completeness": 0.4},
+                    "targets": ["analyst_alpha", "analyst_beta"],
+                },
+                "evidence_pack": {
+                    "triggered": True,
+                    "targets": ["analyst_alpha", "analyst_beta"],
+                    "received_replies": {
+                        "analyst_alpha": "x" * 240,
+                        "analyst_beta": "y" * 240,
+                    },
+                },
+            },
+            "shared_state": {},
+        }
+
+        result = runtime.tmux_transport.run_tmux_worker_payload(payload)
+
+        self.assertTrue(result["result"]["re_adjudicated"])
+        self.assertGreaterEqual(result["result"]["final_score"], 75)
+        self.assertEqual(result["state_updates"]["lead_re_adjudication"]["verdict"], "accept")
+
     def test_mailbox_bridge_proxy_round_trips_messages(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)
@@ -1582,6 +1721,34 @@ class RuntimeLogicTests(unittest.TestCase):
 
             stop_event.set()
             server.join(timeout=2.0)
+
+    def test_worker_event_bridge_replays_into_main_logger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=root / "out")
+            context = type("Context", (), {"logger": logger})()
+            event_bridge_path = root / "worker_events.jsonl"
+            event_bridge_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "event": "lead_adjudication_published",
+                                "fields": {"verdict": "accept", "score": 80},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            runtime._replay_worker_bridge_events(context=context, event_bridge_path=event_bridge_path)
+
+            self.assertFalse(event_bridge_path.exists())
+            events = (root / "out" / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("lead_adjudication_published", events)
 
     def test_run_team_tmux_invokes_recovery_callback_before_workers(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1680,7 +1847,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 [
                     {
                         "lead": "lead",
-                        "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"],
+                        "workers": ["lead", "analyst_alpha", "analyst_beta", "reviewer_gamma"],
                         "resume_from": str(resume_from),
                     }
                 ],
@@ -1731,7 +1898,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(exit_code, 0)
             self.assertEqual(
                 cleanup_calls,
-                [{"lead": "lead", "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"]}],
+                [{"lead": "lead", "workers": ["lead", "analyst_alpha", "analyst_beta", "reviewer_gamma"]}],
             )
 
     def test_run_team_tmux_defers_cleanup_when_paused_for_resume(self) -> None:
@@ -1831,7 +1998,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     {
                         "deferred": True,
                         "reason": "max_completed_tasks reached (1)",
-                        "workers": ["analyst_alpha", "analyst_beta", "reviewer_gamma"],
+                        "workers": ["lead", "analyst_alpha", "analyst_beta", "reviewer_gamma"],
                     }
                 ],
             )

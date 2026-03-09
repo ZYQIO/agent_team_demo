@@ -100,8 +100,15 @@ from agent_team.models import build_provider
 
 
 TMUX_ANALYST_TASK_TYPES = tmux_transport.TMUX_ANALYST_TASK_TYPES
+TMUX_TEAMMATE_EXTERNAL_TASK_TYPES = tmux_transport.TMUX_TEAMMATE_EXTERNAL_TASK_TYPES
+TMUX_LEAD_EXTERNAL_TASK_TYPES = tmux_transport.TMUX_LEAD_EXTERNAL_TASK_TYPES
 TMUX_EXTERNAL_TASK_TYPES = tmux_transport.TMUX_EXTERNAL_TASK_TYPES
-TMUX_MAILBOX_BRIDGE_TASK_TYPES = {"peer_challenge", "evidence_pack"}
+TMUX_MAILBOX_BRIDGE_TASK_TYPES = {
+    "peer_challenge",
+    "evidence_pack",
+    "lead_adjudication",
+    "lead_re_adjudication",
+}
 
 
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -330,10 +337,39 @@ def _serve_mailbox_bridge(
             request_path.unlink(missing_ok=True)
 
 
-def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Dict[str, Any]]:
+def _replay_worker_bridge_events(context: AgentContext, event_bridge_path: pathlib.Path) -> None:
+    if not event_bridge_path.exists():
+        return
+    try:
+        with event_bridge_path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                event = str(payload.get("event", "") or "")
+                fields = payload.get("fields", {})
+                if not event or not isinstance(fields, dict):
+                    continue
+                context.logger.log(event, **fields)
+    finally:
+        event_bridge_path.unlink(missing_ok=True)
+
+
+def _run_external_agent_task(
+    context: AgentContext,
+    task: Task,
+    external_task_types: Sequence[str] | set[str],
+) -> Optional[Dict[str, Any]]:
     if context.runtime_config.teammate_mode != "tmux":
         return None
-    if task.task_type not in TMUX_EXTERNAL_TASK_TYPES:
+    supported_task_types = {str(task_type) for task_type in external_task_types}
+    if task.task_type not in supported_task_types:
         return None
 
     workflow = context.shared_state.get("workflow", {})
@@ -348,11 +384,11 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
 
     retain_session_for_reuse = False
     allow_existing_session_reuse = False
-    if task.task_type in TMUX_EXTERNAL_TASK_TYPES:
+    if task.task_type in supported_task_types:
         board_snapshot = context.board.snapshot()
         retain_session_for_reuse = any(
             str(item.get("task_id", "")) != task.task_id
-            and str(item.get("task_type", "")) in TMUX_EXTERNAL_TASK_TYPES
+            and str(item.get("task_type", "")) in supported_task_types
             and str(item.get("status", "")) in {"pending", "blocked"}
             and (
                 not item.get("allowed_agent_types")
@@ -376,6 +412,11 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
     bridge_stop_event: Optional[threading.Event] = None
     bridge_thread: Optional[threading.Thread] = None
     mailbox_bridge_payload: Dict[str, Any] = {}
+    event_bridge_path = (
+        context.output_dir
+        / "_tmux_worker_events"
+        / f"{context.profile.name}_{task.task_id}_{uuid.uuid4().hex}.jsonl"
+    )
     if task.task_type in TMUX_MAILBOX_BRIDGE_TASK_TYPES:
         bridge_root = (
             context.output_dir
@@ -424,6 +465,7 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
             "task_results": _task_results_snapshot(context.board),
             "task_ids": _task_ids_snapshot(context.board),
             "mailbox_bridge": mailbox_bridge_payload,
+            "event_bridge_path": str(event_bridge_path.resolve()),
         },
         worker_name=context.profile.name,
         logger=context.logger,
@@ -435,6 +477,7 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
         bridge_stop_event.set()
     if bridge_thread is not None:
         bridge_thread.join(timeout=2.0)
+    _replay_worker_bridge_events(context=context, event_bridge_path=event_bridge_path)
     execution_diagnostics = execution.get("diagnostics", {})
     transport = str(execution.get("transport", ""))
 
@@ -567,6 +610,22 @@ def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Di
     }
 
 
+def run_external_teammate_task(context: AgentContext, task: Task) -> Optional[Dict[str, Any]]:
+    return _run_external_agent_task(
+        context=context,
+        task=task,
+        external_task_types=TMUX_TEAMMATE_EXTERNAL_TASK_TYPES,
+    )
+
+
+def run_external_lead_task(context: AgentContext, task: Task) -> Optional[Dict[str, Any]]:
+    return _run_external_agent_task(
+        context=context,
+        task=task,
+        external_task_types=TMUX_LEAD_EXTERNAL_TASK_TYPES,
+    )
+
+
 def build_tasks(
     output_dir: pathlib.Path,
     runtime_config: RuntimeConfig,
@@ -586,6 +645,7 @@ def run_lead_task_once(lead_context: AgentContext, task_id: str) -> bool:
         lead_context=lead_context,
         task_id=task_id,
         handlers=HANDLERS,
+        external_task_runner=run_external_lead_task,
         traceback_module=traceback,
     )
 
@@ -633,6 +693,7 @@ def run_team(
         agent_team_config=agent_team_config,
         teammate_agent_factory=TeammateAgent,
         external_teammate_task_runner=run_external_teammate_task,
+        external_lead_task_runner=run_external_lead_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
         recover_tmux_analyst_sessions_fn=recover_tmux_worker_sessions,
         cleanup_tmux_analyst_sessions_fn=cleanup_tmux_worker_sessions,

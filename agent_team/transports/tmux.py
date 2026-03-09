@@ -26,6 +26,8 @@ from ..workflows.repo_audit_reporting import (
 )
 from ..workflows.shared_challenge import (
     handle_evidence_pack as handle_shared_evidence_pack,
+    handle_lead_adjudication as handle_shared_lead_adjudication,
+    handle_lead_re_adjudication as handle_shared_lead_re_adjudication,
     handle_peer_challenge as handle_shared_peer_challenge,
 )
 
@@ -51,7 +53,12 @@ TMUX_REVIEWER_EXTERNAL_TASK_TYPES = {
     "recommendation_pack",
     "repo_recommendation_pack",
 }
-TMUX_EXTERNAL_TASK_TYPES = TMUX_ANALYST_TASK_TYPES | TMUX_REVIEWER_EXTERNAL_TASK_TYPES
+TMUX_LEAD_EXTERNAL_TASK_TYPES = {
+    "lead_adjudication",
+    "lead_re_adjudication",
+}
+TMUX_TEAMMATE_EXTERNAL_TASK_TYPES = TMUX_ANALYST_TASK_TYPES | TMUX_REVIEWER_EXTERNAL_TASK_TYPES
+TMUX_EXTERNAL_TASK_TYPES = TMUX_TEAMMATE_EXTERNAL_TASK_TYPES | TMUX_LEAD_EXTERNAL_TASK_TYPES
 TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
 TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
 TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
@@ -62,6 +69,20 @@ TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
 class _WorkerNullLogger:
     def log(self, _event: str, **_fields: Any) -> None:
         return
+
+
+class _WorkerEventBridge:
+    def __init__(self, path: pathlib.Path) -> None:
+        self._path = path
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(self, event: str, **fields: Any) -> None:
+        record = {
+            "event": str(event),
+            "fields": dict(fields),
+        }
+        with self._path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
 class _WorkerMailboxNull:
@@ -317,6 +338,7 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
     mailbox_bridge_payload = payload.get("mailbox_bridge", {})
     if not isinstance(mailbox_bridge_payload, dict):
         mailbox_bridge_payload = {}
+    event_bridge_path = str(payload.get("event_bridge_path", "") or "")
     provider, _ = build_provider(
         provider_name=str(model_payload.get("provider_name", model_payload.get("provider", "heuristic"))),
         model=str(model_payload.get("model", "heuristic-v1")),
@@ -326,6 +348,7 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         timeout_sec=int(model_payload.get("timeout_sec", 60)),
     )
     mailbox: Any = _WorkerMailboxNull()
+    logger: Any = _WorkerNullLogger()
     requests_dir = str(mailbox_bridge_payload.get("requests_dir", "") or "")
     responses_dir = str(mailbox_bridge_payload.get("responses_dir", "") or "")
     if requests_dir and responses_dir:
@@ -333,6 +356,8 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
             requests_dir=pathlib.Path(requests_dir),
             responses_dir=pathlib.Path(responses_dir),
         )
+    if event_bridge_path:
+        logger = _WorkerEventBridge(pathlib.Path(event_bridge_path))
     return SimpleNamespace(
         profile=AgentProfile(
             name=str(profile_payload.get("name", "worker")),
@@ -347,7 +372,7 @@ def _build_worker_context(payload: Dict[str, Any]) -> Any:
         board=_WorkerBoardView(task_results=board_results, task_ids=task_ids),
         shared_state=_WorkerSharedState(shared_state_payload),
         mailbox=mailbox,
-        logger=_WorkerNullLogger(),
+        logger=logger,
     )
 
 
@@ -1331,6 +1356,10 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _run_handler_backed_worker(payload, handle_shared_peer_challenge)
     if task_type == "evidence_pack":
         return _run_handler_backed_worker(payload, handle_shared_evidence_pack)
+    if task_type == "lead_adjudication":
+        return _run_handler_backed_worker(payload, handle_shared_lead_adjudication)
+    if task_type == "lead_re_adjudication":
+        return _run_handler_backed_worker(payload, handle_shared_lead_re_adjudication)
     if task_type == "llm_synthesis":
         workflow_pack = str(payload.get("workflow_pack", "markdown-audit"))
         if workflow_pack == "repo-audit":

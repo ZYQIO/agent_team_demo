@@ -23,6 +23,7 @@ from ..core import (
     SharedState,
     Task,
     TaskBoard,
+    task_from_dict,
 )
 from ..host import build_host_adapter
 from ..models import LLMProvider, build_provider
@@ -174,6 +175,7 @@ def run_lead_task_once(
     lead_context: AgentContext,
     task_id: str,
     handlers: TaskHandlers,
+    external_task_runner: Optional[ExternalTaskRunner] = None,
     traceback_module: Any = traceback,
 ) -> bool:
     task = lead_context.board.claim_specific(
@@ -211,7 +213,51 @@ def run_lead_task_once(
         )
         return True
     try:
-        result = handler(lead_context, task)
+        delegated = None
+        if external_task_runner is not None:
+            delegated = external_task_runner(lead_context, task)
+        if delegated is not None:
+            if not delegated.get("ok", False):
+                error = str(delegated.get("error", "external task failed"))
+                lead_context.board.fail(task_id=task.task_id, owner=lead_context.profile.name, error=error)
+                lead_context.mailbox.send(
+                    sender=lead_context.profile.name,
+                    recipient=lead_context.profile.name,
+                    subject="task_failed",
+                    body=error,
+                    task_id=task.task_id,
+                )
+                return True
+            state_updates = delegated.get("state_updates", {})
+            if isinstance(state_updates, dict):
+                for key, value in state_updates.items():
+                    lead_context.shared_state.set(str(key), value)
+            board_mutations = delegated.get("board_mutations", {})
+            if isinstance(board_mutations, dict):
+                raw_tasks = board_mutations.get("add_tasks", [])
+                inserted_by = str(board_mutations.get("inserted_by", lead_context.profile.name))
+                tasks: List[Task] = []
+                if isinstance(raw_tasks, list):
+                    for item in raw_tasks:
+                        if isinstance(item, dict):
+                            tasks.append(task_from_dict(dict(item)))
+                if tasks:
+                    lead_context.board.add_tasks(tasks=tasks, inserted_by=inserted_by)
+                raw_dependencies = board_mutations.get("add_dependencies", [])
+                if isinstance(raw_dependencies, list):
+                    for item in raw_dependencies:
+                        if not isinstance(item, dict):
+                            continue
+                        lead_context.board.add_dependency(
+                            task_id=str(item.get("task_id", "")),
+                            dependency_id=str(item.get("dependency_id", "")),
+                            updated_by=str(item.get("updated_by", lead_context.profile.name)),
+                        )
+            result = delegated.get("result", {})
+        else:
+            result = handler(lead_context, task)
+        if not isinstance(result, dict):
+            result = {"raw_result": result}
         lead_context.board.complete(task_id=task.task_id, owner=lead_context.profile.name, result=result)
         lead_context.mailbox.send(
             sender=lead_context.profile.name,
@@ -243,6 +289,7 @@ def run_lead_tasks_once(
     lead_context: AgentContext,
     lead_task_order: Sequence[str],
     handlers: TaskHandlers,
+    external_task_runner: Optional[ExternalTaskRunner] = None,
     traceback_module: Any = traceback,
 ) -> bool:
     ran_any = False
@@ -251,6 +298,7 @@ def run_lead_tasks_once(
             lead_context=lead_context,
             task_id=str(task_id),
             handlers=handlers,
+            external_task_runner=external_task_runner,
             traceback_module=traceback_module,
         ):
             ran_any = True
@@ -279,6 +327,7 @@ def run_team(
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
     external_teammate_task_runner: Optional[ExternalTaskRunner] = None,
+    external_lead_task_runner: Optional[ExternalTaskRunner] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
     recover_tmux_analyst_sessions_fn: Optional[TmuxRecoveryRunner] = None,
     cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
@@ -474,8 +523,9 @@ def run_team(
     board = TaskBoard(tasks=tasks, logger=logger)
     profiles = build_profiles(team_config=effective_agent_team_config.team)
     analyst_profiles = [profile for profile in profiles if profile.agent_type == "analyst"]
+    lead_profile = AgentProfile(name=str(effective_agent_team_config.team.lead_name or "lead"), skills={"lead"}, agent_type="lead")
     tmux_worker_profiles = list(profiles)
-    lead_name = str(effective_agent_team_config.team.lead_name or "lead")
+    lead_name = lead_profile.name
     participants = [lead_name] + [profile.name for profile in profiles]
     mailbox = Mailbox(participants=participants, logger=logger)
     shared_state = SharedState()
@@ -550,7 +600,7 @@ def run_team(
     shared_state.set("agent_host_sessions", host_sessions)
 
     lead_context = build_agent_context(
-        profile=AgentProfile(name=lead_name, skills={"lead"}, agent_type="lead"),
+        profile=lead_profile,
         target_dir=target_dir,
         output_dir=output_dir,
         goal=goal,
@@ -563,6 +613,8 @@ def run_team(
         logger=logger,
         host_session=host_sessions.get(lead_name, {}),
     )
+    if runtime_config.teammate_mode == "tmux":
+        tmux_worker_profiles = [lead_profile] + list(profiles)
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
         try:
             recover_tmux_analyst_sessions_fn(lead_context, tmux_worker_profiles, resume_from)
@@ -600,6 +652,7 @@ def run_team(
     if runtime_config.teammate_mode == "tmux":
         logger.log(
             "teammate_mode_tmux_enabled",
+            lead_worker=lead_profile.name,
             analyst_workers=[profile.name for profile in analyst_profiles],
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
             tmux_worker_profiles=[profile.name for profile in tmux_worker_profiles],
@@ -639,6 +692,7 @@ def run_team(
                 lead_context=lead_context,
                 lead_task_order=lead_task_order,
                 handlers=workflow_handlers,
+                external_task_runner=external_lead_task_runner,
             )
             messages = mailbox.pull(lead_context.profile.name)
             for message in messages:

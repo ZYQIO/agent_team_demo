@@ -333,13 +333,21 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertGreaterEqual(len(diagnostics_lines), 1)
             diagnostics_payloads = [json.loads(line) for line in diagnostics_lines if line.strip()]
             self.assertIn("reviewer_gamma", {item.get("worker") for item in diagnostics_payloads})
+            self.assertIn("lead", {item.get("worker") for item in diagnostics_payloads})
             reviewer_task_types = {
                 item.get("task_type")
                 for item in diagnostics_payloads
                 if item.get("worker") == "reviewer_gamma"
             }
+            lead_task_types = {
+                item.get("task_type")
+                for item in diagnostics_payloads
+                if item.get("worker") == "lead"
+            }
             self.assertIn("peer_challenge", reviewer_task_types)
             self.assertIn("evidence_pack", reviewer_task_types)
+            self.assertIn("lead_adjudication", lead_task_types)
+            self.assertIn("lead_re_adjudication", lead_task_types)
             first_record = diagnostics_payloads[0]
             self.assertIn(first_record.get("result"), {"success", "execution_failed", "invalid_json"})
             self.assertIn("transport_used", first_record)
@@ -375,7 +383,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             cleanup_summary = json.loads(cleanup_summary_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 cleanup_summary.get("sessions"),
-                ["agent_analyst_alpha", "agent_analyst_beta", "agent_reviewer_gamma"],
+                ["agent_lead", "agent_analyst_alpha", "agent_analyst_beta", "agent_reviewer_gamma"],
             )
             self.assertIn("cleaned", cleanup_summary)
             self.assertIn("already_exited", cleanup_summary)
@@ -395,6 +403,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             leases_path = output_dir / "tmux_session_leases.json"
             self.assertTrue(leases_path.exists())
             leases = json.loads(leases_path.read_text(encoding="utf-8"))
+            self.assertIn("lead", leases)
             self.assertIn("analyst_alpha", leases)
             self.assertIn("analyst_beta", leases)
             self.assertIn("reviewer_gamma", leases)
@@ -422,6 +431,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(summary.get("teammate_mode_effective"), "tmux_degraded_subprocess")
             transport_summary = summary.get("teammate_transport_summary", {})
             self.assertTrue(transport_summary.get("fallback_used"))
+            self.assertIn("lead", transport_summary.get("workers", []))
             self.assertIn("reviewer_gamma", transport_summary.get("workers", []))
             self.assertIn("subprocess", transport_summary.get("transports_seen", []))
             self.assertIn("tmux binary not found", transport_summary.get("fallback_reasons", []))
