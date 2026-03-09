@@ -1011,6 +1011,12 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
                 f" workspace_scope={session.get('workspace_scope', '')} "
                 f"workspace_isolated={session.get('workspace_isolation_active', False)}"
             )
+        workspace_workdir = str(session.get("workspace_workdir", "") or "")
+        if workspace_workdir:
+            lines[-1] += f" workspace_workdir={workspace_workdir}"
+        workspace_home_dir = str(session.get("workspace_home_dir", "") or "")
+        if workspace_home_dir:
+            lines[-1] += f" workspace_home_dir={workspace_home_dir}"
         workspace_target_dir = str(session.get("workspace_target_dir", "") or "")
         if workspace_target_dir:
             lines[-1] += f" workspace_target_dir={workspace_target_dir}"
@@ -1065,6 +1071,8 @@ def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapsho
             f"status={session.get('status', '')} "
             f"workspace_scope={session.get('workspace_scope', '')} "
             f"workspace_isolated={session.get('workspace_isolation_active', False)} "
+            f"workspace_workdir={session.get('workspace_workdir', '') or 'n/a'} "
+            f"workspace_home_dir={session.get('workspace_home_dir', '') or 'n/a'} "
             f"workspace_target_dir={session.get('workspace_target_dir', '') or 'n/a'} "
             f"notes={', '.join(str(item) for item in notes) or 'none'}"
         )

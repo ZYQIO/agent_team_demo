@@ -97,6 +97,8 @@ def _update_tmux_session_lease(
     session_name: str = "",
     recovery_result: str = "",
     workspace_root: str = "",
+    workspace_workdir: str = "",
+    workspace_home_dir: str = "",
     workspace_target_dir: str = "",
     workspace_tmp_dir: str = "",
     workspace_scope: str = "",
@@ -131,6 +133,8 @@ def _update_tmux_session_lease(
         "recovery_result": str(recovery_result or current.get("recovery_result", "")),
         "recovered_at": utc_now() if recovery_result else str(current.get("recovered_at", "")),
         "workspace_root": str(workspace_root or current.get("workspace_root", "")),
+        "workspace_workdir": str(workspace_workdir or current.get("workspace_workdir", "")),
+        "workspace_home_dir": str(workspace_home_dir or current.get("workspace_home_dir", "")),
         "workspace_target_dir": str(workspace_target_dir or current.get("workspace_target_dir", "")),
         "workspace_tmp_dir": str(workspace_tmp_dir or current.get("workspace_tmp_dir", "")),
         "workspace_scope": str(workspace_scope or current.get("workspace_scope", "")),
@@ -177,6 +181,8 @@ def _sync_session_boundary_from_lease(
         transport=transport,
         transport_session_name=str(lease_entry.get("session_name", "") or preferred_tmux_session_name(worker_name)),
         workspace_root=str(lease_entry.get("workspace_root", "") or ""),
+        workspace_workdir=str(lease_entry.get("workspace_workdir", "") or ""),
+        workspace_home_dir=str(lease_entry.get("workspace_home_dir", "") or ""),
         workspace_target_dir=str(lease_entry.get("workspace_target_dir", "") or ""),
         workspace_tmp_dir=str(lease_entry.get("workspace_tmp_dir", "") or ""),
         workspace_scope=str(lease_entry.get("workspace_scope", "") or ""),
@@ -483,19 +489,47 @@ def _build_tmux_session_environment(
     transport_session_name = preferred_tmux_session_name(worker_name)
     workspace_root = output_dir / TMUX_SESSION_WORKSPACE_DIRNAME / worker_name / session_id
     workspace_tmp_dir = workspace_root / "tmp"
+    workspace_home_dir = workspace_root / "home"
     workspace_root.mkdir(parents=True, exist_ok=True)
     workspace_tmp_dir.mkdir(parents=True, exist_ok=True)
+    workspace_home_dir.mkdir(parents=True, exist_ok=True)
     workspace_target = _prepare_tmux_workspace_target_dir(
         output_dir=output_dir,
         workspace_root=workspace_root,
         payload=payload,
     )
+    workspace_workdir = pathlib.Path(
+        str(workspace_target.get("workspace_target_dir", "") or workspace_root)
+    ).resolve()
+    workspace_workdir.mkdir(parents=True, exist_ok=True)
+    workspace_home_cache_dir = workspace_home_dir / ".cache"
+    workspace_home_config_dir = workspace_home_dir / ".config"
+    workspace_home_data_dir = workspace_home_dir / ".local" / "share"
+    workspace_home_appdata_dir = workspace_home_dir / "AppData" / "Roaming"
+    workspace_home_localappdata_dir = workspace_home_dir / "AppData" / "Local"
+    for path in (
+        workspace_home_cache_dir,
+        workspace_home_config_dir,
+        workspace_home_data_dir,
+        workspace_home_appdata_dir,
+        workspace_home_localappdata_dir,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
     worker_env = {
         "AGENT_TEAM_AGENT": str(worker_name),
         "AGENT_TEAM_SESSION_ID": session_id,
         "AGENT_TEAM_SESSION_DIR": str(workspace_root),
+        "AGENT_TEAM_SESSION_WORKDIR": str(workspace_workdir),
+        "AGENT_TEAM_SESSION_HOME": str(workspace_home_dir),
         "AGENT_TEAM_SESSION_TMP_DIR": str(workspace_tmp_dir),
         "AGENT_TEAM_WORKSPACE_SCOPE": "tmux_session_workspace",
+        "HOME": str(workspace_home_dir),
+        "USERPROFILE": str(workspace_home_dir),
+        "XDG_CACHE_HOME": str(workspace_home_cache_dir),
+        "XDG_CONFIG_HOME": str(workspace_home_config_dir),
+        "XDG_DATA_HOME": str(workspace_home_data_dir),
+        "APPDATA": str(workspace_home_appdata_dir),
+        "LOCALAPPDATA": str(workspace_home_localappdata_dir),
         "TMPDIR": str(workspace_tmp_dir),
         "TMP": str(workspace_tmp_dir),
         "TEMP": str(workspace_tmp_dir),
@@ -510,6 +544,8 @@ def _build_tmux_session_environment(
         "worker_env": worker_env,
         "transport_session_name": transport_session_name,
         "workspace_root": str(workspace_root),
+        "workspace_workdir": str(workspace_workdir),
+        "workspace_home_dir": str(workspace_home_dir),
         "workspace_target_dir": str(workspace_target.get("workspace_target_dir", "")),
         "workspace_target_source_dir": str(workspace_target.get("workspace_target_source_dir", "")),
         "workspace_target_status": str(workspace_target.get("workspace_target_status", "")),
@@ -527,6 +563,7 @@ def _reuse_tmux_session(
     stderr_file: pathlib.Path,
     status_file: pathlib.Path,
     worker_env: Optional[Dict[str, str]] = None,
+    session_workdir: Optional[pathlib.Path] = None,
 ) -> Dict[str, Any]:
     shell_worker_env = dict(worker_env or {})
     shell_worker_env["AGENT_TEAM_TRANSPORT_SESSION"] = str(session_name)
@@ -537,8 +574,12 @@ def _reuse_tmux_session(
         status_file=status_file,
         worker_env=shell_worker_env,
     )
+    reuse_command = ["tmux", "respawn-pane", "-k"]
+    if session_workdir is not None:
+        reuse_command.extend(["-c", str(session_workdir)])
+    reuse_command.extend(["-t", f"{session_name}:0.0", shell_cmd])
     reused = subprocess.run(
-        ["tmux", "respawn-pane", "-k", "-t", f"{session_name}:0.0", shell_cmd],
+        reuse_command,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -567,6 +608,7 @@ def _spawn_tmux_session(
     preferred_session_found: bool = False,
     allow_existing_session_reuse: bool = False,
     worker_env: Optional[Dict[str, str]] = None,
+    session_workdir: Optional[pathlib.Path] = None,
 ) -> Dict[str, Any]:
     attempts = 0
     retry_reason = ""
@@ -612,8 +654,12 @@ def _spawn_tmux_session(
             status_file=status_file,
             worker_env=shell_worker_env,
         )
+        spawn_command = ["tmux", "new-session", "-d", "-s", session_name]
+        if session_workdir is not None:
+            spawn_command.extend(["-c", str(session_workdir)])
+        spawn_command.append(shell_cmd)
         last_spawn = subprocess.run(
-            ["tmux", "new-session", "-d", "-s", session_name, shell_cmd],
+            spawn_command,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -667,6 +713,7 @@ def _spawn_tmux_session(
                     stderr_file=stderr_file,
                     status_file=status_file,
                     worker_env=worker_env,
+                    session_workdir=session_workdir,
                 )
                 preferred_session_reuse_result = str(reuse["result"])
                 preferred_session_reuse_error = str(reuse["error"])
@@ -1253,6 +1300,7 @@ def execute_worker_subprocess(
     command: List[str],
     timeout_sec: int,
     worker_env: Optional[Dict[str, str]] = None,
+    workdir: Optional[pathlib.Path] = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -1262,6 +1310,7 @@ def execute_worker_subprocess(
         check=False,
         timeout=timeout_sec,
         env=_worker_subprocess_env(worker_env),
+        cwd=str(workdir) if workdir is not None else None,
     )
 
 
@@ -1274,6 +1323,8 @@ def execute_worker_tmux(
     allow_existing_session_reuse: bool = False,
     worker_env: Optional[Dict[str, str]] = None,
     session_workspace_root: str = "",
+    session_workspace_workdir: str = "",
+    session_workspace_home_dir: str = "",
     session_workspace_target_dir: str = "",
     session_workspace_tmp_dir: str = "",
 ) -> subprocess.CompletedProcess[str]:
@@ -1327,6 +1378,8 @@ def execute_worker_tmux(
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
         "tmux_session_workspace_root": str(session_workspace_root or ""),
+        "tmux_session_workspace_workdir": str(session_workspace_workdir or ""),
+        "tmux_session_workspace_home_dir": str(session_workspace_home_dir or ""),
         "tmux_session_workspace_target_dir": str(session_workspace_target_dir or ""),
         "tmux_session_workspace_tmp_dir": str(session_workspace_tmp_dir or ""),
         "tmux_session_workspace_scope": "tmux_session_workspace" if session_workspace_root else "",
@@ -1354,6 +1407,7 @@ def execute_worker_tmux(
         preferred_session_found=bool(orphan_cleanup.get("preferred_session_found", False)),
         allow_existing_session_reuse=allow_existing_session_reuse,
         worker_env=worker_env,
+        session_workdir=pathlib.Path(session_workspace_workdir).resolve() if session_workspace_workdir else None,
     )
     session_name = str(spawn_result.get("session_name", ""))
     stdout_file = pathlib.Path(spawn_result.get("stdout_file"))
@@ -1549,6 +1603,8 @@ def _merge_tmux_lifecycle_into_diagnostics(
         "tmux_ipc_cleanup_error",
         "tmux_ipc_files_removed",
         "tmux_session_workspace_root",
+        "tmux_session_workspace_workdir",
+        "tmux_session_workspace_home_dir",
         "tmux_session_workspace_target_dir",
         "tmux_session_workspace_tmp_dir",
         "tmux_session_workspace_scope",
@@ -1587,11 +1643,11 @@ def run_tmux_worker_task(
     retain_session_for_reuse: bool = False,
     allow_existing_session_reuse: bool = False,
     execute_worker_tmux_fn: Callable[
-        [List[str], pathlib.Path, str, int, bool, bool, Optional[Dict[str, str]], str, str, str],
+        [List[str], pathlib.Path, str, int, bool, bool, Optional[Dict[str, str]], str, str, str, str, str],
         subprocess.CompletedProcess[str],
     ] = execute_worker_tmux,
     execute_worker_subprocess_fn: Callable[
-        [List[str], int, Optional[Dict[str, str]]],
+        [List[str], int, Optional[Dict[str, str]], Optional[pathlib.Path]],
         subprocess.CompletedProcess[str],
     ] = execute_worker_subprocess,
     which_fn: Callable[[str], str | None] = shutil.which,
@@ -1687,6 +1743,8 @@ def run_tmux_worker_task(
         "tmux_ipc_cleanup_error": "",
         "tmux_ipc_files_removed": 0,
         "tmux_session_workspace_root": str(session_environment.get("workspace_root", "")),
+        "tmux_session_workspace_workdir": str(session_environment.get("workspace_workdir", "")),
+        "tmux_session_workspace_home_dir": str(session_environment.get("workspace_home_dir", "")),
         "tmux_session_workspace_target_dir": str(session_environment.get("workspace_target_dir", "")),
         "tmux_session_workspace_tmp_dir": str(session_environment.get("workspace_tmp_dir", "")),
         "tmux_session_workspace_source_dir": str(session_environment.get("workspace_target_source_dir", "")),
@@ -1713,6 +1771,7 @@ def run_tmux_worker_task(
                 command=command,
                 timeout_sec=timeout_sec,
                 worker_env=worker_env,
+                workdir=pathlib.Path(str(session_environment.get("workspace_workdir", "") or output_dir)),
             )
         except subprocess.TimeoutExpired as exc:
             fallback_completed = _completed_process_from_timeout(
@@ -1743,7 +1802,12 @@ def run_tmux_worker_task(
 
     def _run_primary_subprocess(transport_name: str, phase: str) -> subprocess.CompletedProcess[str]:
         try:
-            return execute_worker_subprocess_fn(command=command, timeout_sec=timeout_sec, worker_env=worker_env)
+            return execute_worker_subprocess_fn(
+                command=command,
+                timeout_sec=timeout_sec,
+                worker_env=worker_env,
+                workdir=pathlib.Path(str(session_environment.get("workspace_workdir", "") or output_dir)),
+            )
         except subprocess.TimeoutExpired as exc:
             completed_timeout = _completed_process_from_timeout(
                 command=command,
@@ -1776,6 +1840,8 @@ def run_tmux_worker_task(
                     allow_existing_session_reuse=allow_existing_session_reuse,
                     worker_env=worker_env,
                     session_workspace_root=str(session_environment.get("workspace_root", "")),
+                    session_workspace_workdir=str(session_environment.get("workspace_workdir", "")),
+                    session_workspace_home_dir=str(session_environment.get("workspace_home_dir", "")),
                     session_workspace_target_dir=str(session_environment.get("workspace_target_dir", "")),
                     session_workspace_tmp_dir=str(session_environment.get("workspace_tmp_dir", "")),
                 )
@@ -2152,6 +2218,8 @@ def run_tmux_analyst_task_once(
                 reuse_authorized=allow_existing_session_reuse,
                 error=error,
                 workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
+                workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
                 workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
                 workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
                 workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
@@ -2277,6 +2345,8 @@ def run_tmux_analyst_task_once(
             reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
             reuse_authorized=allow_existing_session_reuse,
             workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+            workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
+            workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
             workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
             workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
             workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),

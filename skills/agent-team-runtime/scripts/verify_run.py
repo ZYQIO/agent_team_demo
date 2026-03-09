@@ -186,12 +186,15 @@ def main() -> int:
             and item.get("boundary_mode") in {"tmux_worker_session", "worker_subprocess_session"}
             and bool(item.get("workspace_isolation_active", False))
             and str(item.get("workspace_root", "") or "")
+            and str(item.get("workspace_workdir", "") or "")
+            and str(item.get("workspace_home_dir", "") or "")
             and str(item.get("workspace_target_dir", "") or "")
         ]
         if not scoped_tmux_boundaries:
             return fail(
                 "tmux runs must record at least one workspace-scoped teammate session boundary "
-                "with workspace_root, workspace_target_dir, and workspace_isolation_active"
+                "with workspace_root, workspace_workdir, workspace_home_dir, "
+                "workspace_target_dir, and workspace_isolation_active"
             )
         diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
         if not diagnostics_path.exists():

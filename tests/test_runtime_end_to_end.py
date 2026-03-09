@@ -475,9 +475,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertGreaterEqual(len(scoped_tmux_boundaries), 1)
             first_boundary = scoped_tmux_boundaries[0]
             self.assertTrue(first_boundary.get("workspace_root"))
+            self.assertTrue(first_boundary.get("workspace_workdir"))
+            self.assertTrue(first_boundary.get("workspace_home_dir"))
             self.assertTrue(first_boundary.get("workspace_target_dir"))
             self.assertTrue(first_boundary.get("workspace_tmp_dir"))
             self.assertEqual(first_boundary.get("workspace_scope"), "tmux_session_workspace")
+            self.assertTrue(pathlib.Path(first_boundary.get("workspace_workdir", "")).exists())
+            self.assertTrue(pathlib.Path(first_boundary.get("workspace_home_dir", "")).exists())
             self.assertTrue(pathlib.Path(first_boundary.get("workspace_target_dir", "")).exists())
 
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
