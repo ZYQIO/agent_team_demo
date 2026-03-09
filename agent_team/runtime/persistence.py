@@ -19,7 +19,9 @@ from ..core import (
 )
 from ..models import ProviderMetadata
 from .session_state import (
+    SESSION_BOUNDARY_FILENAME,
     TEAMMATE_SESSIONS_FILENAME,
+    build_session_boundary_snapshot,
     build_teammate_sessions_snapshot,
 )
 
@@ -997,6 +999,53 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
     return True
 
 
+def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
+    if not report_path.exists():
+        return False
+    existing = report_path.read_text(encoding="utf-8")
+    if "## Session Boundaries" in existing:
+        return False
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## Session Boundaries")
+    lines.append("")
+    host = snapshot.get("host", {})
+    if isinstance(host, dict):
+        lines.append(
+            f"- Host: {host.get('kind', '')} transport={host.get('session_transport', '')} "
+            f"independent_sessions={host.get('capabilities', {}).get('independent_sessions', False)} "
+            f"workspace_isolation={host.get('capabilities', {}).get('workspace_isolation', False)}"
+        )
+    mode_counts = snapshot.get("boundary_mode_counts", {})
+    if isinstance(mode_counts, dict) and mode_counts:
+        lines.append(
+            "- Boundary modes: "
+            + " ".join(f"{mode}={count}" for mode, count in sorted(mode_counts.items()))
+        )
+    strength_counts = snapshot.get("boundary_strength_counts", {})
+    if isinstance(strength_counts, dict) and strength_counts:
+        lines.append(
+            "- Boundary strength: "
+            + " ".join(f"{strength}={count}" for strength, count in sorted(strength_counts.items()))
+        )
+    for session in snapshot.get("sessions", []):
+        if not isinstance(session, dict):
+            continue
+        notes = session.get("notes", [])
+        if not isinstance(notes, list):
+            notes = []
+        lines.append(
+            f"- {session.get('agent', '')}: "
+            f"mode={session.get('boundary_mode', '')} "
+            f"strength={session.get('boundary_strength', '')} "
+            f"transport={session.get('transport', '')} "
+            f"status={session.get('status', '')} "
+            f"notes={', '.join(str(item) for item in notes) or 'none'}"
+        )
+    report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def write_artifacts(
     output_dir: pathlib.Path,
     board: TaskBoard,
@@ -1128,6 +1177,16 @@ def write_artifacts(
         report_path=output_dir / "final_report.md",
         snapshot=teammate_sessions_snapshot,
     )
+    session_boundary_snapshot = build_session_boundary_snapshot(shared_state=shared_state)
+    session_boundary_path = output_dir / SESSION_BOUNDARY_FILENAME
+    session_boundary_path.write_text(
+        json.dumps(session_boundary_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    append_session_boundaries_to_final_report(
+        report_path=output_dir / "final_report.md",
+        snapshot=session_boundary_snapshot,
+    )
 
     context_boundary_summary = build_context_boundary_summary(logger=logger)
     context_boundary_path = output_dir / CONTEXT_BOUNDARY_FILENAME
@@ -1145,6 +1204,7 @@ def write_artifacts(
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
         "context_boundary_path": str(context_boundary_path),
+        "session_boundary_path": str(session_boundary_path),
         "teammate_sessions_path": str(teammate_sessions_path),
         "team_progress_path": str(team_progress_path),
         "team_progress_report_path": str(team_progress_report_path),

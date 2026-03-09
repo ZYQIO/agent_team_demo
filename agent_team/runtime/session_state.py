@@ -11,6 +11,7 @@ from ..core import AgentProfile, Message, SharedState, Task, utc_now
 
 TEAMMATE_SESSIONS_KEY = "teammate_sessions"
 TEAMMATE_SESSIONS_FILENAME = "teammate_sessions.json"
+SESSION_BOUNDARY_FILENAME = "session_boundaries.json"
 SESSION_HISTORY_LIMIT = 12
 
 
@@ -350,4 +351,80 @@ def build_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any
         "status_counts": status_counts,
         "transport_counts": transport_counts,
         "sessions": sessions,
+    }
+
+
+def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]:
+    state_snapshot = shared_state.snapshot()
+    host = state_snapshot.get("host", {})
+    if not isinstance(host, Mapping):
+        host = {}
+    host_capabilities = host.get("capabilities", {})
+    if not isinstance(host_capabilities, Mapping):
+        host_capabilities = {}
+    teammate_sessions = build_teammate_sessions_snapshot(shared_state=shared_state)
+    session_boundaries: List[Dict[str, Any]] = []
+    boundary_mode_counts: Dict[str, int] = {}
+    boundary_strength_counts: Dict[str, int] = {}
+
+    host_independent_sessions = bool(host_capabilities.get("independent_sessions", False))
+    host_workspace_isolation = bool(host_capabilities.get("workspace_isolation", False))
+    host_session_transport = str(host.get("session_transport", "") or "")
+    for session in teammate_sessions.get("sessions", []):
+        if not isinstance(session, Mapping):
+            continue
+        transport = str(session.get("transport", "") or "unknown")
+        notes: List[str] = []
+        if host_independent_sessions:
+            boundary_mode = "host_native_session"
+            boundary_strength = "strong"
+            isolation_source = "host"
+        elif transport == "tmux":
+            boundary_mode = "tmux_worker_session"
+            boundary_strength = "medium"
+            isolation_source = "transport"
+            notes.append("session_isolation_backed_by_tmux_process")
+        else:
+            boundary_mode = "runtime_emulated_session"
+            boundary_strength = "emulated"
+            isolation_source = "runtime"
+            notes.append("session_isolation_backed_by_shared_runtime")
+        if not host_workspace_isolation:
+            notes.append("workspace_isolation_unavailable")
+        if not host_independent_sessions:
+            notes.append("host_independent_sessions_unavailable")
+        record = {
+            "agent": str(session.get("agent", "") or ""),
+            "session_id": str(session.get("session_id", "") or ""),
+            "transport": transport,
+            "boundary_mode": boundary_mode,
+            "boundary_strength": boundary_strength,
+            "isolation_source": isolation_source,
+            "host_kind": str(host.get("kind", "") or ""),
+            "host_session_transport": host_session_transport,
+            "host_independent_sessions": host_independent_sessions,
+            "host_workspace_isolation": host_workspace_isolation,
+            "status": str(session.get("status", "") or ""),
+            "current_task_id": str(session.get("current_task_id", "") or ""),
+            "current_task_type": str(session.get("current_task_type", "") or ""),
+            "provider_memory_entries": len(session.get("provider_memory", [])),
+            "notes": notes,
+        }
+        session_boundaries.append(record)
+        boundary_mode_counts[boundary_mode] = boundary_mode_counts.get(boundary_mode, 0) + 1
+        boundary_strength_counts[boundary_strength] = boundary_strength_counts.get(boundary_strength, 0) + 1
+
+    return {
+        "generated_at": utc_now(),
+        "host": {
+            "kind": str(host.get("kind", "") or ""),
+            "session_transport": host_session_transport,
+            "capabilities": dict(host_capabilities),
+            "limits": list(host.get("limits", [])) if isinstance(host.get("limits", []), list) else [],
+            "note": str(host.get("note", "") or ""),
+        },
+        "session_count": len(session_boundaries),
+        "boundary_mode_counts": boundary_mode_counts,
+        "boundary_strength_counts": boundary_strength_counts,
+        "sessions": session_boundaries,
     }

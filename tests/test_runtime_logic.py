@@ -2351,6 +2351,57 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(snapshot["status_counts"]["retained"], 1)
         self.assertEqual(snapshot["status_counts"]["ready"], 1)
 
+    def test_build_session_boundary_snapshot_distinguishes_tmux_and_runtime_sessions(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "generic-cli",
+                "session_transport": "thread",
+                "capabilities": {
+                    "independent_sessions": False,
+                    "workspace_isolation": False,
+                },
+                "limits": ["session_isolation_emulated"],
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+        registry.ensure_profile(profile=analyst, transport="tmux", status="retained")
+        registry.ensure_profile(profile=reviewer, transport="in-process", status="ready")
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_count"], 2)
+        self.assertEqual(snapshot["boundary_mode_counts"]["tmux_worker_session"], 1)
+        self.assertEqual(snapshot["boundary_mode_counts"]["runtime_emulated_session"], 1)
+        self.assertEqual(snapshot["boundary_strength_counts"]["medium"], 1)
+        self.assertEqual(snapshot["boundary_strength_counts"]["emulated"], 1)
+
+    def test_build_session_boundary_snapshot_prefers_host_native_sessions(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        registry.ensure_profile(profile=analyst, transport="in-process", status="ready")
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["host_native_session"], 1)
+        self.assertEqual(snapshot["boundary_strength_counts"]["strong"], 1)
+
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)

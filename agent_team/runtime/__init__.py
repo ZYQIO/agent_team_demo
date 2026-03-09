@@ -10,8 +10,10 @@ from .task_context import (
     visible_state_keys_for_task,
 )
 from .session_state import (
+    SESSION_BOUNDARY_FILENAME,
     TEAMMATE_SESSIONS_FILENAME,
     TeammateSessionRegistry,
+    build_session_boundary_snapshot,
     build_teammate_sessions_snapshot,
     teammate_transport_for_profile,
 )
@@ -52,6 +54,7 @@ __all__ = [
     "CHECKPOINT_HISTORY_DIRNAME",
     "CHECKPOINT_VERSION",
     "CONTEXT_BOUNDARY_FILENAME",
+    "SESSION_BOUNDARY_FILENAME",
     "ScopedSharedState",
     "TEAMMATE_SESSIONS_FILENAME",
     "TEAM_PROGRESS_FILENAME",
@@ -59,6 +62,7 @@ __all__ = [
     "TeammateSessionRegistry",
     "build_targeted_evidence_question",
     "build_context_boundary_summary",
+    "build_session_boundary_snapshot",
     "build_task_context_snapshot",
     "build_teammate_sessions_snapshot",
     "build_team_progress_snapshot",

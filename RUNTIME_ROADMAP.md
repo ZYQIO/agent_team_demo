@@ -65,6 +65,7 @@ The intended architecture is now:
 | Team progress artifacts | Completed | Runtime now writes `team_progress.json` + `team_progress.md` and appends a per-agent progress section into `final_report.md`. |
 | Task-context boundaries | Completed | Runtime now prepares task-scoped shared-state views, emits `task_context_prepared`, and writes `context_boundaries.json` for per-agent/task visibility auditing. |
 | Teammate session ledger | Completed | Runtime now maintains durable per-agent session ids, transport, recent task history, message history, and provider memory in `teammate_sessions.json`. |
+| Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -363,7 +364,7 @@ python3 -m unittest discover -s agent_team_demo/tests -v
 
 Result:
 
-- `70/70` tests passed
+- `72/72` tests passed
 
 ### Smoke Runs
 
@@ -573,6 +574,7 @@ Completed slice:
 - Added task-scoped shared-state views so teammate execution receives explicit bounded context instead of the full shared-state snapshot
 - Added `task_context_prepared` events plus `context_boundaries.json` for per-agent/task visibility auditing
 - Added a durable teammate session ledger so every agent now has a persistent session id, transport, recent tasks, recent messages, and provider memory snapshot in runtime artifacts
+- Added `session_boundaries.json` and final-report summaries so host/session isolation posture is explicit instead of implicit in host metadata and transport internals
 - Verified tmux mode still passes smoke and artifact validation
 
 Remaining focus:

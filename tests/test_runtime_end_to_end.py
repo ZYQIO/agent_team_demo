@@ -70,6 +70,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
+                output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
                 output_dir / "shared_state.json",
@@ -109,6 +110,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
             )
             self.assertEqual(
+                summary.get("session_boundary_path"),
+                str(output_dir / runtime.SESSION_BOUNDARY_FILENAME),
+            )
+            self.assertEqual(
                 summary.get("teammate_sessions_path"),
                 str(output_dir / runtime.TEAMMATE_SESSIONS_FILENAME),
             )
@@ -131,6 +136,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")
             )
             self.assertGreaterEqual(teammate_sessions.get("session_count", 0), 1)
+            session_boundaries = json.loads(
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(session_boundaries.get("session_count", 0), 1)
 
             events = []
             with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
@@ -153,6 +162,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertGreater(context_boundary.get("context_count", 0), 0)
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Session Boundaries", report_text)
             self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Team Progress", report_text)
             self.assertIn("## Dynamic Tasking", report_text)
@@ -202,6 +212,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
+                output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
                 output_dir / "shared_state.json",
@@ -231,6 +242,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 str(output_dir / runtime.CONTEXT_BOUNDARY_FILENAME),
             )
             self.assertEqual(
+                summary.get("session_boundary_path"),
+                str(output_dir / runtime.SESSION_BOUNDARY_FILENAME),
+            )
+            self.assertEqual(
                 summary.get("teammate_sessions_path"),
                 str(output_dir / runtime.TEAMMATE_SESSIONS_FILENAME),
             )
@@ -255,6 +270,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("task_inserted", event_names)
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Session Boundaries", report_text)
             self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Team Progress", report_text)
             self.assertIn("## Repository Findings", report_text)

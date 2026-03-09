@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "events.jsonl",
     "shared_state.json",
     "file_locks.json",
+    "session_boundaries.json",
     "teammate_sessions.json",
     "team_progress.json",
     "team_progress.md",
@@ -118,6 +119,7 @@ def main() -> int:
         "## Lead Adjudication",
         "## Team Progress",
         "## Teammate Sessions",
+        "## Session Boundaries",
     ]:
         if section not in report:
             return fail(f"Missing report section: {section}")
@@ -136,6 +138,15 @@ def main() -> int:
     context_boundaries = load_json(output_dir / "context_boundaries.json")
     if int(context_boundaries.get("context_count", 0)) <= 0:
         return fail("context_boundaries.json must contain at least one prepared task context")
+    raw_session_boundary_path = str(summary.get("session_boundary_path", "") or "")
+    if not raw_session_boundary_path:
+        return fail("Missing session boundary path in run_summary.json: session_boundary_path")
+    session_boundary_path = pathlib.Path(raw_session_boundary_path).resolve()
+    if not session_boundary_path.exists():
+        return fail(f"Referenced session boundary artifact does not exist: {session_boundary_path}")
+    session_boundaries = load_json(output_dir / "session_boundaries.json")
+    if int(session_boundaries.get("session_count", 0)) <= 0:
+        return fail("session_boundaries.json must contain at least one teammate session boundary")
     raw_teammate_sessions_path = str(summary.get("teammate_sessions_path", "") or "")
     if not raw_teammate_sessions_path:
         return fail("Missing teammate sessions path in run_summary.json: teammate_sessions_path")

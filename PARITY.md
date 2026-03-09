@@ -21,6 +21,7 @@ This file tracks practical parity against Claude Code Agent Teams as of 2026-03-
 | Hook events for multi-agent workflows | Implemented | Emits `TeammateIdle` and `TaskCompleted` in `events.jsonl`. |
 | Lead/team progress visibility | Implemented | Runtime now emits `team_progress.json` + `team_progress.md` and appends a per-agent summary into `final_report.md`. |
 | Clear teammate context boundaries | Partial | Runtime now prepares task-scoped context views and emits `context_boundaries.json`, but handlers still share one in-process runtime and isolation is policy-based rather than process-hard. |
+| Explicit session boundary posture | Partial | Runtime now emits `session_boundaries.json` to classify each teammate session as host-native, tmux-backed, or runtime-emulated, but those boundaries are still descriptive unless the host/transport can enforce them. |
 | Provider abstraction | Implemented | `heuristic` plus OpenAI-compatible endpoint with strict/fallback modes. |
 | Host/model/workflow config separation | Implemented | Host, model, team, workflow, and policy config are now separated under `agent_team/config.py`. |
 | Multiple workflow packs on one runtime | Implemented | Built-in packs now include `markdown-audit` and `repo-audit`, both running on the same engine, verifier, and transport layers. |
