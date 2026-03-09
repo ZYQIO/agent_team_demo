@@ -1361,6 +1361,12 @@ class RuntimeLogicTests(unittest.TestCase):
                         "worker": "analyst_alpha",
                         "session_name": "agent_analyst_alpha",
                         "status": "retained",
+                        "workspace_root": str(output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"),
+                        "workspace_tmp_dir": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
+                        ),
+                        "workspace_scope": "tmux_session_workspace",
+                        "workspace_isolation_active": True,
                     }
                 },
             )
@@ -1405,6 +1411,12 @@ class RuntimeLogicTests(unittest.TestCase):
                         "worker": "analyst_alpha",
                         "session_name": "agent_analyst_alpha",
                         "status": "retained",
+                        "workspace_root": str(output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha"),
+                        "workspace_tmp_dir": str(
+                            output_dir / "_tmux_session_workspaces" / "analyst_alpha" / "session-alpha" / "tmp"
+                        ),
+                        "workspace_scope": "tmux_session_workspace",
+                        "workspace_isolation_active": True,
                     }
                 },
             )
@@ -1424,6 +1436,9 @@ class RuntimeLogicTests(unittest.TestCase):
             analyst_profiles = [
                 runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
             ]
+            session_registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_registry.activate_for_run(profile=analyst_profiles[0], transport="tmux")
+            lead_context.session_registry = session_registry
 
             def fake_tmux_run(command, stdout=None, stderr=None, text=None, check=None):
                 if command == ["tmux", "has-session", "-t", "agent_analyst_alpha"]:
@@ -1444,6 +1459,12 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(lease_entry.get("status"), "recovered_available")
             self.assertTrue(lease_entry.get("reuse_authorized"))
             self.assertEqual(lease_entry.get("recovery_result"), "available")
+            session = session_registry.session_for("analyst_alpha")
+            self.assertEqual(session.get("transport"), "tmux")
+            self.assertEqual(session.get("transport_session_name"), "agent_analyst_alpha")
+            self.assertEqual(session.get("workspace_scope"), "tmux_session_workspace")
+            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertTrue(str(session.get("workspace_root", "")).endswith("session-alpha"))
             self.assertEqual(
                 shared_state.get("tmux_session_recovery_summary", {}).get("recovered"),
                 ["analyst_alpha"],

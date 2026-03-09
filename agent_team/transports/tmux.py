@@ -81,6 +81,10 @@ def _update_tmux_session_lease(
     error: str = "",
     session_name: str = "",
     recovery_result: str = "",
+    workspace_root: str = "",
+    workspace_tmp_dir: str = "",
+    workspace_scope: str = "",
+    workspace_isolation_active: bool = False,
 ) -> Dict[str, Any]:
     leases = _load_tmux_session_leases(lead_context.shared_state)
     current = dict(leases.get(worker_name, {}))
@@ -110,6 +114,12 @@ def _update_tmux_session_lease(
         "retained_at": retained_at,
         "recovery_result": str(recovery_result or current.get("recovery_result", "")),
         "recovered_at": utc_now() if recovery_result else str(current.get("recovered_at", "")),
+        "workspace_root": str(workspace_root or current.get("workspace_root", "")),
+        "workspace_tmp_dir": str(workspace_tmp_dir or current.get("workspace_tmp_dir", "")),
+        "workspace_scope": str(workspace_scope or current.get("workspace_scope", "")),
+        "workspace_isolation_active": bool(
+            workspace_isolation_active or current.get("workspace_isolation_active", False)
+        ),
         "updated_at": utc_now(),
         "error": str(error or "")[:400],
     }
@@ -133,6 +143,30 @@ def _update_tmux_session_lease(
         error=str(entry.get("error", "")),
     )
     return entry
+
+
+def _sync_session_boundary_from_lease(
+    lead_context: Any,
+    worker_name: str,
+    lease_entry: Dict[str, Any],
+    transport: str,
+) -> None:
+    if lead_context.session_registry is None:
+        return
+    if not isinstance(lease_entry, dict) or not lease_entry:
+        return
+    lead_context.session_registry.record_boundary(
+        agent_name=worker_name,
+        transport=transport,
+        transport_session_name=str(lease_entry.get("session_name", "") or preferred_tmux_session_name(worker_name)),
+        workspace_root=str(lease_entry.get("workspace_root", "") or ""),
+        workspace_tmp_dir=str(lease_entry.get("workspace_tmp_dir", "") or ""),
+        workspace_scope=str(lease_entry.get("workspace_scope", "") or ""),
+        workspace_isolation_active=bool(lease_entry.get("workspace_isolation_active", False)),
+        retained_for_reuse=bool(lease_entry.get("retained_for_reuse", False)),
+        reuse_authorized=bool(lease_entry.get("reuse_authorized", False)),
+        transport_reuse_count=int(lease_entry.get("reuse_count", 0) or 0),
+    )
 
 
 def _tmux_session_exists(session_name: str) -> Dict[str, Any]:
@@ -1957,24 +1991,19 @@ def run_tmux_analyst_task_once(
                 ),
                 reuse_authorized=allow_existing_session_reuse,
                 error=error,
+                workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+                workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+                workspace_isolation_active=bool(
+                    execution_diagnostics.get("tmux_session_workspace_isolated", False)
+                ),
             )
             if lead_context.session_registry is not None:
-                lead_context.session_state = lead_context.session_registry.record_boundary(
-                    agent_name=profile.name,
+                _sync_session_boundary_from_lease(
+                    lead_context=lead_context,
+                    worker_name=profile.name,
+                    lease_entry=lease_entry,
                     transport=transport or "tmux",
-                    transport_session_name=str(
-                        execution_diagnostics.get("tmux_session_name", "")
-                        or lease_entry.get("session_name", "")
-                    ),
-                    workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
-                    workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
-                    workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
-                    workspace_isolation_active=bool(
-                        execution_diagnostics.get("tmux_session_workspace_isolated", False)
-                    ),
-                    retained_for_reuse=bool(lease_entry.get("retained_for_reuse", False)),
-                    reuse_authorized=bool(lease_entry.get("reuse_authorized", False)),
-                    transport_reuse_count=int(lease_entry.get("reuse_count", 0) or 0),
                 )
                 lead_context.session_state = lead_context.session_registry.record_task_result(
                     agent_name=profile.name,
@@ -2086,24 +2115,19 @@ def run_tmux_analyst_task_once(
             retained_for_reuse=retained_for_reuse,
             reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
             reuse_authorized=allow_existing_session_reuse,
+            workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+            workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+            workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+            workspace_isolation_active=bool(
+                execution_diagnostics.get("tmux_session_workspace_isolated", False)
+            ),
         )
         if lead_context.session_registry is not None:
-            lead_context.session_state = lead_context.session_registry.record_boundary(
-                agent_name=profile.name,
+            _sync_session_boundary_from_lease(
+                lead_context=lead_context,
+                worker_name=profile.name,
+                lease_entry=lease_entry,
                 transport=transport or "tmux",
-                transport_session_name=str(
-                    execution_diagnostics.get("tmux_session_name", "")
-                    or lease_entry.get("session_name", "")
-                ),
-                workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
-                workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
-                workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
-                workspace_isolation_active=bool(
-                    execution_diagnostics.get("tmux_session_workspace_isolated", False)
-                ),
-                retained_for_reuse=bool(lease_entry.get("retained_for_reuse", False)),
-                reuse_authorized=bool(lease_entry.get("reuse_authorized", False)),
-                transport_reuse_count=int(lease_entry.get("reuse_count", 0) or 0),
             )
             lead_context.session_state = lead_context.session_registry.record_task_result(
                 agent_name=profile.name,
@@ -2219,7 +2243,7 @@ def recover_tmux_analyst_sessions(
             lease = leases.get(worker_name, {})
             if not isinstance(lease, dict) or not lease:
                 continue
-            _update_tmux_session_lease(
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=worker_name,
                 session_name=str(lease.get("session_name", "") or preferred_tmux_session_name(worker_name)),
@@ -2227,6 +2251,12 @@ def recover_tmux_analyst_sessions(
                 transport="tmux_resume_recovery",
                 reuse_authorized=False,
                 recovery_result="tmux_unavailable",
+            )
+            _sync_session_boundary_from_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                lease_entry=lease_entry,
+                transport="tmux_resume_recovery",
             )
             failed.append(worker_name)
         summary = {
@@ -2258,7 +2288,7 @@ def recover_tmux_analyst_sessions(
         session_name = str(lease.get("session_name", "") or preferred_tmux_session_name(worker_name))
         lease_status = str(lease.get("status", ""))
         if lease_status != "retained":
-            _update_tmux_session_lease(
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=worker_name,
                 session_name=session_name,
@@ -2267,11 +2297,17 @@ def recover_tmux_analyst_sessions(
                 reuse_authorized=False,
                 recovery_result="inactive",
             )
+            _sync_session_boundary_from_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                lease_entry=lease_entry,
+                transport="tmux_resume_recovery",
+            )
             inactive.append(worker_name)
             continue
         existence = _tmux_session_exists(session_name=session_name)
         if existence.get("exists"):
-            _update_tmux_session_lease(
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=worker_name,
                 session_name=session_name,
@@ -2281,11 +2317,17 @@ def recover_tmux_analyst_sessions(
                 reuse_authorized=True,
                 recovery_result="available",
             )
+            _sync_session_boundary_from_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                lease_entry=lease_entry,
+                transport="tmux",
+            )
             recovered.append(worker_name)
         else:
             error = str(existence.get("error", ""))
             status = "recovered_missing" if not error else "recovery_failed"
-            _update_tmux_session_lease(
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=worker_name,
                 session_name=session_name,
@@ -2295,6 +2337,12 @@ def recover_tmux_analyst_sessions(
                 reuse_authorized=False,
                 error=error,
                 recovery_result="missing" if status == "recovered_missing" else "failed",
+            )
+            _sync_session_boundary_from_lease(
+                lead_context=lead_context,
+                worker_name=worker_name,
+                lease_entry=lease_entry,
+                transport="tmux_resume_recovery",
             )
             if status == "recovered_missing":
                 missing.append(worker_name)
