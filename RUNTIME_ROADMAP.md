@@ -1,6 +1,6 @@
 # Agent Team Runtime Roadmap
 
-Current status snapshot: `2026-03-08`
+Current status snapshot: `2026-03-09`
 
 This document tracks the working plan, completed refactors, validation status, and the recommended next tasks for `agent_team_demo`.
 
@@ -62,6 +62,8 @@ The intended architecture is now:
 | tmux deferred cleanup + artifact history | Completed | pause-for-resume runs now defer tmux cleanup, preserve retained leases for resume, and persist cleanup/recovery history alongside the latest summary snapshot. |
 | resume runtime-config inheritance | Completed | resumed runs now inherit checkpoint runtime settings by default and only change behavior when current CLI/config explicitly overrides them. |
 | Workflow plugin maturity | Completed | Built-in packs now include `markdown-audit` and `repo-audit` on the same runtime. |
+| Host behavioral workspace sessions | Completed | host adapters now prepare per-agent workspace/context artifacts instead of emitting metadata only. |
+| Task-level external worker delegation | Completed | `tmux` mode now delegates analyst tasks plus compatible reviewer execution tasks through the shared external worker transport. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work

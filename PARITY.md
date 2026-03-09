@@ -1,6 +1,6 @@
 # Agent Team Parity Snapshot
 
-This file tracks practical parity against Claude Code Agent Teams as of 2026-03-08.
+This file tracks practical parity against Claude Code Agent Teams as of 2026-03-09.
 
 ## Legend
 
@@ -20,16 +20,16 @@ This file tracks practical parity against Claude Code Agent Teams as of 2026-03-
 | Lead adjudication + re-adjudication | Implemented | Initial verdict plus evidence bonus and final verdict. |
 | Hook events for multi-agent workflows | Implemented | Emits `TeammateIdle` and `TaskCompleted` in `events.jsonl`. |
 | Provider abstraction | Implemented | `heuristic` plus OpenAI-compatible endpoint with strict/fallback modes. |
-| Host/model/workflow config separation | Implemented | Host, model, team, workflow, and policy config are now separated under `agent_team/config.py`. |
+| Host/model/workflow config separation | Implemented | Host, model, team, workflow, and policy config are separated under `agent_team/config.py`, and host adapters now produce per-agent context/workspace session artifacts. |
 | Multiple workflow packs on one runtime | Implemented | Built-in packs now include `markdown-audit` and `repo-audit`, both running on the same engine, verifier, and transport layers. |
 | Teammate mode `in-process` | Implemented | Python threads in one process. |
-| Teammate mode `tmux` | Partial | Analyst task execution supports `tmux` transport with timeout controls, subprocess fallback (tmux-unavailable + tmux-error fallback), structured `tmux_worker_diagnostics.jsonl` output, explicit timeout/cleanup lifecycle metadata, IPC cleanup after worker execution, structured recovery when subprocess fallback/direct execution times out, duplicate-session spawn retry recovery with structured retry metadata, stale-session cleanup attempts during duplicate-session recovery, stale-session recovery retry when cleanup initially fails, active worker-session cleanup recovery retry when `kill-session` fails, orphan-session preflight cleanup before spawning new worker sessions, stable preferred session naming with retry/fallback metadata, preferred-session reuse via `respawn-pane` for interruption recovery when an exact worker session already exists, explicit lease-authorized preferred-session reuse, resume-aware lease recovery sweeps, deferred cleanup for intentional pause/resume checkpoints, cross-task preferred-session lease hints for likely future analyst work, end-of-run preferred-session cleanup sweep metadata, and persisted `tmux_session_recovery_summary.json`, `tmux_session_cleanup_summary.json`, `tmux_session_recovery_history.jsonl`, `tmux_session_cleanup_history.jsonl`, plus `tmux_session_leases.json` artifacts for retained-session reconciliation. |
+| Teammate mode `tmux` | Partial | Analyst tasks and compatible reviewer execution tasks now delegate through the same external worker transport with timeout controls, subprocess fallback (tmux-unavailable + tmux-error fallback), structured `tmux_worker_diagnostics.jsonl` output, explicit timeout/cleanup lifecycle metadata, IPC cleanup after worker execution, structured recovery when subprocess fallback/direct execution times out, duplicate-session spawn retry recovery with structured retry metadata, stale-session cleanup attempts during duplicate-session recovery, stale-session recovery retry when cleanup initially fails, active worker-session cleanup recovery retry when `kill-session` fails, orphan-session preflight cleanup before spawning new worker sessions, stable preferred session naming with retry/fallback metadata, preferred-session reuse via `respawn-pane` for interruption recovery when an exact worker session already exists, explicit lease-authorized preferred-session reuse, resume-aware lease recovery sweeps, deferred cleanup for intentional pause/resume checkpoints, cross-task preferred-session lease hints for likely future analyst work, and persisted cleanup/recovery/lease artifacts. Mailbox-heavy reviewer tasks still run in-process. |
 | Dynamic task creation during run | Implemented | `dynamic_planning` can insert follow-up tasks and gate downstream dependencies at runtime. |
 | Resume/rewind state restoration | Partial | Checkpoint-based resume, checkpoint-backed runtime-config inheritance on resume, history-index rewind, event-index rewind mapping, branch-output rewind with seeded event lineage, and replay reports are implemented (`checkpoint_replay.md` + `event_replay.md`); true event-level runtime state restoration is not. |
-| Real independent LLM teammate sessions | Partial | Optional provider-backed teammate replies with per-agent local memory are available, but true isolated teammate sessions are not. |
+| Real independent LLM teammate sessions | Partial | Optional provider-backed teammate replies with per-agent local memory are available, host adapters now prepare per-agent workspaces/context files, and compatible tasks can execute in external workers, but true end-to-end isolated teammate sessions are not complete yet. |
 
 ## Near-Term Focus
 
-1. Stabilize native tmux transport further on hosts with tmux installed, especially around stronger isolation, richer retained-session semantics, and higher-fidelity interruption recovery under real tmux-backed resumes.
-2. Add true event-level state replay (not only event-index-to-checkpoint mapping).
-3. Expand tmux mode from analyst tasks to full teammate task execution with process-isolated shared state.
+1. Move mailbox-heavy teammate tasks (`peer_challenge`, `evidence_pack`) onto a process-isolated session bridge instead of in-process fallbacks.
+2. Extend session recovery/lease management beyond analyst-only retained sessions.
+3. Add true event-level state replay (not only event-index-to-checkpoint mapping).

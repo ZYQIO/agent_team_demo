@@ -16,6 +16,7 @@ This folder now contains two layers:
   - task assignment constraints with `allowed_agent_types` (Task(agent_type)-style gating)
   - compatibility hook events: `TeammateIdle` and `TaskCompleted`
   - teammate execution mode toggle (`in-process` / `tmux`, with subprocess fallback when tmux binary is unavailable)
+  - task-level external worker delegation for analyst work and compatible reviewer execution tasks
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
   - event logs + final report artifacts
@@ -29,7 +30,7 @@ The runtime now exposes a host-agnostic configuration layer so the same team eng
 - `agent_team/config.py`
   - Declarative runtime, host, model, team, workflow, and policy config types.
 - `agent_team/host.py`
-  - Host adapter metadata layer (`generic-cli`, `codex`, `claude-code`).
+  - Host adapter behavior + metadata layer (`generic-cli`, `codex`, `claude-code`), including per-agent workspace/context preparation.
 - `agent_team/models.py`
   - Model adapter layer with heuristic + OpenAI-compatible providers.
 - `agent_team/workflows/`
@@ -91,6 +92,9 @@ python3 agent_team_demo/agent_team_runtime.py \
   --target . \
   --output agent_team_demo/output
 ```
+
+When `--host-kind` enables host-managed context, the runtime now writes per-agent host session artifacts under `output/_host_sessions/`.
+For hosts that advertise workspace isolation, each agent also gets an isolated `target` workspace path inside that host session directory.
 
 Run the second built-in workflow pack:
 
@@ -173,6 +177,9 @@ python3 agent_team_demo/agent_team_runtime.py \
   --output agent_team_demo/output \
   --teammate-mode tmux
 ```
+
+In `tmux` mode, analyst tasks and compatible reviewer execution tasks now delegate through the same external worker transport.
+Mailbox-heavy tasks such as `peer_challenge` and `evidence_pack` still run in-process.
 
 Tune tmux worker timeout/fallback:
 
