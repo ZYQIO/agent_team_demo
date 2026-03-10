@@ -28,7 +28,7 @@ Each entry should capture:
   - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_external_session`
   - verifier passed for that smoke output
   - smoke event review confirmed `host_session_worker_started`, `delivery_mode=external_host_worker`, reviewer `peer_challenge` / `evidence_pack` dispatch and completion with `session_worker_backend=external_process`, and lead-side `session_task_result` / `session_telemetry` application from external workers
-- Commit: pending in working tree
+- Commit: `498a23b`
 - Next implication: mailbox/request-reply isolation is now credible enough to stop treating it as open design work; the next transport step is moving selected non-mailbox host tasks off the lead-inline executor
 ### 2026-03-10 - Host session telemetry mailbox contract
 - Goal: remove the remaining direct host session-thread writes into `teammate_sessions` so session ledger updates also cross an explicit mailbox boundary

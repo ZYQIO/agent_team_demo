@@ -20,7 +20,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: working tree after `37b6124` (external host session-worker round not yet committed)
+- Latest runtime checkpoint commit: `498a23b`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
