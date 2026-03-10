@@ -8,6 +8,7 @@ __pycache__/
 
 # Runtime/generated artifacts
 output*/
+.codex_tmp/
 _tmux_worker_ipc/
 _tmux_worker_payloads/
 
