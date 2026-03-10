@@ -2949,6 +2949,76 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(len(session["provider_memory"]), 1)
         self.assertEqual(session["provider_memory"][0]["topic"], "peer_challenge_round1")
 
+    def test_teammate_session_registry_applies_telemetry_events(self) -> None:
+        shared_state = runtime.SharedState()
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        telemetry_events = [
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review", "writer"],
+                "transport": "host",
+                "event_type": "status",
+                "status": "ready",
+            },
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review", "writer"],
+                "transport": "host",
+                "event_type": "bind_task",
+                "task_id": "peer_challenge",
+                "task_type": "peer_challenge",
+                "visible_shared_state_keys": ["lead_name", "peer_challenge"],
+                "visible_shared_state_key_count": 2,
+            },
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review", "writer"],
+                "transport": "host",
+                "event_type": "message_seen",
+                "from_agent": "lead",
+                "subject": "session_task_assignment",
+                "task_id": "peer_challenge",
+            },
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review", "writer"],
+                "transport": "host",
+                "event_type": "provider_reply",
+                "topic": "peer_challenge_round1",
+                "reply": "reply",
+                "memory_turns": 4,
+            },
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review", "writer"],
+                "transport": "host",
+                "event_type": "task_result",
+                "task_id": "peer_challenge",
+                "task_type": "peer_challenge",
+                "success": True,
+                "status": "ready",
+            },
+        ]
+
+        for telemetry in telemetry_events:
+            registry.apply_telemetry(telemetry)
+
+        session = registry.session_for("reviewer_gamma")
+        self.assertEqual(session["transport"], "host")
+        self.assertEqual(session["tasks_started"], 1)
+        self.assertEqual(session["tasks_completed"], 1)
+        self.assertEqual(session["messages_seen"], 1)
+        self.assertEqual(session["provider_replies"], 1)
+        self.assertEqual(session["last_visible_shared_state_key_count"], 2)
+        self.assertEqual(session["current_task_id"], "")
+        self.assertEqual(len(session["provider_memory"]), 1)
+        self.assertEqual(session["provider_memory"][0]["topic"], "peer_challenge_round1")
+
     def test_teammate_session_registry_preserves_session_id_on_resume(self) -> None:
         shared_state = runtime.SharedState()
         registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
@@ -4230,6 +4300,9 @@ class RuntimeLogicTests(unittest.TestCase):
                     },
                 )
                 self.assertFalse(second_dispatch)
+                session = registry.session_for("reviewer_gamma")
+                self.assertEqual(session.get("current_task_id"), "peer_challenge")
+                self.assertEqual(session.get("tasks_started"), 1)
 
                 release.set()
                 deadline = time.time() + 2.0
@@ -4249,6 +4322,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["peer_challenge"]["status"], "in_progress")
                 self.assertEqual(shared_state.get("peer_challenge_record"), None)
+                runtime.apply_host_session_telemetry_messages(lead_context)
                 self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["peer_challenge"]["status"], "completed")
@@ -4256,6 +4330,8 @@ class RuntimeLogicTests(unittest.TestCase):
                     shared_state.get("peer_challenge_record", {}).get("mode"),
                     "session_thread",
                 )
+                session = registry.session_for("reviewer_gamma")
+                self.assertEqual(session.get("tasks_completed"), 1)
 
                 third_dispatch = runtime.run_host_teammate_task_once(
                     lead_context=lead_context,
@@ -4284,6 +4360,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["evidence_pack"]["status"], "in_progress")
                 self.assertEqual(shared_state.get("evidence_pack_record"), None)
+                runtime.apply_host_session_telemetry_messages(lead_context)
                 self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["evidence_pack"]["status"], "completed")
@@ -4291,6 +4368,10 @@ class RuntimeLogicTests(unittest.TestCase):
                     shared_state.get("evidence_pack_record", {}).get("mode"),
                     "session_thread",
                 )
+                session = registry.session_for("reviewer_gamma")
+                history_task_types = [item.get("task_type") for item in session.get("task_history", [])]
+                self.assertIn("peer_challenge", history_task_types)
+                self.assertIn("evidence_pack", history_task_types)
             finally:
                 stop_event.set()
                 worker.join(timeout=2.0)
@@ -4347,6 +4428,13 @@ class RuntimeLogicTests(unittest.TestCase):
                 {item.get("task_id") for item in result_messages},
                 {"peer_challenge", "evidence_pack"},
             )
+            telemetry_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TELEMETRY_SUBJECT
+            ]
+            self.assertGreaterEqual(len(telemetry_messages), 4)
             completion_events = [
                 item
                 for item in events
@@ -4508,10 +4596,13 @@ class RuntimeLogicTests(unittest.TestCase):
                     time.sleep(0.05)
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["peer_challenge"]["status"], "in_progress")
+                runtime.apply_host_session_telemetry_messages(lead_context)
                 self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
                 board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
                 self.assertEqual(board_snapshot["peer_challenge"]["status"], "failed")
                 self.assertIn("RuntimeError: boom", board_snapshot["peer_challenge"]["error"])
+                session = registry.session_for("reviewer_gamma")
+                self.assertEqual(session.get("tasks_failed"), 1)
             finally:
                 stop_event.set()
                 worker.join(timeout=2.0)
@@ -4528,6 +4619,13 @@ class RuntimeLogicTests(unittest.TestCase):
                 and item.get("subject") == runtime.SESSION_TASK_RESULT_SUBJECT
             ]
             self.assertEqual(len(result_messages), 1)
+            telemetry_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TELEMETRY_SUBJECT
+            ]
+            self.assertGreaterEqual(len(telemetry_messages), 2)
             failure_events = [
                 item
                 for item in events

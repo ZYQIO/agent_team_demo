@@ -27,6 +27,7 @@ from ..core import (
 from ..host import HOST_RUNTIME_ENFORCEMENT_KEY, build_host_adapter
 from ..models import LLMProvider, build_provider
 from ..transports.inprocess import InProcessTeammateAgent
+import agent_team.transports.host as host_transport
 from ..workflows import (
     resolve_workflow_pack,
 )
@@ -696,6 +697,19 @@ def run_team(
                     subject=message.subject,
                     task_id=message.task_id,
                 )
+                if runtime_config.teammate_mode == "host":
+                    if message.subject == host_transport.SESSION_TELEMETRY_SUBJECT:
+                        host_transport.apply_host_session_telemetry_message(
+                            lead_context=lead_context,
+                            message=message,
+                        )
+                        continue
+                    if message.subject == host_transport.SESSION_TASK_RESULT_SUBJECT:
+                        host_transport.apply_host_session_result_message(
+                            lead_context=lead_context,
+                            message=message,
+                        )
+                        continue
                 if message.subject == "task_failed":
                     mailbox.broadcast(
                         sender=lead_context.profile.name,
@@ -753,6 +767,9 @@ def run_team(
         stop_event.set()
         for worker in workers:
             worker.join(timeout=2.0)
+        if runtime_config.teammate_mode == "host":
+            host_transport.apply_host_session_telemetry_messages(lead_context=lead_context)
+            host_transport.apply_host_session_result_messages(lead_context=lead_context)
         if runtime_config.teammate_mode == "tmux" and cleanup_tmux_analyst_sessions_fn is not None:
             defer_tmux_cleanup = interrupted_reason.startswith("max_completed_tasks reached")
             shared_state.set("tmux_cleanup_deferred_for_resume", defer_tmux_cleanup)

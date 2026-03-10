@@ -643,6 +643,11 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 if isinstance(item, dict) and item.get("agent_type") == "reviewer"
             ]
             self.assertEqual(len(reviewer_sessions), 1)
+            self.assertEqual(
+                reviewer_sessions[0].get("tasks_started"),
+                reviewer_sessions[0].get("tasks_completed"),
+            )
+            self.assertEqual(reviewer_sessions[0].get("status"), "stopped")
             reviewer_history = reviewer_sessions[0].get("task_history", [])
             self.assertTrue(
                 any(
@@ -781,6 +786,18 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in result_messages)
             )
+            telemetry_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TELEMETRY_SUBJECT
+            ]
+            self.assertTrue(
+                any(item.get("task_id") == "peer_challenge" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "evidence_pack" for item in telemetry_messages)
+            )
             session_thread_completions = [
                 item
                 for item in events
@@ -831,6 +848,20 @@ class RuntimeEndToEndTests(unittest.TestCase):
             ]
             self.assertEqual(len(reviewer_sessions), 1)
             reviewer_history = reviewer_sessions[0].get("task_history", [])
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "peer_challenge" and entry.get("transport") == "host"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "evidence_pack" and entry.get("transport") == "host"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
             self.assertTrue(
                 any(
                     entry.get("task_type") == "llm_synthesis" and entry.get("transport") == "host"

@@ -14,6 +14,7 @@ TEAMMATE_SESSIONS_KEY = "teammate_sessions"
 TEAMMATE_SESSIONS_FILENAME = "teammate_sessions.json"
 SESSION_BOUNDARY_FILENAME = "session_boundaries.json"
 SESSION_HISTORY_LIMIT = 12
+SESSION_TELEMETRY_SUBJECT = "session_telemetry"
 
 
 def teammate_transport_for_profile(profile: AgentProfile, runtime_config: RuntimeConfig) -> str:
@@ -131,6 +132,111 @@ def _normalize_session_entry(agent_name: str, entry: Mapping[str, Any]) -> Dict[
     }
 
 
+def apply_session_telemetry_event(
+    session_entry: Optional[Mapping[str, Any]],
+    telemetry: Mapping[str, Any],
+) -> Dict[str, Any]:
+    agent_name = str(telemetry.get("agent", "") or "")
+    normalized = _normalize_session_entry(agent_name or "unknown", session_entry or {})
+    if agent_name:
+        normalized["agent"] = agent_name
+    agent_type = str(telemetry.get("agent_type", "") or "")
+    if agent_type:
+        normalized["agent_type"] = agent_type
+    raw_skills = telemetry.get("skills", [])
+    if isinstance(raw_skills, list) and raw_skills:
+        normalized["skills"] = sorted({str(skill) for skill in raw_skills if str(skill)})
+    event_type = str(telemetry.get("event_type", "") or "")
+    transport = str(telemetry.get("transport", "") or "")
+    if transport:
+        normalized["transport"] = transport
+    if event_type == "status":
+        status = str(telemetry.get("status", "") or "")
+        if status:
+            normalized["status"] = status
+        normalized["current_task_id"] = str(telemetry.get("current_task_id", "") or "")
+        normalized["current_task_type"] = str(telemetry.get("current_task_type", "") or "")
+    elif event_type == "message_seen":
+        normalized["messages_seen"] = int(normalized.get("messages_seen", 0) or 0) + 1
+        recent_messages = list(normalized.get("recent_messages", []))
+        recent_messages.append(
+            {
+                "from_agent": str(telemetry.get("from_agent", "") or ""),
+                "subject": str(telemetry.get("subject", "") or ""),
+                "task_id": str(telemetry.get("task_id", "") or ""),
+                "recorded_at": utc_now(),
+            }
+        )
+        normalized["recent_messages"] = _limit_list(recent_messages)
+    elif event_type == "bind_task":
+        normalized["status"] = "running"
+        normalized["current_task_id"] = str(telemetry.get("task_id", "") or "")
+        normalized["current_task_type"] = str(telemetry.get("task_type", "") or "")
+        normalized["tasks_started"] = int(normalized.get("tasks_started", 0) or 0) + 1
+        normalized["context_preparations"] = int(normalized.get("context_preparations", 0) or 0) + 1
+        visible_keys = telemetry.get("visible_shared_state_keys", [])
+        if isinstance(visible_keys, list):
+            normalized["last_visible_shared_state_keys"] = [str(item) for item in visible_keys]
+        normalized["last_visible_shared_state_key_count"] = max(
+            0,
+            int(
+                telemetry.get(
+                    "visible_shared_state_key_count",
+                    len(normalized.get("last_visible_shared_state_keys", [])),
+                )
+                or 0
+            ),
+        )
+        task_history = list(normalized.get("task_history", []))
+        task_history.append(
+            {
+                "task_id": str(telemetry.get("task_id", "") or ""),
+                "task_type": str(telemetry.get("task_type", "") or ""),
+                "status": "started",
+                "transport": str(normalized.get("transport", "") or ""),
+                "visible_shared_state_key_count": int(normalized.get("last_visible_shared_state_key_count", 0) or 0),
+                "recorded_at": utc_now(),
+            }
+        )
+        normalized["task_history"] = _limit_list(task_history)
+    elif event_type == "task_result":
+        normalized["current_task_id"] = ""
+        normalized["current_task_type"] = ""
+        success = bool(telemetry.get("success", False))
+        if success:
+            normalized["tasks_completed"] = int(normalized.get("tasks_completed", 0) or 0) + 1
+        else:
+            normalized["tasks_failed"] = int(normalized.get("tasks_failed", 0) or 0) + 1
+        result_status = str(telemetry.get("status", "") or ("ready" if success else "error"))
+        normalized["status"] = result_status
+        task_history = list(normalized.get("task_history", []))
+        task_history.append(
+            {
+                "task_id": str(telemetry.get("task_id", "") or ""),
+                "task_type": str(telemetry.get("task_type", "") or ""),
+                "status": "completed" if success else "failed",
+                "transport": str(normalized.get("transport", "") or ""),
+                "visible_shared_state_key_count": int(normalized.get("last_visible_shared_state_key_count", 0) or 0),
+                "recorded_at": utc_now(),
+            }
+        )
+        normalized["task_history"] = _limit_list(task_history)
+    elif event_type == "provider_reply":
+        provider_memory = list(normalized.get("provider_memory", []))
+        provider_memory.append(
+            {
+                "topic": str(telemetry.get("topic", "") or ""),
+                "reply": str(telemetry.get("reply", "") or ""),
+                "recorded_at": utc_now(),
+            }
+        )
+        memory_turns = max(1, int(telemetry.get("memory_turns", SESSION_HISTORY_LIMIT) or 1))
+        normalized["provider_memory"] = _limit_list(provider_memory, limit=memory_turns)
+        normalized["provider_replies"] = int(normalized.get("provider_replies", 0) or 0) + 1
+    normalized["last_active_at"] = utc_now()
+    return normalized
+
+
 class TeammateSessionRegistry:
     def __init__(
         self,
@@ -158,6 +264,16 @@ class TeammateSessionRegistry:
         with self._lock:
             entry = self._sessions.get(str(agent_name), {})
             return _clone(entry)
+
+    def apply_telemetry(self, telemetry: Mapping[str, Any]) -> Dict[str, Any]:
+        with self._lock:
+            agent_name = str(telemetry.get("agent", "") or "")
+            if not agent_name:
+                raise ValueError("telemetry is missing agent")
+            entry = self._sessions.get(agent_name, {})
+            self._sessions[agent_name] = apply_session_telemetry_event(entry, telemetry)
+            self._flush_locked()
+            return _clone(self._sessions[agent_name])
 
     def ensure_profile(
         self,

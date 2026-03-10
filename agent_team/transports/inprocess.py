@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
+from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT, apply_session_telemetry_event
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 from . import tmux as tmux_transport
 
@@ -147,6 +148,9 @@ class InProcessTeammateAgent(threading.Thread):
         finally:
             self._finish_assigned_task(task.task_id)
 
+    def _uses_host_session_telemetry_contract(self) -> bool:
+        return (not self.claim_tasks) and self.context.runtime_config.teammate_mode == "host"
+
     def _uses_host_session_result_contract(self, task: Task, task_transport: str) -> bool:
         return (
             (not self.claim_tasks)
@@ -194,10 +198,14 @@ class InProcessTeammateAgent(threading.Thread):
         )
 
     def _refresh_session_state(self) -> None:
-        if self.context.session_registry is None:
-            return
-        self.context.session_state = self.context.session_registry.session_for(self.context.profile.name)
-        raw_memory = self.context.session_state.get("provider_memory", [])
+        if self._uses_host_session_telemetry_contract():
+            current_state = self.context.session_state if isinstance(self.context.session_state, dict) else {}
+        else:
+            if self.context.session_registry is None:
+                return
+            self.context.session_state = self.context.session_registry.session_for(self.context.profile.name)
+            current_state = self.context.session_state
+        raw_memory = current_state.get("provider_memory", [])
         if not isinstance(raw_memory, list):
             self._local_memory = []
             return
@@ -246,14 +254,209 @@ class InProcessTeammateAgent(threading.Thread):
             generated = self.context.provider.complete(system_prompt=system_prompt, user_prompt=user_prompt).strip()
             if not generated:
                 return fallback_reply
-            if self.context.session_registry is not None:
-                self.context.session_state = self.context.session_registry.record_provider_reply(
-                    agent_name=self.context.profile.name,
-                    topic=topic,
-                    reply=generated,
-                    memory_turns=memory_turns,
-                )
-                self._refresh_session_state()
+            if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+                self._record_session_provider_reply(topic=topic, reply=generated, memory_turns=memory_turns)
+            else:
+                self._local_memory.append({"topic": topic, "reply": generated})
+                self._local_memory = self._local_memory[-memory_turns:]
+            self.context.logger.log(
+                "teammate_provider_reply_generated",
+                agent=self.context.profile.name,
+                topic=topic,
+                provider=self.context.provider.metadata.provider,
+                model=self.context.provider.metadata.model,
+            )
+            self.context.logger.log(
+                "teammate_session_memory_updated",
+                agent=self.context.profile.name,
+                topic=topic,
+                memory_turns=memory_turns,
+                cached_replies=len(self._local_memory),
+            )
+            return generated
+        except Exception as exc:
+            self.context.logger.log(
+                "teammate_provider_reply_fallback",
+                agent=self.context.profile.name,
+                topic=topic,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return fallback_reply
+
+    def _build_session_telemetry(self, event_type: str, **fields: Any) -> Dict[str, Any]:
+        telemetry = {
+            "contract": "session_telemetry",
+            "contract_version": 1,
+            "transport": "host",
+            "agent": self.context.profile.name,
+            "agent_type": self.context.profile.agent_type,
+            "skills": sorted(self.context.profile.skills),
+            "event_type": str(event_type or ""),
+        }
+        telemetry.update(fields)
+        return telemetry
+
+    def _apply_local_session_telemetry(self, event_type: str, **fields: Any) -> Dict[str, Any]:
+        telemetry = self._build_session_telemetry(event_type, **fields)
+        self.context.session_state = apply_session_telemetry_event(
+            self.context.session_state if isinstance(self.context.session_state, dict) else {},
+            telemetry,
+        )
+        self._refresh_session_state()
+        return telemetry
+
+    def _publish_session_telemetry(self, telemetry: Mapping[str, Any]) -> None:
+        self.context.mailbox.send(
+            sender=self.context.profile.name,
+            recipient=self._get_lead_name_fn(self.context),
+            subject=SESSION_TELEMETRY_SUBJECT,
+            body=json.dumps(dict(telemetry), ensure_ascii=False),
+            task_id=str(telemetry.get("task_id", "") or None) or None,
+        )
+        self.context.logger.log(
+            "session_telemetry_published",
+            agent=self.context.profile.name,
+            event_type=str(telemetry.get("event_type", "") or ""),
+            task_id=str(telemetry.get("task_id", "") or ""),
+        )
+
+    def _record_session_status(
+        self,
+        transport: str,
+        status: str,
+        current_task_id: str = "",
+        current_task_type: str = "",
+    ) -> None:
+        if self._uses_host_session_telemetry_contract():
+            telemetry = self._apply_local_session_telemetry(
+                "status",
+                transport=transport,
+                status=status,
+                current_task_id=current_task_id,
+                current_task_type=current_task_type,
+            )
+            self._publish_session_telemetry(telemetry)
+            return
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_status(
+                agent_name=self.context.profile.name,
+                transport=transport,
+                status=status,
+                current_task_id=current_task_id,
+                current_task_type=current_task_type,
+            )
+
+    def _record_session_message_seen(self, message: Message) -> None:
+        if self._uses_host_session_telemetry_contract():
+            telemetry = self._apply_local_session_telemetry(
+                "message_seen",
+                from_agent=message.sender,
+                subject=message.subject,
+                task_id=str(message.task_id or ""),
+            )
+            self._publish_session_telemetry(telemetry)
+            return
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_message_seen(
+                agent_name=self.context.profile.name,
+                message=message,
+            )
+
+    def _bind_session_task(self, task: Task, transport: str, task_context: Dict[str, Any]) -> None:
+        if self._uses_host_session_telemetry_contract():
+            telemetry = self._apply_local_session_telemetry(
+                "bind_task",
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport,
+                visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])),
+                visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)),
+            )
+            self._publish_session_telemetry(telemetry)
+            return
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.bind_task(
+                agent_name=self.context.profile.name,
+                task=task,
+                transport=transport,
+                task_context=task_context,
+            )
+
+    def _record_session_task_result(
+        self,
+        task: Task,
+        transport: str,
+        success: bool,
+        status: str,
+    ) -> None:
+        if self._uses_host_session_telemetry_contract():
+            telemetry = self._apply_local_session_telemetry(
+                "task_result",
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport,
+                success=bool(success),
+                status=status,
+            )
+            self._publish_session_telemetry(telemetry)
+            return
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_task_result(
+                agent_name=self.context.profile.name,
+                task=task,
+                transport=transport,
+                success=success,
+                status=status,
+            )
+
+    def _record_session_provider_reply(self, topic: str, reply: str, memory_turns: int) -> None:
+        if self._uses_host_session_telemetry_contract():
+            telemetry = self._apply_local_session_telemetry(
+                "provider_reply",
+                topic=topic,
+                reply=reply,
+                memory_turns=memory_turns,
+            )
+            self._publish_session_telemetry(telemetry)
+            return
+        if self.context.session_registry is not None:
+            self.context.session_state = self.context.session_registry.record_provider_reply(
+                agent_name=self.context.profile.name,
+                topic=topic,
+                reply=reply,
+                memory_turns=memory_turns,
+            )
+            self._refresh_session_state()
+
+        self._refresh_session_state()
+        memory_turns = max(1, int(self.context.runtime_config.teammate_memory_turns))
+        recent_memory = self._local_memory[-memory_turns:]
+        memory_text = "\n".join(
+            [f"- [{item.get('topic', 'unknown')}] {item.get('reply', '')[:180]}" for item in recent_memory]
+        )
+        if not memory_text:
+            memory_text = "- none"
+
+        system_prompt = (
+            "You are a teammate analyst in a multi-agent workflow. "
+            "Return one concise paragraph with concrete, testable recommendations."
+        )
+        user_prompt = (
+            f"Agent: {self.context.profile.name}\n"
+            f"Agent type: {self.context.profile.agent_type}\n"
+            f"Topic: {topic}\n"
+            "Recent local memory:\n"
+            f"{memory_text}\n\n"
+            "Task prompt:\n"
+            f"{prompt}\n"
+            "Output style: concise, specific, and directly actionable."
+        )
+        try:
+            generated = self.context.provider.complete(system_prompt=system_prompt, user_prompt=user_prompt).strip()
+            if not generated:
+                return fallback_reply
+            if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+                self._record_session_provider_reply(topic=topic, reply=generated, memory_turns=memory_turns)
             else:
                 self._local_memory.append({"topic": topic, "reply": generated})
                 self._local_memory = self._local_memory[-memory_turns:]
@@ -407,15 +610,15 @@ class InProcessTeammateAgent(threading.Thread):
             _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
             _write_through=not uses_host_session_result_contract,
         )
-        if self.context.session_registry is not None:
-            self.context.session_state = self.context.session_registry.bind_task(agent_name=self.context.profile.name, task=task, transport=task_transport, task_context=task_context)
+        if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+            self._bind_session_task(task=task, transport=task_transport, task_context=task_context)
         self.context.task_context = task_context
         self.context.shared_state = scoped_shared_state
         self.context.logger.log("task_context_prepared", agent=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, scope=str(task_context.get("scope", "")), visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])), visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)), omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)), dependency_task_ids=list(task_context.get("dependencies", [])), transport=task_transport)
         try:
             result = self._run_subprocess_worker_task(task=task, task_context=task_context, original_shared_state=original_shared_state) if task_transport == "subprocess" else handler(self.context, task)
-            if self.context.session_registry is not None:
-                self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=True, status="ready")
+            if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+                self._record_session_task_result(task=task, transport=task_transport, success=True, status="ready")
             if uses_host_session_result_contract:
                 self._publish_assigned_task_result(
                     task=task,
@@ -428,8 +631,8 @@ class InProcessTeammateAgent(threading.Thread):
                 self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_completed", body=f"{task.task_id} done", task_id=task.task_id)
         except Exception as exc:  # pragma: no cover - defensive path
             error = f"{type(exc).__name__}: {exc}"
-            if self.context.session_registry is not None:
-                self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=False, status="error")
+            if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+                self._record_session_task_result(task=task, transport=task_transport, success=False, status="error")
             if uses_host_session_result_contract:
                 self._publish_assigned_task_result(
                     task=task,
@@ -660,9 +863,8 @@ class InProcessTeammateAgent(threading.Thread):
             )
         ):
             session_transport = str(self.context.session_state.get("transport", "") or "")
-        if self.context.session_registry is not None:
-            self.context.session_state = self.context.session_registry.record_status(
-                agent_name=self.context.profile.name,
+        if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+            self._record_session_status(
                 transport=session_transport,
                 status="ready",
             )
@@ -692,11 +894,8 @@ class InProcessTeammateAgent(threading.Thread):
                 )
             assigned_task: Optional[Task] = None
             for message in messages:
-                if self.context.session_registry is not None:
-                    self.context.session_state = self.context.session_registry.record_message_seen(
-                        agent_name=self.context.profile.name,
-                        message=message,
-                    )
+                if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+                    self._record_session_message_seen(message)
                 self.context.logger.log(
                     "agent_mail_seen",
                     agent=self.context.profile.name,
@@ -737,9 +936,8 @@ class InProcessTeammateAgent(threading.Thread):
             time.sleep(0.1)
 
         self.context.file_locks.release(self.context.profile.name)
-        if self.context.session_registry is not None:
-            self.context.session_state = self.context.session_registry.record_status(
-                agent_name=self.context.profile.name,
+        if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
+            self._record_session_status(
                 transport=session_transport,
                 status="stopped",
             )

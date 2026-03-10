@@ -97,6 +97,7 @@ from agent_team.transports.inprocess import (
     SESSION_TASK_RESULT_SUBJECT,
     InProcessTeammateAgent,
 )
+from agent_team.runtime.session_state import SESSION_TELEMETRY_SUBJECT
 import agent_team.transports.host as host_transport
 import agent_team.transports.tmux as tmux_transport
 from agent_team.workflows import build_workflow_handlers, build_workflow_tasks
@@ -263,6 +264,10 @@ def run_host_teammate_task_once(
 
 def apply_host_session_result_messages(lead_context: AgentContext) -> int:
     return host_transport.apply_host_session_result_messages(lead_context=lead_context)
+
+
+def apply_host_session_telemetry_messages(lead_context: AgentContext) -> int:
+    return host_transport.apply_host_session_telemetry_messages(lead_context=lead_context)
 
 
 def run_tmux_analyst_task_once(

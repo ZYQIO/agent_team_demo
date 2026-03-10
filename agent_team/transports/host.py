@@ -6,6 +6,7 @@ import traceback
 from typing import Any, Dict, Mapping, Sequence
 
 from ..core import AgentProfile
+from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 from .inprocess import SESSION_TASK_ASSIGNMENT_SUBJECT, SESSION_TASK_RESULT_SUBJECT
 from . import tmux as tmux_transport
@@ -99,6 +100,177 @@ def _host_completion_identity(lead_context: Any, worker_name: str) -> Dict[str, 
     )
 
 
+def apply_host_session_telemetry_message(lead_context: Any, message: Any) -> bool:
+    try:
+        payload = json.loads(message.body)
+    except json.JSONDecodeError:
+        lead_context.logger.log(
+            "host_session_telemetry_invalid",
+            worker=message.sender,
+            task_id=message.task_id,
+            error="invalid_json",
+        )
+        return False
+    if not isinstance(payload, dict):
+        lead_context.logger.log(
+            "host_session_telemetry_invalid",
+            worker=message.sender,
+            task_id=message.task_id,
+            error="invalid_payload",
+        )
+        return False
+    if lead_context.session_registry is None:
+        lead_context.logger.log(
+            "host_session_telemetry_skipped",
+            worker=str(payload.get("agent", "") or message.sender or ""),
+            task_id=str(payload.get("task_id", "") or message.task_id or ""),
+            reason="missing_session_registry",
+        )
+        return False
+    try:
+        applied_session = lead_context.session_registry.apply_telemetry(payload)
+    except Exception as exc:
+        lead_context.logger.log(
+            "host_session_telemetry_invalid",
+            worker=str(payload.get("agent", "") or message.sender or ""),
+            task_id=str(payload.get("task_id", "") or message.task_id or ""),
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    lead_context.logger.log(
+        "host_session_telemetry_received",
+        worker=str(applied_session.get("agent", "") or message.sender or ""),
+        task_id=str(payload.get("task_id", "") or message.task_id or ""),
+        event_type=str(payload.get("event_type", "") or ""),
+        transport=str(applied_session.get("transport", "") or ""),
+        status=str(applied_session.get("status", "") or ""),
+    )
+    return True
+
+
+def apply_host_session_telemetry_messages(lead_context: Any) -> int:
+    telemetry_messages = lead_context.mailbox.pull_matching(
+        lead_context.profile.name,
+        lambda message: message.subject == SESSION_TELEMETRY_SUBJECT,
+    )
+    applied = 0
+    for message in telemetry_messages:
+        applied += 1 if apply_host_session_telemetry_message(lead_context=lead_context, message=message) else 0
+    return applied
+
+
+def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
+    try:
+        payload = json.loads(message.body)
+    except json.JSONDecodeError:
+        lead_context.logger.log(
+            "host_worker_result_invalid",
+            task_id=message.task_id,
+            worker=message.sender,
+            error="invalid_json",
+        )
+        return False
+    if not isinstance(payload, dict):
+        lead_context.logger.log(
+            "host_worker_result_invalid",
+            task_id=message.task_id,
+            worker=message.sender,
+            error="invalid_payload",
+        )
+        return False
+    worker = str(payload.get("worker", "") or message.sender or "")
+    task_id = str(payload.get("task_id", "") or message.task_id or "")
+    task_type = str(payload.get("task_type", "") or "")
+    if not worker or not task_id:
+        lead_context.logger.log(
+            "host_worker_result_invalid",
+            task_id=task_id or message.task_id,
+            worker=worker or message.sender,
+            error="missing_worker_or_task_id",
+        )
+        return False
+    success = bool(payload.get("success", False))
+    result = payload.get("result", {})
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+    state_updates = payload.get("state_updates", {})
+    if not isinstance(state_updates, dict):
+        state_updates = {}
+    error = str(payload.get("error", "") or "")
+    transport_identity = _host_completion_identity(
+        lead_context=lead_context,
+        worker_name=worker,
+    )
+    lead_context.logger.log(
+        "host_worker_result_received",
+        worker=worker,
+        task_id=task_id,
+        task_type=task_type,
+        success=success,
+        state_update_keys=sorted(state_updates.keys()) if success else [],
+        completion_subject=SESSION_TASK_RESULT_SUBJECT,
+    )
+    try:
+        if success:
+            for key, value in state_updates.items():
+                lead_context.shared_state.set(str(key), value)
+            lead_context.board.complete(task_id=task_id, owner=worker, result=result)
+            lead_context.mailbox.send(
+                sender=worker,
+                recipient=lead_context.profile.name,
+                subject="task_completed",
+                body=f"{task_id} done",
+                task_id=task_id,
+            )
+            lead_context.logger.log(
+                "host_worker_task_completed",
+                worker=worker,
+                task_id=task_id,
+                task_type=task_type,
+                host_kind=str(transport_identity.get("host_kind", "") or ""),
+                host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+                execution_mode="session_thread",
+                completion_contract="mailbox_message",
+                completion_subject=SESSION_TASK_RESULT_SUBJECT,
+                state_update_keys=sorted(state_updates.keys()),
+            )
+        else:
+            resolved_error = error or "unknown worker error"
+            lead_context.board.fail(task_id=task_id, owner=worker, error=resolved_error)
+            lead_context.mailbox.send(
+                sender=worker,
+                recipient=lead_context.profile.name,
+                subject="task_failed",
+                body=resolved_error,
+                task_id=task_id,
+            )
+            lead_context.logger.log(
+                "host_worker_task_failed",
+                worker=worker,
+                task_id=task_id,
+                task_type=task_type,
+                error=resolved_error,
+                host_kind=str(transport_identity.get("host_kind", "") or ""),
+                host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+                execution_mode="session_thread",
+                completion_contract="mailbox_message",
+                completion_subject=SESSION_TASK_RESULT_SUBJECT,
+            )
+    except Exception as exc:
+        lead_context.logger.log(
+            "host_worker_result_apply_failed",
+            worker=worker,
+            task_id=task_id,
+            task_type=task_type,
+            success=success,
+            error=f"{type(exc).__name__}: {exc}",
+        )
+        return False
+    return True
+
+
 def apply_host_session_result_messages(lead_context: Any) -> int:
     result_messages = lead_context.mailbox.pull_matching(
         lead_context.profile.name,
@@ -106,115 +278,7 @@ def apply_host_session_result_messages(lead_context: Any) -> int:
     )
     applied = 0
     for message in result_messages:
-        try:
-            payload = json.loads(message.body)
-        except json.JSONDecodeError:
-            lead_context.logger.log(
-                "host_worker_result_invalid",
-                task_id=message.task_id,
-                worker=message.sender,
-                error="invalid_json",
-            )
-            continue
-        if not isinstance(payload, dict):
-            lead_context.logger.log(
-                "host_worker_result_invalid",
-                task_id=message.task_id,
-                worker=message.sender,
-                error="invalid_payload",
-            )
-            continue
-        worker = str(payload.get("worker", "") or message.sender or "")
-        task_id = str(payload.get("task_id", "") or message.task_id or "")
-        task_type = str(payload.get("task_type", "") or "")
-        if not worker or not task_id:
-            lead_context.logger.log(
-                "host_worker_result_invalid",
-                task_id=task_id or message.task_id,
-                worker=worker or message.sender,
-                error="missing_worker_or_task_id",
-            )
-            continue
-        success = bool(payload.get("success", False))
-        result = payload.get("result", {})
-        if not isinstance(result, dict):
-            result = {"raw_result": result}
-        state_updates = payload.get("state_updates", {})
-        if not isinstance(state_updates, dict):
-            state_updates = {}
-        error = str(payload.get("error", "") or "")
-        transport_identity = _host_completion_identity(
-            lead_context=lead_context,
-            worker_name=worker,
-        )
-        lead_context.logger.log(
-            "host_worker_result_received",
-            worker=worker,
-            task_id=task_id,
-            task_type=task_type,
-            success=success,
-            state_update_keys=sorted(state_updates.keys()) if success else [],
-            completion_subject=SESSION_TASK_RESULT_SUBJECT,
-        )
-        try:
-            if success:
-                for key, value in state_updates.items():
-                    lead_context.shared_state.set(str(key), value)
-                lead_context.board.complete(task_id=task_id, owner=worker, result=result)
-                lead_context.mailbox.send(
-                    sender=worker,
-                    recipient=lead_context.profile.name,
-                    subject="task_completed",
-                    body=f"{task_id} done",
-                    task_id=task_id,
-                )
-                lead_context.logger.log(
-                    "host_worker_task_completed",
-                    worker=worker,
-                    task_id=task_id,
-                    task_type=task_type,
-                    host_kind=str(transport_identity.get("host_kind", "") or ""),
-                    host_session_transport=str(transport_identity.get("session_transport", "") or ""),
-                    transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
-                    execution_mode="session_thread",
-                    completion_contract="mailbox_message",
-                    completion_subject=SESSION_TASK_RESULT_SUBJECT,
-                    state_update_keys=sorted(state_updates.keys()),
-                )
-            else:
-                resolved_error = error or "unknown worker error"
-                lead_context.board.fail(task_id=task_id, owner=worker, error=resolved_error)
-                lead_context.mailbox.send(
-                    sender=worker,
-                    recipient=lead_context.profile.name,
-                    subject="task_failed",
-                    body=resolved_error,
-                    task_id=task_id,
-                )
-                lead_context.logger.log(
-                    "host_worker_task_failed",
-                    worker=worker,
-                    task_id=task_id,
-                    task_type=task_type,
-                    error=resolved_error,
-                    host_kind=str(transport_identity.get("host_kind", "") or ""),
-                    host_session_transport=str(transport_identity.get("session_transport", "") or ""),
-                    transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
-                    execution_mode="session_thread",
-                    completion_contract="mailbox_message",
-                    completion_subject=SESSION_TASK_RESULT_SUBJECT,
-                )
-        except Exception as exc:
-            lead_context.logger.log(
-                "host_worker_result_apply_failed",
-                worker=worker,
-                task_id=task_id,
-                task_type=task_type,
-                success=success,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            continue
-        applied += 1
+        applied += 1 if apply_host_session_result_message(lead_context=lead_context, message=message) else 0
     return applied
 
 
@@ -223,6 +287,7 @@ def run_host_teammate_task_once(
     teammate_profiles: Sequence[AgentProfile],
     handlers: Mapping[str, Any],
 ) -> bool:
+    apply_host_session_telemetry_messages(lead_context=lead_context)
     ran_any = bool(apply_host_session_result_messages(lead_context=lead_context))
     if not teammate_profiles:
         return ran_any
