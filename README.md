@@ -41,10 +41,14 @@ The runtime now exposes a host-agnostic configuration layer so the same team eng
 
 The legacy entrypoint `agent_team_runtime.py` remains compatible, but now acts as the CLI wrapper around those reusable layers.
 
-## Research and Plan
+## Research, Handoff, and Plan
 
+- `PROJECT_HANDOFF.md`: fastest way to resume work from another context
+- `ACTIVE_PLAN.md`: current prioritized execution plan
+- `WORKLOG.md`: chronological engineering log and recent checkpoints
+- `OPERATING_RULES.md`: project execution rules, validation, and handoff expectations
 - `claude_agent_teams_research.md`: deep-dive notes from official docs/changelog
-- `agent_team_implementation_plan.md`: implementation plan and milestones
+- `agent_team_implementation_plan.md`: original implementation plan and milestones (archival)
 - `PARITY.md`: capability parity snapshot vs Claude Code Agent Teams
 
 ## Run Minimal Demo
