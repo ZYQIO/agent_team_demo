@@ -13,6 +13,22 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host mailbox reviewer session-thread dispatch
+- Goal: stop running host-mode mailbox reviewer tasks lead-inline and move them onto the long-lived teammate session path
+- Changes:
+  - extended `InProcessTeammateAgent` with assigned-task dispatch so non-claiming host helpers can execute one explicitly assigned task at a time
+  - registered host teammate session workers in the runtime engine and changed host transport dispatch so `peer_challenge` and `evidence_pack` run on the reviewer's long-lived session thread
+  - preserved inline host execution for non-mailbox tasks and tagged host dispatch events with `execution_mode=inline` vs `execution_mode=session_thread`
+  - added regression coverage for serial mailbox-task dispatch on a host session thread and for preserving inline behavior on non-mailbox host tasks
+- Validation:
+  - targeted host regression tests passed
+  - full suite: `101/101` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_mailbox_task_session`
+  - verifier passed for that smoke output
+  - smoke event review confirmed `peer_challenge` and `evidence_pack` use `execution_mode=session_thread` while `llm_synthesis` stays `execution_mode=inline`
+- Commit: `2cedafa`
+- Next implication: the next mailbox-boundary step is a true external request/reply contract for reviewer mailbox flows, not more in-runtime session emulation
+
 ### 2026-03-10 - Mailbox transport views for worker/helper sessions
 - Goal: make external-looking transport paths actually consume the file-backed mailbox backend instead of only sharing the lead runtime mailbox object
 - Changes:

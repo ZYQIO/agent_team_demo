@@ -20,12 +20,13 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `0eb5619`
+- Latest runtime checkpoint commit: `2cedafa`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
   - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
   - transport-local mailbox views for runtime worker/helper sessions with atomic file claims during pull
+  - host-mode mailbox reviewer tasks now dispatch onto long-lived teammate session threads instead of running lead-inline
   - dynamic task insertion
   - progress artifacts and session ledgers
   - task-scoped context boundaries
@@ -38,14 +39,15 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
   - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
-  - teammate handlers still execute inside the parent runtime rather than true external host-backed sessions
+  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now execute on the reviewer's long-lived host session thread
+  - host execution is still in-process runtime emulation rather than true external host-backed sessions
 
 ## Main Remaining Gaps
 
 1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
-   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend plus transport-local mailbox views, but the reviewer handlers themselves still execute inside the parent runtime and do not yet have a real external request/reply contract.
+   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, transport-local mailbox views, and host-mode session-thread dispatch, but the reviewer flows still do not have a real external request/reply contract.
 2. Host teammate mode is still not true external host-backed execution.
-   The transport path is real, and host/helper sessions now consume transport-local mailbox views, but handler logic still runs inside the parent runtime instead of true external host-backed sessions.
+   The transport path is real, host/helper sessions consume transport-local mailbox views, and mailbox reviewer tasks run on long-lived session threads, but all of that still happens inside the parent runtime instead of true external host-backed sessions.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
    Host metadata models `plan_approval`, but there is no approval gate for teammate task-list mutations and no live team-message surface beyond logs/artifacts.
 4. Replay is still checkpoint-based rather than true event-level state replay.
@@ -61,7 +63,7 @@ Why this is next:
 
 What that likely requires:
 - define how mailbox request/reply traffic can cross process or host boundaries
-- build on the new transport-local mailbox views so reviewer challenge handlers can consume mailbox traffic without parent-inline execution
+- build on the new host session-thread seam so reviewer challenge handlers can consume mailbox traffic across an actual external process or host boundary
 - decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
 - keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
 - extend tests, smoke run, and verifier expectations when the boundary changes
