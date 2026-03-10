@@ -4273,6 +4273,27 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertTrue(
                 all(item.get("execution_mode") == "session_thread" for item in dispatch_events),
             )
+            assignment_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_ASSIGNMENT_SUBJECT
+            ]
+            self.assertEqual(len(assignment_messages), 2)
+            self.assertEqual(
+                {item.get("task_id") for item in assignment_messages},
+                {"peer_challenge", "evidence_pack"},
+            )
+            assignment_receipts = [
+                item
+                for item in events
+                if item.get("event") == "assigned_task_message_received"
+            ]
+            self.assertEqual(len(assignment_receipts), 2)
+            self.assertEqual(
+                {item.get("task_id") for item in assignment_receipts},
+                {"peer_challenge", "evidence_pack"},
+            )
 
 
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:

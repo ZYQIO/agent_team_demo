@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import json
 import pathlib
 import traceback
 from typing import Any, Dict, Mapping, Sequence
 
 from ..core import AgentProfile
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
+from .inprocess import SESSION_TASK_ASSIGNMENT_SUBJECT
 from . import tmux as tmux_transport
 
 
@@ -64,7 +66,7 @@ def _host_worker_thread(lead_context: Any, profile_name: str) -> Any:
     worker = raw_workers.get(str(profile_name))
     if worker is None:
         return None
-    if not hasattr(worker, "submit_assigned_task") or not hasattr(worker, "can_accept_assigned_task"):
+    if not hasattr(worker, "reserve_assigned_task") or not hasattr(worker, "can_accept_assigned_task"):
         return None
     return worker
 
@@ -115,6 +117,29 @@ def run_host_teammate_task_once(
         next_index = (rr_index + offset + 1) % len(teammate_profiles)
         lead_context.shared_state.set("_host_rr_index", next_index)
         transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
+        handler = handlers.get(task.task_type)
+
+        if handler is None:
+            error = f"no handler registered for task_type={task.task_type}"
+            lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
+            lead_context.mailbox.send(
+                sender=profile.name,
+                recipient=lead_context.profile.name,
+                subject="task_failed",
+                body=error,
+                task_id=task.task_id,
+            )
+            lead_context.logger.log(
+                "host_worker_task_failed",
+                worker=profile.name,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                error=error,
+                host_kind=str(transport_identity.get("host_kind", "") or ""),
+                host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+            )
+            return True
 
         if task.task_type in MAILBOX_REVIEWER_TASK_TYPES and session_worker is not None:
             _record_host_boundary(
@@ -122,13 +147,31 @@ def run_host_teammate_task_once(
                 profile=profile,
                 transport_identity=transport_identity,
             )
-            if not session_worker.submit_assigned_task(task):
+            if not session_worker.reserve_assigned_task(task.task_id):
                 lead_context.board.defer(
                     task_id=task.task_id,
                     owner=profile.name,
                     reason="host worker session busy",
                 )
                 return True
+            assignment_payload = {
+                "contract": "session_task_assignment",
+                "contract_version": 1,
+                "transport": "host",
+                "execution_mode": "session_thread",
+                "task": task.to_dict(),
+            }
+            try:
+                lead_context.mailbox.send(
+                    sender=lead_context.profile.name,
+                    recipient=profile.name,
+                    subject=SESSION_TASK_ASSIGNMENT_SUBJECT,
+                    body=json.dumps(assignment_payload, ensure_ascii=False),
+                    task_id=task.task_id,
+                )
+            except Exception:
+                session_worker.release_assigned_task(task.task_id)
+                raise
             lead_context.logger.log(
                 "host_worker_task_dispatched",
                 worker=profile.name,
@@ -138,6 +181,8 @@ def run_host_teammate_task_once(
                 host_session_transport=str(transport_identity.get("session_transport", "") or ""),
                 transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
                 execution_mode="session_thread",
+                dispatch_contract="mailbox_message",
+                dispatch_subject=SESSION_TASK_ASSIGNMENT_SUBJECT,
             )
             return True
 
@@ -160,21 +205,6 @@ def run_host_teammate_task_once(
             body=f"{profile.name} started {task.task_id}",
             task_id=task.task_id,
         )
-        handler = handlers.get(task.task_type)
-        if handler is None:
-            error = f"no handler registered for task_type={task.task_type}"
-            lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
-            lead_context.mailbox.send(
-                sender=profile.name,
-                recipient=lead_context.profile.name,
-                subject="task_failed",
-                body=error,
-                task_id=task.task_id,
-            )
-            if lock_paths:
-                lead_context.file_locks.release(profile.name, lock_paths)
-            return True
-
         task_context = build_task_context_snapshot(
             context=lead_context,
             task=task,
@@ -227,6 +257,7 @@ def run_host_teammate_task_once(
             host_session_transport=str(transport_identity.get("session_transport", "") or ""),
             transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
             execution_mode="inline",
+            dispatch_contract="inline_call",
         )
         lead_context.logger.log(
             "task_context_prepared",

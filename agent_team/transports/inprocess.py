@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import pathlib
-import queue
 import threading
 import time
 from types import ModuleType
@@ -15,6 +14,7 @@ from . import tmux as tmux_transport
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
+SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
 AUTO_REPLY_SUBJECTS = {
     "peer_challenge_round1_request",
     "peer_challenge_round2_request",
@@ -43,46 +43,108 @@ class InProcessTeammateAgent(threading.Thread):
         self._profile_has_skill_fn = profile_has_skill_fn
         self._traceback_module = traceback_module
         self._local_memory: List[Dict[str, str]] = []
-        self._assigned_tasks: "queue.Queue[Task]" = queue.Queue()
         self._assigned_task_lock = threading.Lock()
         self._assigned_task_active = False
+        self._assigned_task_id = ""
         self._refresh_session_state()
 
     def can_accept_assigned_task(self) -> bool:
         if self.claim_tasks or self.stop_event.is_set():
             return False
         with self._assigned_task_lock:
-            return (not self._assigned_task_active) and self._assigned_tasks.empty()
+            return (not self._assigned_task_active) and (not self._assigned_task_id)
 
-    def submit_assigned_task(self, task: Task) -> bool:
+    def reserve_assigned_task(self, task_id: str) -> bool:
         if self.claim_tasks or self.stop_event.is_set():
             return False
+        normalized_task_id = str(task_id or "")
+        if not normalized_task_id:
+            return False
         with self._assigned_task_lock:
-            if self._assigned_task_active or not self._assigned_tasks.empty():
+            if self._assigned_task_active or self._assigned_task_id:
                 return False
-            self._assigned_tasks.put_nowait(task)
+            self._assigned_task_id = normalized_task_id
         return True
 
-    def _next_assigned_task(self) -> Optional[Task]:
-        if self.claim_tasks:
+    def release_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._assigned_task_lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            if not self._assigned_task_active:
+                self._assigned_task_id = ""
+
+    def _activate_assigned_task(self, task: Task) -> bool:
+        normalized_task_id = str(task.task_id or "")
+        if not normalized_task_id:
+            return False
+        with self._assigned_task_lock:
+            if self._assigned_task_active:
+                return False
+            if self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return False
+            self._assigned_task_active = True
+            self._assigned_task_id = normalized_task_id
+        return True
+
+    def _finish_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._assigned_task_lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            self._assigned_task_active = False
+            self._assigned_task_id = ""
+
+    def _assigned_task_from_message(self, message: Message) -> Optional[Task]:
+        if message.subject != SESSION_TASK_ASSIGNMENT_SUBJECT:
             return None
         try:
-            task = self._assigned_tasks.get_nowait()
-        except queue.Empty:
+            payload = json.loads(message.body)
+        except json.JSONDecodeError:
+            self.context.logger.log(
+                "assigned_task_message_invalid",
+                agent=self.context.profile.name,
+                task_id=message.task_id,
+                error="invalid_json",
+            )
+            self.release_assigned_task(message.task_id or "")
             return None
-        with self._assigned_task_lock:
-            self._assigned_task_active = True
-        return task
-
-    def _finish_assigned_task(self) -> None:
-        with self._assigned_task_lock:
-            self._assigned_task_active = False
+        task_payload = payload
+        if isinstance(payload, dict) and isinstance(payload.get("task"), dict):
+            task_payload = payload.get("task", {})
+        if not isinstance(task_payload, dict):
+            self.context.logger.log(
+                "assigned_task_message_invalid",
+                agent=self.context.profile.name,
+                task_id=message.task_id,
+                error="missing_task_payload",
+            )
+            self.release_assigned_task(message.task_id or "")
+            return None
+        assigned_task = task_from_dict(task_payload)
+        if not assigned_task.task_id:
+            self.context.logger.log(
+                "assigned_task_message_invalid",
+                agent=self.context.profile.name,
+                task_id=message.task_id,
+                error="empty_task_id",
+            )
+            self.release_assigned_task(message.task_id or "")
+            return None
+        self.context.logger.log(
+            "assigned_task_message_received",
+            agent=self.context.profile.name,
+            task_id=assigned_task.task_id,
+            task_type=assigned_task.task_type,
+            sender=message.sender,
+        )
+        return assigned_task
 
     def _run_assigned_task(self, task: Task) -> None:
         try:
             self._run_task(task)
         finally:
-            self._finish_assigned_task()
+            self._finish_assigned_task(task.task_id)
 
     def _refresh_session_state(self) -> None:
         if self.context.session_registry is None:
@@ -553,8 +615,12 @@ class InProcessTeammateAgent(threading.Thread):
             else:
                 messages = self.context.mailbox.pull_matching(
                     self.context.profile.name,
-                    lambda message: message.subject in AUTO_REPLY_SUBJECTS,
+                    lambda message: (
+                        message.subject in AUTO_REPLY_SUBJECTS
+                        or message.subject == SESSION_TASK_ASSIGNMENT_SUBJECT
+                    ),
                 )
+            assigned_task: Optional[Task] = None
             for message in messages:
                 if self.context.session_registry is not None:
                     self.context.session_state = self.context.session_registry.record_message_seen(
@@ -575,9 +641,10 @@ class InProcessTeammateAgent(threading.Thread):
                     self._auto_reply_peer_challenge(message)
                 if message.subject == "evidence_request":
                     self._auto_reply_evidence_request(message)
+                if message.subject == SESSION_TASK_ASSIGNMENT_SUBJECT:
+                    assigned_task = self._assigned_task_from_message(message)
 
-            assigned_task = self._next_assigned_task()
-            if assigned_task is not None:
+            if assigned_task is not None and self._activate_assigned_task(assigned_task):
                 self._run_assigned_task(assigned_task)
                 continue
 

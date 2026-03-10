@@ -92,7 +92,10 @@ from agent_team.runtime.engine import (
     run_lead_task_once as run_lead_task_once_impl,
     run_team as run_team_impl,
 )
-from agent_team.transports.inprocess import InProcessTeammateAgent
+from agent_team.transports.inprocess import (
+    SESSION_TASK_ASSIGNMENT_SUBJECT,
+    InProcessTeammateAgent,
+)
 import agent_team.transports.host as host_transport
 import agent_team.transports.tmux as tmux_transport
 from agent_team.workflows import build_workflow_handlers, build_workflow_tasks

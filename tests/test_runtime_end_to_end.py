@@ -745,6 +745,30 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("teammate_mode_host_enabled", event_names)
             self.assertIn("host_worker_task_dispatched", event_names)
             self.assertIn("host_worker_task_completed", event_names)
+            session_thread_dispatches = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_dispatched"
+                and item.get("execution_mode") == "session_thread"
+            ]
+            self.assertTrue(
+                any(item.get("task_id") == "peer_challenge" for item in session_thread_dispatches)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "evidence_pack" for item in session_thread_dispatches)
+            )
+            assignment_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_ASSIGNMENT_SUBJECT
+            ]
+            self.assertTrue(
+                any(item.get("task_id") == "peer_challenge" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "evidence_pack" for item in assignment_messages)
+            )
 
             host_enforcement = json.loads(
                 (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")

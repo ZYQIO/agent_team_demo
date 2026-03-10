@@ -625,7 +625,7 @@ def run_team(
             worker_context = getattr(worker, "context", None)
             worker_profile = getattr(worker_context, "profile", None)
             worker_name = str(getattr(worker_profile, "name", "") or "")
-            if worker_name and hasattr(worker, "submit_assigned_task"):
+            if worker_name and hasattr(worker, "reserve_assigned_task"):
                 host_worker_threads[worker_name] = worker
         setattr(lead_context, "_host_worker_threads", host_worker_threads)
         logger.log(
