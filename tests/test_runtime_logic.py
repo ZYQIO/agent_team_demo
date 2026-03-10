@@ -2847,6 +2847,61 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(started[-1].get("transport"), "tmux")
             self.assertEqual(stopped[-1].get("transport"), "tmux")
 
+    def test_build_host_enforcement_snapshot_defaults_to_runtime_managed_when_host_only_advertises_capabilities(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="in-process").to_dict())
+        shared_state.set("policies", {"allow_host_managed_context": True})
+
+        snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_enforcement"], "runtime_managed")
+        self.assertEqual(snapshot["workspace_enforcement"], "runtime_managed")
+        self.assertFalse(snapshot["host_native_session_active"])
+        self.assertFalse(snapshot["host_native_workspace_active"])
+        self.assertIn("host_independent_sessions_advertised_only", snapshot["notes"])
+        self.assertIn("host_workspace_isolation_advertised_only", snapshot["notes"])
+        self.assertIn("host_managed_context_not_bound_to_runtime", snapshot["notes"])
+
+    def test_build_session_boundary_snapshot_requires_active_host_enforcement_for_host_native_mode(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="in-process").to_dict())
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        registry.ensure_profile(profile=analyst, transport="in-process", status="ready")
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["runtime_emulated_session"], 1)
+        session = snapshot["sessions"][0]
+        self.assertEqual(session["host_session_enforcement"], "runtime_managed")
+        self.assertFalse(session["host_native_session_active"])
+        self.assertIn("host_independent_sessions_advertised_only", session["notes"])
+
     def test_build_session_boundary_snapshot_prefers_host_native_sessions(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -2859,6 +2914,28 @@ class RuntimeLogicTests(unittest.TestCase):
                     "workspace_isolation": True,
                 },
                 "limits": [],
+            },
+        )
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "claude-code",
+                "configured_session_transport": "session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "host_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": True,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": True,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
             },
         )
         registry = runtime.TeammateSessionRegistry(shared_state=shared_state)

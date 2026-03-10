@@ -16,6 +16,7 @@ REQUIRED_FILES = [
     "events.jsonl",
     "shared_state.json",
     "file_locks.json",
+    "host_enforcement.json",
     "session_boundaries.json",
     "teammate_sessions.json",
     "team_progress.json",
@@ -119,6 +120,7 @@ def main() -> int:
         "## Lead Adjudication",
         "## Team Progress",
         "## Teammate Sessions",
+        "## Host Enforcement",
         "## Session Boundaries",
     ]:
         if section not in report:
@@ -138,6 +140,26 @@ def main() -> int:
     context_boundaries = load_json(output_dir / "context_boundaries.json")
     if int(context_boundaries.get("context_count", 0)) <= 0:
         return fail("context_boundaries.json must contain at least one prepared task context")
+    raw_host_enforcement_path = str(summary.get("host_enforcement_path", "") or "")
+    if not raw_host_enforcement_path:
+        return fail("Missing host enforcement path in run_summary.json: host_enforcement_path")
+    host_enforcement_path = pathlib.Path(raw_host_enforcement_path).resolve()
+    if not host_enforcement_path.exists():
+        return fail(f"Referenced host enforcement artifact does not exist: {host_enforcement_path}")
+    host_enforcement = load_json(output_dir / "host_enforcement.json")
+    required_host_enforcement_keys = {
+        "session_enforcement",
+        "workspace_enforcement",
+        "host_native_session_active",
+        "host_native_workspace_active",
+        "effective_boundary_source",
+        "effective_boundary_strength",
+    }
+    if not required_host_enforcement_keys.issubset(set(host_enforcement.keys())):
+        return fail(
+            "host_enforcement.json is missing required keys: "
+            f"{sorted(required_host_enforcement_keys - set(host_enforcement.keys()))}"
+        )
     raw_session_boundary_path = str(summary.get("session_boundary_path", "") or "")
     if not raw_session_boundary_path:
         return fail("Missing session boundary path in run_summary.json: session_boundary_path")
@@ -258,6 +280,10 @@ def main() -> int:
         print(
             f"[verify] host={host.get('kind')} transport={host.get('session_transport')}"
         )
+    print(
+        f"[verify] host_enforcement session={host_enforcement.get('session_enforcement')} "
+        f"workspace={host_enforcement.get('workspace_enforcement')}"
+    )
     if workflow:
         print(
             f"[verify] workflow={workflow.get('pack')} preset={workflow.get('preset')}"

@@ -264,12 +264,14 @@ After runtime execution, output directory contains:
 - `shared_state.json`: shared runtime data
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
+- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from actually active host-native isolation
 - `session_boundaries.json`: host/session boundary posture for each teammate session, including workspace scope and isolated temp/session directories when transport isolation is active
 - `teammate_sessions.json`: persistent per-agent session ids, transport, transport-session names, memory, recent task/message history, and resume continuity metadata
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity
 - `team_progress.md`: lead-facing team progress dashboard
 - `run_summary.json`: pointers to all artifacts
 - `run_summary.json` now also includes `host`, `team`, `workflow`, `policies`, and `agent_team_config`
+- `run_summary.json` also includes `host_enforcement_path`
 - `run_summary.json` also includes `session_boundary_path`
 - `run_summary.json` also includes `teammate_sessions_path`
 - `run_summary.json` also includes `team_progress_path` and `team_progress_report_path`
@@ -298,6 +300,7 @@ The report now includes:
 - Lead adjudication initial/final verdict, score, thresholds, and rubric weights
 - LLM synthesis
 - Final recommended actions
+- Host enforcement summary (configured host transport vs runtime-active enforcement)
 - Session boundary summary (host-native vs tmux-backed vs runtime-emulated teammate session isolation)
 - Teammate session summary (per-agent session status, transport, memory depth, recent task history)
 - Team progress summary (per-agent completed/failed/ready/blocked counts)

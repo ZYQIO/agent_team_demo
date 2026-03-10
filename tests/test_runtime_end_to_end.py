@@ -70,6 +70,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
+                output_dir / runtime.HOST_ENFORCEMENT_FILENAME,
                 output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
@@ -110,6 +111,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 (output_dir / runtime.CONTEXT_BOUNDARY_FILENAME).resolve(),
             )
             self.assertEqual(
+                pathlib.Path(str(summary.get("host_enforcement_path", ""))).resolve(),
+                (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).resolve(),
+            )
+            self.assertEqual(
                 pathlib.Path(str(summary.get("session_boundary_path", ""))).resolve(),
                 (output_dir / runtime.SESSION_BOUNDARY_FILENAME).resolve(),
             )
@@ -130,6 +135,11 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("markdown_inventory", shared_state)
             self.assertIn("llm_synthesis", shared_state)
 
+            host_enforcement = json.loads(
+                (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertIn("session_enforcement", host_enforcement)
+            self.assertIn("workspace_enforcement", host_enforcement)
             team_progress = json.loads(
                 (output_dir / runtime.TEAM_PROGRESS_FILENAME).read_text(encoding="utf-8")
             )
@@ -165,6 +175,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertGreater(context_boundary.get("context_count", 0), 0)
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Host Enforcement", report_text)
             self.assertIn("## Session Boundaries", report_text)
             self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Team Progress", report_text)
@@ -215,6 +226,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
+                output_dir / runtime.HOST_ENFORCEMENT_FILENAME,
                 output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
@@ -243,6 +255,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 pathlib.Path(str(summary.get("context_boundary_path", ""))).resolve(),
                 (output_dir / runtime.CONTEXT_BOUNDARY_FILENAME).resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(str(summary.get("host_enforcement_path", ""))).resolve(),
+                (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).resolve(),
             )
             self.assertEqual(
                 pathlib.Path(str(summary.get("session_boundary_path", ""))).resolve(),
@@ -276,6 +292,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("task_inserted", event_names)
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
+            self.assertIn("## Host Enforcement", report_text)
             self.assertIn("## Session Boundaries", report_text)
             self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Team Progress", report_text)

@@ -15,6 +15,7 @@ This document tracks repeatable checks for the local `agent_team_runtime.py` imp
   (`run_checkpoint.json` + `_checkpoint_history` + `--resume-from` + `--rewind-to-history-index` + `--rewind-to-event-index` + `--rewind-branch`)
 - Artifact completeness and event traceability
 - Teammate session ledger generation, resume continuity tracking, and final report append behavior
+- Host enforcement artifact generation, advertised-vs-active host isolation reporting, and final report append behavior
 - Session-boundary posture artifact generation, tmux workspace isolation metadata, and final report append behavior
 - Team progress artifact generation and report append behavior
 - Task-context boundary generation and context summary artifact
@@ -75,6 +76,7 @@ Verify artifacts in output directory:
 - `shared_state.json`
 - `file_locks.json`
 - `context_boundaries.json`
+- `host_enforcement.json`
 - `session_boundaries.json`
 - `teammate_sessions.json`
 - `team_progress.json`
@@ -207,6 +209,8 @@ python3 agent_team_demo/agent_team_runtime.py \
   `team_progress.json` and `team_progress.md`.
 - Final report should include a `Teammate Sessions` section and `run_summary.json` should point to
   `teammate_sessions.json`.
+- Final report should include a `Host Enforcement` section and `run_summary.json` should point to
+  `host_enforcement.json`.
 - Final report should include a `Session Boundaries` section and `run_summary.json` should point to
   `session_boundaries.json`.
 - Tmux runs should record at least one teammate session boundary with `workspace_root`,

@@ -6,6 +6,7 @@ import pathlib
 from typing import Any, Dict, List, Optional, Sequence
 
 from ..config import RuntimeConfig
+from ..host import build_host_enforcement_snapshot
 from ..core import (
     EventLogger,
     FileLockRegistry,
@@ -30,6 +31,7 @@ CHECKPOINT_VERSION = 1
 CHECKPOINT_FILENAME = "run_checkpoint.json"
 CHECKPOINT_HISTORY_DIRNAME = "_checkpoint_history"
 CONTEXT_BOUNDARY_FILENAME = "context_boundaries.json"
+HOST_ENFORCEMENT_FILENAME = "host_enforcement.json"
 TEAM_PROGRESS_FILENAME = "team_progress.json"
 TEAM_PROGRESS_REPORT_FILENAME = "team_progress.md"
 
@@ -1027,6 +1029,46 @@ def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot
     return True
 
 
+def append_host_enforcement_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
+    if not report_path.exists():
+        return False
+    existing = report_path.read_text(encoding="utf-8")
+    if "## Host Enforcement" in existing:
+        return False
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## Host Enforcement")
+    lines.append("")
+    host = snapshot.get("host", {})
+    if isinstance(host, dict):
+        lines.append(
+            f"- Host: {host.get('kind', '')} configured_transport={host.get('session_transport', '')} "
+            f"independent_sessions={host.get('capabilities', {}).get('independent_sessions', False)} "
+            f"workspace_isolation={host.get('capabilities', {}).get('workspace_isolation', False)}"
+        )
+    lines.append(
+        f"- Enforcement: requested_teammate_mode={snapshot.get('requested_teammate_mode', '')} "
+        f"session={snapshot.get('session_enforcement', '')} "
+        f"workspace={snapshot.get('workspace_enforcement', '')} "
+        f"boundary_source={snapshot.get('effective_boundary_source', '')} "
+        f"boundary_strength={snapshot.get('effective_boundary_strength', '')}"
+    )
+    lines.append(
+        f"- Host-native: session_active={snapshot.get('host_native_session_active', False)} "
+        f"workspace_active={snapshot.get('host_native_workspace_active', False)} "
+        f"managed_context_requested={snapshot.get('host_managed_context_requested', False)} "
+        f"managed_context_active={snapshot.get('host_managed_context_active', False)}"
+    )
+    limits = snapshot.get("limits", [])
+    if isinstance(limits, list) and limits:
+        lines.append("- Limits: " + ", ".join(str(item) for item in limits))
+    notes = snapshot.get("notes", [])
+    if isinstance(notes, list) and notes:
+        lines.append("- Notes: " + ", ".join(str(item) for item in notes))
+    report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
     if not report_path.exists():
         return False
@@ -1211,6 +1253,16 @@ def write_artifacts(
         report_path=output_dir / "final_report.md",
         snapshot=teammate_sessions_snapshot,
     )
+    host_enforcement_snapshot = build_host_enforcement_snapshot(shared_state=shared_state)
+    host_enforcement_path = output_dir / HOST_ENFORCEMENT_FILENAME
+    host_enforcement_path.write_text(
+        json.dumps(host_enforcement_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    append_host_enforcement_to_final_report(
+        report_path=output_dir / "final_report.md",
+        snapshot=host_enforcement_snapshot,
+    )
     session_boundary_snapshot = build_session_boundary_snapshot(shared_state=shared_state)
     session_boundary_path = output_dir / SESSION_BOUNDARY_FILENAME
     session_boundary_path.write_text(
@@ -1238,6 +1290,7 @@ def write_artifacts(
         "lock_state_path": str(lock_path),
         "final_report_path": str(output_dir / "final_report.md"),
         "context_boundary_path": str(context_boundary_path),
+        "host_enforcement_path": str(host_enforcement_path),
         "session_boundary_path": str(session_boundary_path),
         "teammate_sessions_path": str(teammate_sessions_path),
         "team_progress_path": str(team_progress_path),

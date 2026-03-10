@@ -24,7 +24,7 @@ from ..core import (
     Task,
     TaskBoard,
 )
-from ..host import build_host_adapter
+from ..host import HOST_RUNTIME_ENFORCEMENT_KEY, build_host_adapter
 from ..models import LLMProvider, build_provider
 from ..transports.inprocess import InProcessTeammateAgent
 from ..workflows import (
@@ -349,6 +349,11 @@ def run_team(
         truncate_events = False
     logger = EventLogger(output_dir=output_dir, truncate=truncate_events)
     host_adapter = build_host_adapter(effective_agent_team_config.host)
+    host_metadata = host_adapter.runtime_metadata()
+    host_runtime_enforcement = host_adapter.runtime_enforcement(
+        runtime_config=runtime_config,
+        policies=effective_agent_team_config.policies,
+    )
 
     provider, provider_meta = build_provider(
         provider_name=effective_agent_team_config.model.provider_name,
@@ -401,7 +406,8 @@ def run_team(
         target_dir=str(target_dir),
         output_dir=str(output_dir),
         provider=provider_meta.to_dict(),
-        host=host_adapter.runtime_metadata(),
+        host=host_metadata,
+        host_runtime_enforcement=host_runtime_enforcement,
         workflow=effective_agent_team_config.workflow.to_dict(),
         workflow_runtime_metadata={
             "lead_task_order": lead_task_order,
@@ -452,7 +458,9 @@ def run_team(
         restore_shared_state_from_checkpoint_payload(shared_state=shared_state, checkpoint_payload=resume_payload)
     shared_state.set("lead_name", lead_name)
     shared_state.set("agent_team_config", effective_agent_team_config.to_dict())
-    shared_state.set("host", host_adapter.runtime_metadata())
+    shared_state.set("host", host_metadata)
+    shared_state.set(HOST_RUNTIME_ENFORCEMENT_KEY, host_runtime_enforcement)
+    logger.log("host_runtime_enforcement_resolved", **host_runtime_enforcement)
     shared_state.set("team", effective_agent_team_config.team.to_dict())
     shared_state.set("workflow", effective_agent_team_config.workflow.to_dict())
     shared_state.set("workflow_lead_task_order", lead_task_order)

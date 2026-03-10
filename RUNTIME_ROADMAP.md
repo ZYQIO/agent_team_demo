@@ -70,6 +70,7 @@ The intended architecture is now:
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
 | Tmux target snapshot isolation | Completed | Tmux-mode workers now rewrite `target_dir` reads to a stable session-local source snapshot and persist the isolated `workspace_target_dir` in session artifacts. |
 | Tmux execution-root isolation | Completed | Tmux-mode workers now execute with session-local `cwd`, `HOME`, cache/config dirs, and subprocess fallback workdirs surfaced in session artifacts. |
+| Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions. |
 | Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
@@ -579,6 +580,7 @@ Completed slice:
 - Added task-scoped shared-state views so teammate execution receives explicit bounded context instead of the full shared-state snapshot
 - Added `task_context_prepared` events plus `context_boundaries.json` for per-agent/task visibility auditing
 - Added a durable teammate session ledger so every agent now has a persistent session id, transport, recent tasks, recent messages, and provider memory snapshot in runtime artifacts
+- Added `host_enforcement.json` so advertised host capabilities are separated from runtime-active enforcement decisions
 - Added `session_boundaries.json` and final-report summaries so host/session isolation posture is explicit instead of implicit in host metadata and transport internals
 - Verified tmux mode still passes smoke and artifact validation
 

@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Mapping, Optional
 
 from ..config import RuntimeConfig
 from ..core import AgentProfile, Message, SharedState, Task, utc_now
+from ..host import build_host_enforcement_snapshot
 
 
 TEAMMATE_SESSIONS_KEY = "teammate_sessions"
@@ -470,8 +471,8 @@ def build_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any
 
 
 def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]:
-    state_snapshot = shared_state.snapshot()
-    host = state_snapshot.get("host", {})
+    host_enforcement = build_host_enforcement_snapshot(shared_state=shared_state)
+    host = host_enforcement.get("host", {})
     if not isinstance(host, Mapping):
         host = {}
     host_capabilities = host.get("capabilities", {})
@@ -485,13 +486,17 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
     host_independent_sessions = bool(host_capabilities.get("independent_sessions", False))
     host_workspace_isolation = bool(host_capabilities.get("workspace_isolation", False))
     host_session_transport = str(host.get("session_transport", "") or "")
+    host_native_session_active = bool(host_enforcement.get("host_native_session_active", False))
+    host_native_workspace_active = bool(host_enforcement.get("host_native_workspace_active", False))
+    host_session_enforcement = str(host_enforcement.get("session_enforcement", "") or "runtime_managed")
+    host_workspace_enforcement = str(host_enforcement.get("workspace_enforcement", "") or "runtime_managed")
     for session in teammate_sessions.get("sessions", []):
         if not isinstance(session, Mapping):
             continue
         transport = str(session.get("transport", "") or "unknown")
         notes: List[str] = []
         workspace_isolation_active = bool(session.get("workspace_isolation_active", False))
-        if host_independent_sessions:
+        if host_native_session_active:
             boundary_mode = "host_native_session"
             boundary_strength = "strong"
             isolation_source = "host"
@@ -517,6 +522,10 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             notes.append("workspace_isolation_unavailable")
         if not host_independent_sessions:
             notes.append("host_independent_sessions_unavailable")
+        if host_independent_sessions and not host_native_session_active:
+            notes.append("host_independent_sessions_advertised_only")
+        if host_workspace_isolation and not host_native_workspace_active:
+            notes.append("host_workspace_isolation_advertised_only")
         if workspace_isolation_active:
             notes.append("session_workspace_scoped_tmpdir")
         if str(session.get("workspace_workdir", "") or ""):
@@ -537,6 +546,10 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             "host_session_transport": host_session_transport,
             "host_independent_sessions": host_independent_sessions,
             "host_workspace_isolation": host_workspace_isolation,
+            "host_session_enforcement": host_session_enforcement,
+            "host_workspace_enforcement": host_workspace_enforcement,
+            "host_native_session_active": host_native_session_active,
+            "host_native_workspace_active": host_native_workspace_active,
             "workspace_root": str(session.get("workspace_root", "") or ""),
             "workspace_workdir": str(session.get("workspace_workdir", "") or ""),
             "workspace_home_dir": str(session.get("workspace_home_dir", "") or ""),
@@ -565,6 +578,16 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             "capabilities": dict(host_capabilities),
             "limits": list(host.get("limits", [])) if isinstance(host.get("limits", []), list) else [],
             "note": str(host.get("note", "") or ""),
+        },
+        "host_runtime_enforcement": {
+            "requested_teammate_mode": str(host_enforcement.get("requested_teammate_mode", "") or "in-process"),
+            "session_enforcement": host_session_enforcement,
+            "workspace_enforcement": host_workspace_enforcement,
+            "host_native_session_active": host_native_session_active,
+            "host_native_workspace_active": host_native_workspace_active,
+            "effective_boundary_source": str(host_enforcement.get("effective_boundary_source", "") or "runtime"),
+            "effective_boundary_strength": str(host_enforcement.get("effective_boundary_strength", "") or "emulated"),
+            "notes": list(host_enforcement.get("notes", [])) if isinstance(host_enforcement.get("notes", []), list) else [],
         },
         "session_count": len(session_boundaries),
         "boundary_mode_counts": boundary_mode_counts,

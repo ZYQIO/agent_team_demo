@@ -1,3 +1,4 @@
+from ..host import build_host_enforcement_snapshot
 from .adjudication import (
     build_targeted_evidence_question,
     compute_adjudication,
@@ -22,6 +23,7 @@ from .persistence import (
     CHECKPOINT_HISTORY_DIRNAME,
     CHECKPOINT_VERSION,
     CONTEXT_BOUNDARY_FILENAME,
+    HOST_ENFORCEMENT_FILENAME,
     TEAM_PROGRESS_FILENAME,
     TEAM_PROGRESS_REPORT_FILENAME,
     build_context_boundary_summary,
@@ -54,12 +56,14 @@ __all__ = [
     "CHECKPOINT_HISTORY_DIRNAME",
     "CHECKPOINT_VERSION",
     "CONTEXT_BOUNDARY_FILENAME",
+    "HOST_ENFORCEMENT_FILENAME",
     "SESSION_BOUNDARY_FILENAME",
     "ScopedSharedState",
     "TEAMMATE_SESSIONS_FILENAME",
     "TEAM_PROGRESS_FILENAME",
     "TEAM_PROGRESS_REPORT_FILENAME",
     "TeammateSessionRegistry",
+    "build_host_enforcement_snapshot",
     "build_targeted_evidence_question",
     "build_context_boundary_summary",
     "build_session_boundary_snapshot",
