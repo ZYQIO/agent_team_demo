@@ -59,7 +59,7 @@ def _default_runtime_enforcement(
         effective_boundary_source = "transport"
         effective_boundary_strength = "medium"
         notes.append("subprocess_transport_manages_session_boundaries")
-        notes.append("transport_isolation_partial_to_analyst_workers")
+        notes.append("transport_isolation_partial_to_selected_worker_tasks")
     else:
         session_enforcement = "runtime_managed"
         workspace_enforcement = "runtime_managed"
@@ -153,7 +153,7 @@ class HostAdapter:
             session_enforcement = "transport_managed"
             host_native_session_active = False
             notes.append("subprocess_transport_manages_session_boundaries")
-            notes.append("transport_isolation_partial_to_analyst_workers")
+            notes.append("transport_isolation_partial_to_selected_worker_tasks")
         else:
             session_enforcement = "runtime_managed"
             host_native_session_active = False

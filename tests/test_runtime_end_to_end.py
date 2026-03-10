@@ -602,7 +602,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(host_enforcement.get("session_enforcement"), "transport_managed")
             self.assertEqual(host_enforcement.get("workspace_enforcement"), "transport_managed")
             self.assertIn(
-                "transport_isolation_partial_to_analyst_workers",
+                "transport_isolation_partial_to_selected_worker_tasks",
                 host_enforcement.get("notes", []),
             )
 
@@ -611,23 +611,45 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertGreaterEqual(
                 session_boundaries.get("boundary_mode_counts", {}).get("worker_subprocess_session", 0),
-                1,
-            )
-            self.assertGreaterEqual(
-                session_boundaries.get("boundary_mode_counts", {}).get("runtime_emulated_session", 0),
-                1,
+                2,
             )
             subprocess_boundaries = [
                 item
                 for item in session_boundaries.get("sessions", [])
-                if isinstance(item, dict) and item.get("transport") == "subprocess"
+                if isinstance(item, dict) and item.get("boundary_mode") == "worker_subprocess_session"
             ]
-            self.assertGreaterEqual(len(subprocess_boundaries), 1)
+            self.assertGreaterEqual(len(subprocess_boundaries), 2)
             first_boundary = subprocess_boundaries[0]
             self.assertTrue(first_boundary.get("workspace_isolation_active"))
             self.assertTrue(first_boundary.get("workspace_workdir"))
             self.assertTrue(first_boundary.get("workspace_home_dir"))
             self.assertTrue(first_boundary.get("workspace_target_dir"))
+
+            teammate_sessions = json.loads(
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")
+            )
+            reviewer_sessions = [
+                item
+                for item in teammate_sessions.get("sessions", [])
+                if isinstance(item, dict) and item.get("agent_type") == "reviewer"
+            ]
+            self.assertEqual(len(reviewer_sessions), 1)
+            reviewer_history = reviewer_sessions[0].get("task_history", [])
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "dynamic_planning" and entry.get("transport") == "subprocess"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "recommendation_pack" and entry.get("transport") == "subprocess"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+            self.assertIn("subprocess_worker_task_completed", event_names)
 
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("tmux_session_cleanup_summary_path", ""), "")

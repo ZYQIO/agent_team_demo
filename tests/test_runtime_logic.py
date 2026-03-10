@@ -2063,6 +2063,164 @@ class RuntimeLogicTests(unittest.TestCase):
             diagnostics = result.get("diagnostics", {})
             self.assertEqual(diagnostics.get("tmux_session_workspace_target_status"), "created")
 
+    def test_run_tmux_worker_payload_plans_dynamic_reviewer_followups(self) -> None:
+        result = runtime.run_tmux_worker_payload(
+            {
+                "task_type": "dynamic_planning",
+                "task_payload": {},
+                "shared_state": {
+                    "heading_issues": [{"path": "a.md"}],
+                    "length_issues": [{"path": "b.md"}],
+                },
+                "board_snapshot": {
+                    "tasks": [
+                        {"task_id": "dynamic_planning"},
+                        {"task_id": "peer_challenge"},
+                    ]
+                },
+                "runtime_config": {"enable_dynamic_tasks": True},
+            }
+        )
+
+        self.assertEqual(
+            result.get("result", {}).get("inserted_tasks"),
+            ["heading_structure_followup", "length_risk_followup"],
+        )
+        insert_tasks = result.get("task_mutations", {}).get("insert_tasks", [])
+        self.assertEqual(
+            [item.get("task_id") for item in insert_tasks],
+            ["heading_structure_followup", "length_risk_followup"],
+        )
+        add_dependencies = result.get("task_mutations", {}).get("add_dependencies", [])
+        self.assertEqual(
+            [item.get("dependency_id") for item in add_dependencies],
+            ["heading_structure_followup", "length_risk_followup"],
+        )
+
+    def test_run_tmux_worker_payload_plans_repo_dynamic_reviewer_followups(self) -> None:
+        result = runtime.run_tmux_worker_payload(
+            {
+                "task_type": "repo_dynamic_planning",
+                "task_payload": {},
+                "shared_state": {
+                    "repository_inventory": [
+                        {"top_level_dir": "src"},
+                        {"top_level_dir": "docs"},
+                    ],
+                    "repository_extension_summary": {"unique_extensions": 3},
+                    "repository_large_files": [{"path": "big.bin"}],
+                },
+                "board_snapshot": {
+                    "tasks": [
+                        {"task_id": "repo_dynamic_planning"},
+                        {"task_id": "peer_challenge"},
+                    ]
+                },
+                "runtime_config": {"enable_dynamic_tasks": True},
+            }
+        )
+
+        self.assertEqual(
+            result.get("result", {}).get("inserted_tasks"),
+            ["extension_hotspot_followup", "directory_hotspot_followup"],
+        )
+        insert_tasks = result.get("task_mutations", {}).get("insert_tasks", [])
+        self.assertEqual(
+            [item.get("task_id") for item in insert_tasks],
+            ["extension_hotspot_followup", "directory_hotspot_followup"],
+        )
+
+    def test_run_tmux_worker_payload_writes_markdown_recommendation_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            report_path = output_dir / "final_report.md"
+            result = runtime.run_tmux_worker_payload(
+                {
+                    "task_type": "recommendation_pack",
+                    "goal": "Audit markdown quality",
+                    "output_dir": str(output_dir),
+                    "task_context": {
+                        "visible_shared_state": {
+                            "dynamic_plan": {"enabled": True, "inserted_tasks": ["heading_structure_followup"]},
+                            "markdown_inventory": [{"path": "docs/a.md"}],
+                            "heading_issues": [{"path": "docs/a.md"}],
+                            "length_issues": [{"path": "docs/b.md", "line_count": 240}],
+                            "peer_challenge": {},
+                            "lead_adjudication": {"verdict": "challenge", "score": 61},
+                            "evidence_pack": {"triggered": False, "reason": "not required"},
+                            "lead_re_adjudication": {"verdict": "accept", "score": 79, "rationale": "covered"},
+                            "llm_synthesis": {
+                                "content": "- Fix headings first",
+                                "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                            },
+                        }
+                    },
+                    "board_snapshot": {
+                        "tasks": [
+                            {"task_id": "heading_audit", "result": {"files_without_headings": 1}},
+                            {"task_id": "length_audit", "result": {"long_files": 1}},
+                        ]
+                    },
+                }
+            )
+
+            written_report_path = pathlib.Path(str(result.get("result", {}).get("report_path", "")))
+            self.assertEqual(written_report_path.name, report_path.name)
+            self.assertTrue(written_report_path.exists())
+            self.assertTrue(report_path.exists())
+            report = report_path.read_text(encoding="utf-8")
+            self.assertIn("# Agent Team Report", report)
+            self.assertIn("## Recommended Actions", report)
+            self.assertIn("- Fix headings first", report)
+
+    def test_run_tmux_worker_payload_writes_repo_recommendation_report(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            report_path = output_dir / "final_report.md"
+            result = runtime.run_tmux_worker_payload(
+                {
+                    "task_type": "repo_recommendation_pack",
+                    "goal": "Audit repository layout",
+                    "output_dir": str(output_dir),
+                    "task_context": {
+                        "visible_shared_state": {
+                            "repository_inventory": [{"path": "src/app.py"}, {"path": "docs/readme.md"}],
+                            "repository_extension_summary": {
+                                "unique_extensions": 2,
+                                "files_without_extension": 0,
+                                "top_extensions": [{"extension": ".py", "file_count": 3, "total_lines": 180}],
+                            },
+                            "repository_large_files": [{"path": "src/big.py", "line_count": 360, "byte_count": 22000}],
+                            "repo_dynamic_plan": {"enabled": True, "inserted_tasks": ["extension_hotspot_followup"]},
+                            "repo_extension_hotspots": {"extension_hotspots": [{"extension": ".py", "file_count": 3, "total_lines": 180}]},
+                            "repo_directory_hotspots": {"busiest_directories": [{"top_level_dir": "src", "file_count": 3, "total_lines": 180}]},
+                            "peer_challenge": {},
+                            "lead_adjudication": {"verdict": "challenge", "score": 63},
+                            "evidence_pack": {"triggered": False, "reason": "not required"},
+                            "lead_re_adjudication": {"verdict": "accept", "score": 81, "rationale": "covered"},
+                            "llm_synthesis": {
+                                "content": "- Reduce oversized files",
+                                "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                            },
+                        }
+                    },
+                    "board_snapshot": {
+                        "tasks": [
+                            {"task_id": "large_file_audit", "result": {"oversized_files": 1}},
+                        ]
+                    },
+                }
+            )
+
+            written_report_path = pathlib.Path(str(result.get("result", {}).get("report_path", "")))
+            self.assertEqual(written_report_path.name, report_path.name)
+            self.assertTrue(written_report_path.exists())
+            self.assertTrue(report_path.exists())
+            report = report_path.read_text(encoding="utf-8")
+            self.assertIn("# Agent Team Report", report)
+            self.assertIn("## Recommended Actions", report)
+            self.assertIn("- Reduce oversized files", report)
+
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -2959,6 +3117,144 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(started[-1].get("transport"), "subprocess")
             self.assertEqual(stopped[-1].get("transport"), "subprocess")
 
+    def test_reviewer_dynamic_planning_can_run_in_subprocess_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="Plan follow-up work",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("heading_issues", [{"path": "a.md"}])
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="in-process")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="subprocess"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=threading.Event(),
+                claim_tasks=True,
+                handlers={"dynamic_planning": runtime.handle_dynamic_planning},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+            claimed = board.claim_specific(
+                task_id="dynamic_planning",
+                agent_name=profile.name,
+                agent_skills=profile.skills,
+                agent_type=profile.agent_type,
+            )
+            self.assertIsNotNone(claimed)
+            fake_execution = {
+                "ok": True,
+                "transport": "subprocess",
+                "payload": {
+                    "result": {
+                        "enabled": True,
+                        "inserted_tasks": ["heading_structure_followup"],
+                        "peer_challenge_dependencies_added": ["heading_structure_followup"],
+                    },
+                    "state_updates": {
+                        "dynamic_plan": {
+                            "enabled": True,
+                            "inserted_tasks": ["heading_structure_followup"],
+                            "peer_challenge_dependencies_added": ["heading_structure_followup"],
+                        }
+                    },
+                    "task_mutations": {
+                        "insert_tasks": [
+                            {
+                                "task_id": "heading_structure_followup",
+                                "title": "Run heading structure follow-up audit",
+                                "task_type": "heading_structure_followup",
+                                "required_skills": ["analysis"],
+                                "dependencies": ["dynamic_planning"],
+                                "payload": {"top_n": 8},
+                                "locked_paths": [],
+                                "allowed_agent_types": ["analyst"],
+                            }
+                        ],
+                        "add_dependencies": [
+                            {
+                                "task_id": "peer_challenge",
+                                "dependency_id": "heading_structure_followup",
+                            }
+                        ],
+                    },
+                },
+                "diagnostics": {
+                    "tmux_session_workspace_root": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer"),
+                    "tmux_session_workspace_workdir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "target_snapshot"),
+                    "tmux_session_workspace_home_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "home"),
+                    "tmux_session_workspace_target_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "target_snapshot"),
+                    "tmux_session_workspace_tmp_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "tmp"),
+                    "tmux_session_workspace_scope": "tmux_session_workspace",
+                    "tmux_session_workspace_isolated": True,
+                },
+            }
+            with mock.patch.object(runtime.tmux_transport, "run_tmux_worker_task", return_value=fake_execution):
+                agent._run_task(claimed)
+
+            board_snapshot = board.snapshot()
+            task_statuses = {item["task_id"]: item for item in board_snapshot.get("tasks", [])}
+            self.assertEqual(task_statuses["dynamic_planning"]["status"], "completed")
+            self.assertIn("heading_structure_followup", task_statuses)
+            self.assertIn("heading_structure_followup", task_statuses["peer_challenge"]["dependencies"])
+            session = registry.session_for("reviewer_gamma")
+            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertEqual(session.get("task_history", [])[-1].get("transport"), "subprocess")
+            self.assertEqual(shared_state.get("dynamic_plan", {}).get("inserted_tasks"), ["heading_structure_followup"])
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_names = {item.get("event") for item in events}
+            self.assertIn("subprocess_worker_task_dispatched", event_names)
+            self.assertIn("subprocess_worker_task_completed", event_names)
+
     def test_build_host_enforcement_snapshot_marks_subprocess_mode_transport_managed(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -2983,7 +3279,7 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(snapshot["workspace_enforcement"], "transport_managed")
         self.assertFalse(snapshot["host_native_session_active"])
         self.assertIn("subprocess_transport_manages_session_boundaries", snapshot["notes"])
-        self.assertIn("transport_isolation_partial_to_analyst_workers", snapshot["notes"])
+        self.assertIn("transport_isolation_partial_to_selected_worker_tasks", snapshot["notes"])
 
     def test_build_host_enforcement_snapshot_defaults_to_runtime_managed_when_host_only_advertises_capabilities(
         self,

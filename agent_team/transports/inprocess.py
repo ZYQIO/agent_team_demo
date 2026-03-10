@@ -7,8 +7,12 @@ import time
 from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping
 
-from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task
+from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
+from . import tmux as tmux_transport
+
+
+SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -121,114 +125,130 @@ class InProcessTeammateAgent(threading.Thread):
             )
             return fallback_reply
 
+    def _task_transport(self, task: Task) -> str:
+        if (
+            self.context.runtime_config.teammate_mode == "subprocess"
+            and self.context.profile.agent_type == "reviewer"
+            and task.task_type in SUBPROCESS_REVIEWER_TASK_TYPES
+            and getattr(self.context, "runtime_script", None) is not None
+        ):
+            return "subprocess"
+        return "in-process"
+
+    def _apply_worker_task_mutations(self, task: Task, result: Any, state_updates: Any, task_mutations: Any, original_shared_state: Any) -> Dict[str, Any]:
+        normalized_state_updates = state_updates if isinstance(state_updates, dict) else {}
+        normalized_mutations = task_mutations if isinstance(task_mutations, dict) else {}
+        normalized_result = result if isinstance(result, dict) else {"raw_result": result}
+        inserted_task_ids: List[str] = []
+        added_dependency_ids: List[str] = []
+        raw_insert_tasks = normalized_mutations.get("insert_tasks", [])
+        if isinstance(raw_insert_tasks, list):
+            tasks_to_insert = [task_from_dict(item) for item in raw_insert_tasks if isinstance(item, dict)]
+            if tasks_to_insert:
+                inserted_task_ids = self.context.board.add_tasks(tasks=tasks_to_insert, inserted_by=self.context.profile.name)
+        raw_dependencies = normalized_mutations.get("add_dependencies", [])
+        if isinstance(raw_dependencies, list):
+            for item in raw_dependencies:
+                if not isinstance(item, dict):
+                    continue
+                task_id = str(item.get("task_id", "") or "")
+                dependency_id = str(item.get("dependency_id", "") or "")
+                if not task_id or not dependency_id:
+                    continue
+                if self.context.board.add_dependency(task_id=task_id, dependency_id=dependency_id, updated_by=self.context.profile.name):
+                    added_dependency_ids.append(dependency_id)
+        state_update_key = "dynamic_plan" if task.task_type == "dynamic_planning" else "repo_dynamic_plan" if task.task_type == "repo_dynamic_planning" else ""
+        if state_update_key and isinstance(normalized_result, dict):
+            normalized_result["inserted_tasks"] = inserted_task_ids
+            normalized_result["peer_challenge_dependencies_added"] = added_dependency_ids
+            state_value = normalized_state_updates.get(state_update_key)
+            if isinstance(state_value, dict):
+                state_value["inserted_tasks"] = list(inserted_task_ids)
+                state_value["peer_challenge_dependencies_added"] = list(added_dependency_ids)
+        for key, value in normalized_state_updates.items():
+            original_shared_state.set(str(key), value)
+        return normalized_result
+
+    def _run_subprocess_worker_task(self, task: Task, task_context: Dict[str, Any], original_shared_state: Any) -> Dict[str, Any]:
+        runtime_script = getattr(self.context, "runtime_script", None)
+        if runtime_script is None:
+            raise RuntimeError("runtime_script unavailable for subprocess worker task")
+        payload = {
+            "task_type": task.task_type,
+            "task_payload": task.payload,
+            "target_dir": str(self.context.target_dir),
+            "output_dir": str(self.context.output_dir),
+            "goal": self.context.goal,
+            "task_context": task_context,
+            "shared_state": task_context.get("visible_shared_state", {}),
+            "board_snapshot": self.context.board.snapshot(),
+            "runtime_config": self.context.runtime_config.to_dict(),
+        }
+        if self.context.session_registry is not None:
+            payload["session_state"] = dict(self.context.session_state)
+        self.context.logger.log("subprocess_worker_task_dispatched", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type)
+        execution = tmux_transport.run_tmux_worker_task(
+            runtime_script=pathlib.Path(runtime_script).resolve(),
+            output_dir=self.context.output_dir,
+            runtime_config=self.context.runtime_config,
+            payload=payload,
+            worker_name=self.context.profile.name,
+            logger=self.context.logger,
+            timeout_sec=int(self.context.runtime_config.tmux_worker_timeout_sec),
+        )
+        execution_diagnostics = execution.get("diagnostics", {})
+        transport_used = str(execution.get("transport", "") or "subprocess")
+        if self.context.session_registry is not None and isinstance(execution_diagnostics, dict):
+            tmux_transport.record_worker_boundary_from_diagnostics(lead_context=self.context, worker_name=self.context.profile.name, transport=transport_used, execution_diagnostics=execution_diagnostics)
+        if not execution.get("ok"):
+            error = str(execution.get("error", "unknown worker error"))
+            self.context.logger.log("subprocess_worker_task_failed", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, transport=transport_used, error=error)
+            raise RuntimeError(error)
+        worker_payload = execution.get("payload", {})
+        if not isinstance(worker_payload, dict):
+            worker_payload = {}
+        result = self._apply_worker_task_mutations(task=task, result=worker_payload.get("result", {}), state_updates=worker_payload.get("state_updates", {}), task_mutations=worker_payload.get("task_mutations", {}), original_shared_state=original_shared_state)
+        self.context.logger.log("subprocess_worker_task_completed", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, transport=transport_used)
+        return result
+
     def _run_task(self, task: Task) -> None:
         lock_paths = [str(pathlib.Path(path).resolve()) for path in task.locked_paths]
         if lock_paths and not self.context.file_locks.acquire(self.context.profile.name, lock_paths):
-            self.context.board.defer(
-                task_id=task.task_id,
-                owner=self.context.profile.name,
-                reason="file lock unavailable",
-            )
+            self.context.board.defer(task_id=task.task_id, owner=self.context.profile.name, reason="file lock unavailable")
             time.sleep(0.1)
             return
-
-        self.context.logger.log(
-            "task_started",
-            task_id=task.task_id,
-            agent=self.context.profile.name,
-            task_type=task.task_type,
-        )
-        self.context.mailbox.send(
-            sender=self.context.profile.name,
-            recipient=self._get_lead_name_fn(self.context),
-            subject="task_started",
-            body=f"{self.context.profile.name} started {task.task_id}",
-            task_id=task.task_id,
-        )
+        self.context.logger.log("task_started", task_id=task.task_id, agent=self.context.profile.name, task_type=task.task_type)
+        self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_started", body=f"{self.context.profile.name} started {task.task_id}", task_id=task.task_id)
         handler = self._handlers.get(task.task_type)
         if handler is None:
             error = f"no handler registered for task_type={task.task_type}"
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
-            self.context.mailbox.send(
-                sender=self.context.profile.name,
-                recipient=self._get_lead_name_fn(self.context),
-                subject="task_failed",
-                body=error,
-                task_id=task.task_id,
-            )
+            self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_failed", body=error, task_id=task.task_id)
             if lock_paths:
                 self.context.file_locks.release(self.context.profile.name, lock_paths)
             return
-
         original_shared_state = self.context.shared_state
         task_context = build_task_context_snapshot(self.context, task)
-        scoped_shared_state = ScopedSharedState(
-            _underlying=original_shared_state,
-            _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
-        )
+        scoped_shared_state = ScopedSharedState(_underlying=original_shared_state, _visible_keys=set(task_context.get("visible_shared_state_keys", [])))
+        task_transport = self._task_transport(task)
         if self.context.session_registry is not None:
-            self.context.session_state = self.context.session_registry.bind_task(
-                agent_name=self.context.profile.name,
-                task=task,
-                transport="in-process",
-                task_context=task_context,
-            )
+            self.context.session_state = self.context.session_registry.bind_task(agent_name=self.context.profile.name, task=task, transport=task_transport, task_context=task_context)
         self.context.task_context = task_context
         self.context.shared_state = scoped_shared_state
-        self.context.logger.log(
-            "task_context_prepared",
-            agent=self.context.profile.name,
-            task_id=task.task_id,
-            task_type=task.task_type,
-            scope=str(task_context.get("scope", "")),
-            visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])),
-            visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)),
-            omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)),
-            dependency_task_ids=list(task_context.get("dependencies", [])),
-            transport="in-process",
-        )
+        self.context.logger.log("task_context_prepared", agent=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, scope=str(task_context.get("scope", "")), visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])), visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)), omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)), dependency_task_ids=list(task_context.get("dependencies", [])), transport=task_transport)
         try:
-            result = handler(self.context, task)
+            result = self._run_subprocess_worker_task(task=task, task_context=task_context, original_shared_state=original_shared_state) if task_transport == "subprocess" else handler(self.context, task)
             if self.context.session_registry is not None:
-                self.context.session_state = self.context.session_registry.record_task_result(
-                    agent_name=self.context.profile.name,
-                    task=task,
-                    transport="in-process",
-                    success=True,
-                    status="ready",
-                )
+                self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=True, status="ready")
             self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
-            self.context.mailbox.send(
-                sender=self.context.profile.name,
-                recipient=self._get_lead_name_fn(self.context),
-                subject="task_completed",
-                body=f"{task.task_id} done",
-                task_id=task.task_id,
-            )
+            self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_completed", body=f"{task.task_id} done", task_id=task.task_id)
         except Exception as exc:  # pragma: no cover - defensive path
             error = f"{type(exc).__name__}: {exc}"
             if self.context.session_registry is not None:
-                self.context.session_state = self.context.session_registry.record_task_result(
-                    agent_name=self.context.profile.name,
-                    task=task,
-                    transport="in-process",
-                    success=False,
-                    status="error",
-                )
+                self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=False, status="error")
             self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
-            self.context.mailbox.send(
-                sender=self.context.profile.name,
-                recipient=self._get_lead_name_fn(self.context),
-                subject="task_failed",
-                body=error,
-                task_id=task.task_id,
-            )
-            self.context.logger.log(
-                "task_exception",
-                task_id=task.task_id,
-                agent=self.context.profile.name,
-                traceback=self._traceback_module.format_exc(),
-            )
+            self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_failed", body=error, task_id=task.task_id)
+            self.context.logger.log("task_exception", task_id=task.task_id, agent=self.context.profile.name, traceback=self._traceback_module.format_exc())
         finally:
             self.context.shared_state = original_shared_state
             self.context.task_context = {}

@@ -9,6 +9,7 @@ import subprocess
 import sys
 import time
 import uuid
+from types import SimpleNamespace
 from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 from ..config import RuntimeConfig
@@ -27,6 +28,12 @@ TMUX_ANALYST_TASK_TYPES = {
     "length_risk_followup",
     "extension_hotspot_followup",
     "directory_hotspot_followup",
+}
+SUBPROCESS_REVIEWER_TASK_TYPES = {
+    "dynamic_planning",
+    "repo_dynamic_planning",
+    "recommendation_pack",
+    "repo_recommendation_pack",
 }
 TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
 TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
@@ -193,7 +200,7 @@ def _sync_session_boundary_from_lease(
     )
 
 
-def _record_worker_boundary_from_diagnostics(
+def record_worker_boundary_from_diagnostics(
     lead_context: Any,
     worker_name: str,
     transport: str,
@@ -1253,6 +1260,157 @@ def _worker_directory_hotspot_followup(inventory: List[Dict[str, Any]], top_n: i
     }
 
 
+def _board_task_ids_from_snapshot(board_snapshot: Dict[str, Any]) -> set[str]:
+    task_ids: set[str] = set()
+    if not isinstance(board_snapshot, dict):
+        return task_ids
+    for item in board_snapshot.get("tasks", []):
+        if isinstance(item, dict):
+            task_id = str(item.get("task_id", "") or "")
+            if task_id:
+                task_ids.add(task_id)
+    return task_ids
+
+
+def _board_task_result_from_snapshot(board_snapshot: Dict[str, Any], task_id: str) -> Any:
+    if not isinstance(board_snapshot, dict):
+        return {}
+    wanted = str(task_id or "")
+    for item in board_snapshot.get("tasks", []):
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("task_id", "") or "") != wanted:
+            continue
+        result = item.get("result", {})
+        if isinstance(result, dict):
+            return dict(result)
+        return result
+    return {}
+
+
+class _WorkerBoardSnapshot:
+    def __init__(self, board_snapshot: Dict[str, Any]) -> None:
+        self._board_snapshot = dict(board_snapshot) if isinstance(board_snapshot, dict) else {}
+
+    def get_task_result(self, task_id: str) -> Any:
+        return _board_task_result_from_snapshot(self._board_snapshot, task_id)
+
+
+class _WorkerSharedStateView:
+    def __init__(self, shared_state: Dict[str, Any]) -> None:
+        self._shared_state = dict(shared_state) if isinstance(shared_state, dict) else {}
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return self._shared_state.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        self._shared_state[str(key)] = value
+
+
+def _build_worker_reporting_context(
+    goal: str,
+    output_dir: pathlib.Path,
+    board_snapshot: Dict[str, Any],
+    shared_state: Dict[str, Any],
+) -> Any:
+    return SimpleNamespace(
+        goal=str(goal or ""),
+        output_dir=output_dir,
+        board=_WorkerBoardSnapshot(board_snapshot),
+        shared_state=_WorkerSharedStateView(shared_state),
+    )
+
+
+def _worker_recommendation_pack(
+    goal: str,
+    output_dir: pathlib.Path,
+    board_snapshot: Dict[str, Any],
+    shared_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    from ..workflows.markdown_audit_reporting import handle_recommendation_pack
+
+    context = _build_worker_reporting_context(
+        goal=goal,
+        output_dir=output_dir,
+        board_snapshot=board_snapshot,
+        shared_state=shared_state,
+    )
+    result = handle_recommendation_pack(context, None)
+    return {"result": result}
+
+
+def _worker_repo_recommendation_pack(
+    goal: str,
+    output_dir: pathlib.Path,
+    board_snapshot: Dict[str, Any],
+    shared_state: Dict[str, Any],
+) -> Dict[str, Any]:
+    from ..workflows.repo_audit_reporting import handle_repo_recommendation_pack
+
+    context = _build_worker_reporting_context(
+        goal=goal,
+        output_dir=output_dir,
+        board_snapshot=board_snapshot,
+        shared_state=shared_state,
+    )
+    result = handle_repo_recommendation_pack(context, None)
+    return {"result": result}
+
+
+def _worker_dynamic_planning(
+    shared_state: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+    board_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    heading_issues = shared_state.get("heading_issues", [])
+    if not isinstance(heading_issues, list):
+        heading_issues = []
+    length_issues = shared_state.get("length_issues", [])
+    if not isinstance(length_issues, list):
+        length_issues = []
+    if not bool(runtime_config.get("enable_dynamic_tasks", True)):
+        result = {"enabled": False, "reason": "dynamic task insertion disabled by runtime config", "inserted_tasks": [], "peer_challenge_dependencies_added": []}
+        return {"result": result, "state_updates": {"dynamic_plan": result}, "task_mutations": {"insert_tasks": [], "add_dependencies": []}}
+    existing_task_ids = _board_task_ids_from_snapshot(board_snapshot)
+    candidate_tasks: List[Dict[str, Any]] = []
+    if heading_issues and "heading_structure_followup" not in existing_task_ids:
+        candidate_tasks.append({"task_id": "heading_structure_followup", "title": "Run heading structure follow-up audit", "task_type": "heading_structure_followup", "required_skills": ["analysis"], "dependencies": ["dynamic_planning"], "payload": {"top_n": 8}, "locked_paths": [], "allowed_agent_types": ["analyst"]})
+    if length_issues and "length_risk_followup" not in existing_task_ids:
+        candidate_tasks.append({"task_id": "length_risk_followup", "title": "Run length risk follow-up audit", "task_type": "length_risk_followup", "required_skills": ["analysis"], "dependencies": ["dynamic_planning"], "payload": {"line_threshold": 180, "top_n": 8}, "locked_paths": [], "allowed_agent_types": ["analyst"]})
+    planned_ids = [str(item.get("task_id", "") or "") for item in candidate_tasks if str(item.get("task_id", "") or "")]
+    result = {"enabled": True, "inserted_tasks": planned_ids, "peer_challenge_dependencies_added": list(planned_ids), "heading_issue_count": len(heading_issues), "length_issue_count": len(length_issues)}
+    return {"result": result, "state_updates": {"dynamic_plan": result}, "task_mutations": {"insert_tasks": candidate_tasks, "add_dependencies": [{"task_id": "peer_challenge", "dependency_id": task_id} for task_id in planned_ids]}}
+
+
+def _worker_repo_dynamic_planning(
+    shared_state: Dict[str, Any],
+    runtime_config: Dict[str, Any],
+    board_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    inventory = shared_state.get("repository_inventory", [])
+    if not isinstance(inventory, list):
+        inventory = []
+    extension_summary = shared_state.get("repository_extension_summary", {})
+    if not isinstance(extension_summary, dict):
+        extension_summary = {}
+    large_files = shared_state.get("repository_large_files", [])
+    if not isinstance(large_files, list):
+        large_files = []
+    if not bool(runtime_config.get("enable_dynamic_tasks", True)):
+        result = {"enabled": False, "reason": "dynamic task insertion disabled by runtime config", "inserted_tasks": [], "peer_challenge_dependencies_added": []}
+        return {"result": result, "state_updates": {"repo_dynamic_plan": result}, "task_mutations": {"insert_tasks": [], "add_dependencies": []}}
+    existing_task_ids = _board_task_ids_from_snapshot(board_snapshot)
+    unique_directories = sorted({str(item.get("top_level_dir", ".") or ".") for item in inventory})
+    candidate_tasks: List[Dict[str, Any]] = []
+    if int(extension_summary.get("unique_extensions", 0)) >= 2 and "extension_hotspot_followup" not in existing_task_ids:
+        candidate_tasks.append({"task_id": "extension_hotspot_followup", "title": "Review repository extension hotspots", "task_type": "extension_hotspot_followup", "required_skills": ["analysis"], "dependencies": ["repo_dynamic_planning"], "payload": {"top_n": 6}, "locked_paths": [], "allowed_agent_types": ["analyst"]})
+    if (large_files or len(unique_directories) >= 2) and "directory_hotspot_followup" not in existing_task_ids:
+        candidate_tasks.append({"task_id": "directory_hotspot_followup", "title": "Review repository directory hotspots", "task_type": "directory_hotspot_followup", "required_skills": ["analysis"], "dependencies": ["repo_dynamic_planning"], "payload": {"top_n": 6}, "locked_paths": [], "allowed_agent_types": ["analyst"]})
+    planned_ids = [str(item.get("task_id", "") or "") for item in candidate_tasks if str(item.get("task_id", "") or "")]
+    result = {"enabled": True, "inserted_tasks": planned_ids, "peer_challenge_dependencies_added": list(planned_ids), "unique_directories": len(unique_directories), "unique_extensions": int(extension_summary.get("unique_extensions", 0)), "oversized_files": len(large_files)}
+    return {"result": result, "state_updates": {"repo_dynamic_plan": result}, "task_mutations": {"insert_tasks": candidate_tasks, "add_dependencies": [{"task_id": "peer_challenge", "dependency_id": task_id} for task_id in planned_ids]}}
+
+
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     task_type = str(payload.get("task_type", "")).strip()
     task_payload = payload.get("task_payload", {})
@@ -1264,6 +1422,13 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     shared_state = task_context.get("visible_shared_state", payload.get("shared_state", {}))
     if not isinstance(shared_state, dict):
         shared_state = {}
+    board_snapshot = payload.get("board_snapshot", {})
+    if not isinstance(board_snapshot, dict):
+        board_snapshot = {}
+    runtime_config = payload.get("runtime_config", {})
+    if not isinstance(runtime_config, dict):
+        runtime_config = {}
+    goal = str(payload.get("goal", "") or "")
 
     if task_type == "discover_markdown":
         target_dir = pathlib.Path(str(payload.get("target_dir", "."))).resolve()
@@ -1309,6 +1474,34 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if task_type == "directory_hotspot_followup":
         top_n = int(task_payload.get("top_n", 6))
         return _worker_directory_hotspot_followup(inventory=repository_inventory, top_n=top_n)
+    if task_type == "dynamic_planning":
+        return _worker_dynamic_planning(
+            shared_state=shared_state,
+            runtime_config=runtime_config,
+            board_snapshot=board_snapshot,
+        )
+    if task_type == "repo_dynamic_planning":
+        return _worker_repo_dynamic_planning(
+            shared_state=shared_state,
+            runtime_config=runtime_config,
+            board_snapshot=board_snapshot,
+        )
+    if task_type == "recommendation_pack":
+        output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()
+        return _worker_recommendation_pack(
+            goal=goal,
+            output_dir=output_dir,
+            board_snapshot=board_snapshot,
+            shared_state=shared_state,
+        )
+    if task_type == "repo_recommendation_pack":
+        output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()
+        return _worker_repo_recommendation_pack(
+            goal=goal,
+            output_dir=output_dir,
+            board_snapshot=board_snapshot,
+            shared_state=shared_state,
+        )
 
     raise ValueError(f"unsupported tmux worker task type: {task_type}")
 
@@ -2276,7 +2469,7 @@ def run_tmux_analyst_task_once(
                         status="error",
                     )
             elif lead_context.session_registry is not None:
-                _record_worker_boundary_from_diagnostics(
+                record_worker_boundary_from_diagnostics(
                     lead_context=lead_context,
                     worker_name=profile.name,
                     transport=transport or "subprocess",
@@ -2419,7 +2612,7 @@ def run_tmux_analyst_task_once(
                     status=session_status,
                 )
         elif lead_context.session_registry is not None:
-            _record_worker_boundary_from_diagnostics(
+            record_worker_boundary_from_diagnostics(
                 lead_context=lead_context,
                 worker_name=profile.name,
                 transport=transport or "subprocess",

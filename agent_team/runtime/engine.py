@@ -59,6 +59,7 @@ class AgentContext:
     file_locks: FileLockRegistry
     shared_state: SharedState
     logger: EventLogger
+    runtime_script: Optional[pathlib.Path] = None
     task_context: Dict[str, Any] = dataclasses.field(default_factory=dict)
     session_state: Dict[str, Any] = dataclasses.field(default_factory=dict)
     session_registry: Optional[TeammateSessionRegistry] = None
@@ -538,6 +539,7 @@ def run_team(
         file_locks=file_locks,
         shared_state=shared_state,
         logger=logger,
+        runtime_script=runtime_script_path,
         session_registry=session_registry,
     )
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
@@ -569,6 +571,7 @@ def run_team(
                 file_locks=file_locks,
                 shared_state=shared_state,
                 logger=logger,
+                runtime_script=runtime_script_path,
                 session_state=initial_session_states.get(profile.name, session_registry.session_for(profile.name)),
                 session_registry=session_registry,
             ),
