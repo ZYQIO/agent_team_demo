@@ -11,6 +11,11 @@ Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subproc
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 The next priority is reassessing mailbox-driven reviewer tasks without inventing fake isolation semantics.
 
+Direction review (2026-03-10):
+- the last three transport-focused rounds improved execution semantics
+- they did not drift into artifact-only work
+- the next priority remains mailbox-driven reviewer boundaries, and true external host sessions stay behind that design because both tracks need a believable mailbox transport story
+
 ## Priority Order
 
 ### 1. Move reviewer `llm_synthesis` into isolated worker execution
@@ -48,7 +53,7 @@ Validation evidence:
 - verifier green
 
 ### 3. Reassess reviewer mailbox tasks for isolation boundaries
-Status: Next
+Status: In Progress
 
 Scope:
 - `peer_challenge`
@@ -57,7 +62,29 @@ Scope:
 Rule:
 Only move these if the design preserves mailbox semantics and does not create a fake isolation story.
 
-### 4. Add true event-level replay
+Current findings:
+- the worker payload path is single-shot and only receives a shared-state snapshot plus task payload
+- `peer_challenge` and `evidence_pack` depend on live request/reply mailbox loops against long-lived teammate sessions
+- subprocess mode now has an explicit guardrail that keeps these task types on the parent mailbox path until a real mailbox transport exists
+
+Acceptance criteria:
+- decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions
+- document the mailbox contract required for external execution
+- keep regression coverage that prevents accidental subprocess offload before that contract exists
+
+### 4. Expand host transport toward true external teammate sessions
+Status: Pending
+
+Why:
+- host mode still executes handler logic inside the parent runtime
+- believable external host sessions need the mailbox boundary from priority 3 first
+
+Acceptance criteria:
+- teammate execution is no longer parent-inline bookkeeping only
+- mailbox-dependent reviewer flows have a real cross-boundary request/reply path
+- artifacts describe real execution, not just posture
+
+### 5. Add true event-level replay
 Status: Pending
 
 Why:

@@ -29,6 +29,13 @@ TMUX_ANALYST_TASK_TYPES = {
     "extension_hotspot_followup",
     "directory_hotspot_followup",
 }
+MAILBOX_REVIEWER_TASK_TYPES = {
+    "peer_challenge",
+    "evidence_pack",
+}
+# These reviewer tasks coordinate live mailbox request/reply loops with long-lived
+# teammate sessions. Do not move them onto the one-shot worker payload path until
+# the mailbox itself can cross process and host boundaries.
 SUBPROCESS_REVIEWER_TASK_TYPES = {
     "dynamic_planning",
     "repo_dynamic_planning",

@@ -74,6 +74,7 @@ The intended architecture is now:
 | Subprocess reviewer planning | Completed | Reviewer `dynamic_planning` and `repo_dynamic_planning` tasks now execute in isolated worker subprocesses that return task-mutation plans for the parent runtime to apply; mailbox-driven reviewer tasks still stay in-process. |
 | Subprocess reviewer reporting | Completed | Reviewer `recommendation_pack` and `repo_recommendation_pack` tasks now render the base `final_report.md` inside isolated worker subprocesses; mailbox-driven reviewer tasks still stay in-process. |
 | Subprocess reviewer llm synthesis | Completed | Reviewer `llm_synthesis` now rebuilds the configured provider inside isolated worker subprocesses and preserves the existing `llm_synthesis` shared-state contract for downstream report generation. |
+| Mailbox reviewer transport guardrail | Completed | `peer_challenge` and `evidence_pack` are now explicitly protected from accidental subprocess offload until mailbox request/reply semantics can cross process or host boundaries. |
 | Host transport skeleton | Completed | `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries in runtime artifacts. |
 | Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions. |
 | Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
@@ -409,10 +410,10 @@ Evidence review:
 
 Priority order for the next work:
 
-1. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
-   Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution.
-2. Reassess mailbox-driven reviewer tasks for isolation boundaries
-   Goal: decide whether `peer_challenge` and `evidence_pack` can move off the in-process path without breaking mailbox semantics.
+1. Reassess mailbox-driven reviewer tasks for isolation boundaries
+   Goal: decide whether `peer_challenge` and `evidence_pack` can move off the parent mailbox path without breaking live request/reply semantics.
+2. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
+   Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution after the mailbox boundary is defined.
 3. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 

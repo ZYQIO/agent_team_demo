@@ -115,6 +115,8 @@ from agent_team.models import build_provider
 
 
 TMUX_ANALYST_TASK_TYPES = tmux_transport.TMUX_ANALYST_TASK_TYPES
+MAILBOX_REVIEWER_TASK_TYPES = tmux_transport.MAILBOX_REVIEWER_TASK_TYPES
+SUBPROCESS_REVIEWER_TASK_TYPES = tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES
 
 
 def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:

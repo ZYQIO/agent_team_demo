@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Mailbox reviewer boundary review and guardrails
+- Goal: perform the first explicit direction review after the recent transport rounds and prevent reviewer mailbox tasks from drifting into fake subprocess isolation
+- Changes:
+  - reviewed the recent transport work and confirmed it improved execution semantics instead of drifting into artifact-only work
+  - codified `peer_challenge` and `evidence_pack` as mailbox-driven reviewer tasks that stay on the parent mailbox path in subprocess mode
+  - added regression coverage so mailbox-driven reviewer tasks cannot silently overlap with subprocess reviewer worker tasks
+  - updated `ACTIVE_PLAN.md`, `PROJECT_HANDOFF.md`, `README.md`, `PARITY.md`, and `RUNTIME_ROADMAP.md` so the next priority is the mailbox boundary design ahead of true external host sessions
+- Validation:
+  - full suite: `96/96` tests passed
+  - real CLI subprocess smoke passed: `.codex_tmp/smoke_output_mailbox_guardrail`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed reviewer `task_history` contains `peer_challenge=in-process`, `evidence_pack=in-process`, and `llm_synthesis=subprocess`
+- Commit: pending in working tree
+- Next implication: true external host-backed teammate execution now depends on a real mailbox transport contract instead of direct handler offload
+
 ### 2026-03-10 - Host teammate transport skeleton
 - Goal: make `host` mode execute through a real transport path instead of only describing host posture in artifacts
 - Changes:

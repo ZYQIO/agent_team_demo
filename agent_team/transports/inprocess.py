@@ -13,6 +13,7 @@ from . import tmux as tmux_transport
 
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
+MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -128,6 +129,8 @@ class InProcessTeammateAgent(threading.Thread):
     def _task_transport(self, task: Task) -> str:
         if self.context.runtime_config.teammate_mode == "host":
             return "host"
+        if task.task_type in MAILBOX_REVIEWER_TASK_TYPES:
+            return "in-process"
         if (
             self.context.runtime_config.teammate_mode == "subprocess"
             and self.context.profile.agent_type == "reviewer"

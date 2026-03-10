@@ -20,7 +20,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `2bc8f1a`
+- Latest runtime checkpoint commit: `7a95571`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
@@ -28,34 +28,38 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - progress artifacts and session ledgers
   - task-scoped context boundaries
   - checkpoint resume / rewind / replay reports
-  - `in-process`, `subprocess`, and `tmux` teammate modes
+  - `in-process`, `subprocess`, `tmux`, and `host` teammate modes
 - Current subprocess coverage:
   - analyst tasks can run in isolated workers
-  - reviewer `dynamic_planning`, `repo_dynamic_planning`, `recommendation_pack`, and `repo_recommendation_pack` can run in isolated workers
-  - reviewer `peer_challenge`, `evidence_pack`, and `llm_synthesis` still run in-process
+  - reviewer `dynamic_planning`, `repo_dynamic_planning`, `llm_synthesis`, `recommendation_pack`, and `repo_recommendation_pack` can run in isolated workers
+  - reviewer `peer_challenge` and `evidence_pack` stay on the parent mailbox path by design
+- Current host coverage:
+  - `--teammate-mode host` dispatches teammate work through a distinct host transport path
+  - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
+  - teammate handlers still execute inside the parent runtime rather than true external host-backed sessions
 
 ## Main Remaining Gaps
 
-1. `llm_synthesis` is still in-process.
-   This is the next best target for execution isolation because it is reviewer-owned but not mailbox-driven.
-2. Host-native teammate transport is still descriptive, not executable.
-   `host_enforcement.json` and `session_boundaries.json` describe posture, but there is no real host-native transport yet.
+1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
+   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions, while the current worker payload path is a one-shot task surface.
+2. Host teammate mode is still not true external host-backed execution.
+   The transport path is real, but handler logic still runs inside the parent runtime and shares the in-memory mailbox.
 3. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
 
-Implement subprocess-safe reviewer `llm_synthesis`.
+Finish the mailbox-boundary review for reviewer challenge tasks before attempting more external execution.
 
 Why this is next:
-- It continues the current isolation track instead of changing priorities.
-- It reduces the remaining reviewer work still pinned to the parent runtime.
-- It is smaller than a full host-native transport but moves the architecture in the right direction.
+- It protects the project from claiming isolation where there is only parent-runtime mailbox access.
+- It is the main design dependency for believable external host-backed teammate sessions.
+- It matches the current active plan after the latest direction review.
 
 What that likely requires:
-- pass model/provider config into worker payloads
-- rebuild the provider inside the worker process
-- keep `peer_challenge` / `evidence_pack` in-process for now
-- extend tests, smoke run, and verifier expectations as needed
+- define how mailbox request/reply traffic can cross process or host boundaries
+- decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
+- keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
+- extend tests, smoke run, and verifier expectations when the boundary changes
 
 ## Fast Validation Commands
 

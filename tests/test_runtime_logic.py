@@ -3208,6 +3208,94 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(started[-1].get("transport"), "subprocess")
             self.assertEqual(stopped[-1].get("transport"), "subprocess")
 
+    def test_mailbox_reviewer_tasks_remain_in_process_in_subprocess_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review", "writer", "llm"}, agent_type="reviewer")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="subprocess")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="subprocess"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=threading.Event(),
+                claim_tasks=True,
+                handlers={},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+
+            self.assertEqual(
+                agent._task_transport(
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Peer challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ),
+                "in-process",
+            )
+            self.assertEqual(
+                agent._task_transport(
+                    runtime.Task(
+                        task_id="evidence_pack",
+                        title="Evidence pack",
+                        task_type="evidence_pack",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ),
+                "in-process",
+            )
+            self.assertEqual(
+                agent._task_transport(
+                    runtime.Task(
+                        task_id="llm_synthesis",
+                        title="LLM synthesis",
+                        task_type="llm_synthesis",
+                        required_skills={"llm"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ),
+                "subprocess",
+            )
+            self.assertFalse(
+                set(runtime.MAILBOX_REVIEWER_TASK_TYPES) & set(runtime.SUBPROCESS_REVIEWER_TASK_TYPES)
+            )
+
     def test_reviewer_dynamic_planning_can_run_in_subprocess_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
