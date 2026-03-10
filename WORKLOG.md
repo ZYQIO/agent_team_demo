@@ -28,7 +28,7 @@ Each entry should capture:
   - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_report_session`
   - verifier passed for that smoke output
   - smoke event review confirmed reviewer `recommendation_pack` now uses `session_task_assignment` / `session_task_result` plus `execution_mode=session_thread` and `session_worker_backend=external_process`, while `dynamic_planning` remains inline
-- Commit: pending
+- Commit: `ece1e1f`
 - Next implication: the remaining host reviewer gap is dynamic task planning, which now requires explicit task-mutation contracts rather than more task-type allowlist expansion
 
 ### 2026-03-10 - Host llm_synthesis session-worker contract
