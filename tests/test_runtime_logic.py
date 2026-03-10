@@ -4835,6 +4835,215 @@ class RuntimeLogicTests(unittest.TestCase):
             ]
             self.assertGreaterEqual(len(result_messages), 1)
 
+    def test_host_discover_markdown_session_worker_applies_state_updates_by_lead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "output"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "a.md").write_text("# Title\nbody\n", encoding="utf-8")
+            (target_dir / "b.md").write_text("plain\nplain\nplain\n", encoding="utf-8")
+
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="discover_markdown",
+                        title="Scan markdown files",
+                        task_type="discover_markdown",
+                        required_skills={"inventory"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "analyst_alpha"],
+                logger=logger,
+                storage_dir=output_dir / "_mailbox",
+                clear_storage=True,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set(
+                "host",
+                {
+                    "kind": "claude-code",
+                    "session_transport": "session",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "note": "",
+                },
+            )
+            shared_state.set(
+                "host_runtime_enforcement",
+                {
+                    "host_kind": "claude-code",
+                    "configured_session_transport": "session",
+                    "requested_teammate_mode": "host",
+                    "session_enforcement": "host_managed",
+                    "workspace_enforcement": "host_managed",
+                    "host_native_session_active": True,
+                    "host_native_workspace_active": True,
+                    "host_managed_context_requested": True,
+                    "host_managed_context_active": True,
+                    "effective_boundary_source": "host",
+                    "effective_boundary_strength": "strong",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "notes": ["host_transport_manages_session_boundaries"],
+                },
+            )
+            shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+            shared_state.set(
+                "team_profiles",
+                [{"name": "analyst_alpha", "agent_type": "analyst", "skills": ["inventory", "analysis"]}],
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            analyst = runtime.AgentProfile(
+                name="analyst_alpha",
+                skills={"inventory", "analysis"},
+                agent_type="analyst",
+            )
+            session_state = registry.activate_for_run(profile=analyst, transport="host")
+            stop_event = threading.Event()
+            worker_context = runtime.AgentContext(
+                profile=analyst,
+                target_dir=target_dir,
+                output_dir=output_dir,
+                goal="host analyst task test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox.transport_view(),
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            worker = runtime.InProcessTeammateAgent(
+                context=worker_context,
+                stop_event=stop_event,
+                claim_tasks=False,
+                handlers={"discover_markdown": runtime.handle_discover_markdown},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+            setattr(worker, "worker_backend", "external_process")
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=target_dir,
+                output_dir=output_dir,
+                goal="host analyst task test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_registry=registry,
+            )
+            setattr(lead_context, "_host_worker_threads", {"analyst_alpha": worker})
+
+            worker.start()
+            try:
+                dispatched = runtime.run_host_teammate_task_once(
+                    lead_context=lead_context,
+                    teammate_profiles=[analyst],
+                    handlers={"discover_markdown": runtime.handle_discover_markdown},
+                )
+                self.assertTrue(dispatched)
+
+                deadline = time.time() + 2.0
+                while time.time() < deadline:
+                    runtime.apply_host_session_telemetry_messages(lead_context)
+                    runtime.apply_host_session_result_messages(lead_context)
+                    board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+                    if board_snapshot["discover_markdown"]["status"] == "completed":
+                        break
+                    time.sleep(0.05)
+                else:
+                    self.fail("host discover_markdown task did not complete through session worker")
+            finally:
+                stop_event.set()
+                worker.join(timeout=2.0)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["discover_markdown"]["status"], "completed")
+            self.assertEqual(board_snapshot["discover_markdown"]["result"]["markdown_files"], 2)
+            markdown_inventory = shared_state.get("markdown_inventory", [])
+            self.assertEqual(len(markdown_inventory), 2)
+            self.assertEqual(
+                {item.get("path") for item in markdown_inventory if isinstance(item, dict)},
+                {"a.md", "b.md"},
+            )
+            session = registry.session_for("analyst_alpha")
+            self.assertEqual(session.get("tasks_completed"), 1)
+
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            dispatch_events = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_dispatched"
+                and item.get("task_id") == "discover_markdown"
+            ]
+            self.assertEqual(len(dispatch_events), 1)
+            self.assertEqual(dispatch_events[0].get("execution_mode"), "session_thread")
+            self.assertEqual(dispatch_events[0].get("session_worker_backend"), "external_process")
+            completion_events = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_completed"
+                and item.get("task_id") == "discover_markdown"
+            ]
+            self.assertEqual(len(completion_events), 1)
+            self.assertEqual(completion_events[0].get("execution_mode"), "session_thread")
+            self.assertEqual(completion_events[0].get("session_worker_backend"), "external_process")
+            assignment_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_ASSIGNMENT_SUBJECT
+                and item.get("task_id") == "discover_markdown"
+            ]
+            self.assertEqual(len(assignment_messages), 1)
+            result_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_RESULT_SUBJECT
+                and item.get("task_id") == "discover_markdown"
+            ]
+            self.assertGreaterEqual(len(result_messages), 1)
+
     def test_host_dynamic_planning_result_applies_task_mutations_by_lead(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)

@@ -22,14 +22,16 @@ from . import tmux as tmux_transport
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
-HOST_SESSION_ASSIGNED_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | {
-    "dynamic_planning",
-    "llm_synthesis",
-    "recommendation_pack",
-    "repo_dynamic_planning",
-    "repo_recommendation_pack",
-}
+HOST_SESSION_ASSIGNED_TASK_TYPES = (
+    MAILBOX_REVIEWER_TASK_TYPES
+    | SUBPROCESS_REVIEWER_TASK_TYPES
+    | set(tmux_transport.TMUX_ANALYST_TASK_TYPES)
+)
 HOST_SESSION_MUTATION_TASK_TYPES = {"dynamic_planning", "repo_dynamic_planning"}
+HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES = (
+    set(tmux_transport.TMUX_ANALYST_TASK_TYPES)
+    | HOST_SESSION_MUTATION_TASK_TYPES
+)
 SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
 SESSION_TASK_RESULT_SUBJECT = "session_task_result"
 SESSION_CONTROL_SUBJECT = "session_control"
@@ -656,14 +658,22 @@ class InProcessTeammateAgent(threading.Thread):
         self.context.logger.log("subprocess_worker_task_completed", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, transport=transport_used)
         return result
 
-    def _run_host_assigned_mutation_task(self, task: Task, task_context: Dict[str, Any]) -> Dict[str, Any]:
+    def _run_host_assigned_worker_payload_task(self, task: Task, task_context: Dict[str, Any]) -> Dict[str, Any]:
         board_task_ids = task_context.get("board_task_ids", [])
         if not isinstance(board_task_ids, list):
             board_task_ids = []
+        model_config: Dict[str, Any] = {}
+        agent_team_config = self.context.shared_state.get("agent_team_config", {})
+        if isinstance(agent_team_config, dict):
+            raw_model_config = agent_team_config.get("model", {})
+            if isinstance(raw_model_config, dict):
+                model_config = dict(raw_model_config)
         payload = {
             "task_type": task.task_type,
             "task_payload": task.payload,
             "goal": self.context.goal,
+            "target_dir": str(pathlib.Path(self.context.target_dir).resolve()),
+            "output_dir": str(pathlib.Path(self.context.output_dir).resolve()),
             "task_context": task_context,
             "board_snapshot": {
                 "tasks": [
@@ -673,6 +683,7 @@ class InProcessTeammateAgent(threading.Thread):
                 ]
             },
             "runtime_config": self.context.runtime_config.to_dict(),
+            "model_config": model_config,
         }
         worker_payload = tmux_transport.run_tmux_worker_payload(payload)
         if not isinstance(worker_payload, dict):
@@ -725,8 +736,8 @@ class InProcessTeammateAgent(threading.Thread):
         self.context.logger.log("task_context_prepared", agent=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, scope=str(task_context.get("scope", "")), visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])), visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)), omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)), dependency_task_ids=list(task_context.get("dependencies", [])), transport=task_transport)
         try:
             host_assigned_payload: Dict[str, Any] = {}
-            if uses_host_session_result_contract and task.task_type in HOST_SESSION_MUTATION_TASK_TYPES:
-                host_assigned_payload = self._run_host_assigned_mutation_task(task=task, task_context=task_context)
+            if uses_host_session_result_contract and task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES:
+                host_assigned_payload = self._run_host_assigned_worker_payload_task(task=task, task_context=task_context)
                 result = host_assigned_payload.get("result", {})
             else:
                 result = self._run_subprocess_worker_task(task=task, task_context=task_context, original_shared_state=original_shared_state) if task_transport == "subprocess" else handler(self.context, task)
@@ -735,12 +746,12 @@ class InProcessTeammateAgent(threading.Thread):
             if uses_host_session_result_contract:
                 result_state_updates = (
                     host_assigned_payload.get("state_updates", {})
-                    if task.task_type in HOST_SESSION_MUTATION_TASK_TYPES
+                    if task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES
                     else scoped_shared_state.buffered_updates()
                 )
                 result_task_mutations = (
                     host_assigned_payload.get("task_mutations", {})
-                    if task.task_type in HOST_SESSION_MUTATION_TASK_TYPES
+                    if task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES
                     else {}
                 )
                 self._publish_assigned_task_result(

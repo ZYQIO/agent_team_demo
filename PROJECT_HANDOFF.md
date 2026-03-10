@@ -39,15 +39,17 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
   - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
-  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) plus reviewer planning/report/llm tasks (`dynamic_planning`, `repo_dynamic_planning`, `llm_synthesis`, `recommendation_pack`, `repo_recommendation_pack`) now reach the reviewer's external session-worker subprocess through explicit `session_task_assignment` mailbox messages, return through explicit `session_task_result` mailbox messages, and update teammate session ledgers through explicit `session_telemetry` mailbox messages
+  - built-in workflow teammate task paths now reach external session-worker subprocesses through explicit `session_task_assignment` mailbox messages, including analyst scans/follow-ups plus mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) and reviewer planning/report/llm tasks (`dynamic_planning`, `repo_dynamic_planning`, `llm_synthesis`, `recommendation_pack`, `repo_recommendation_pack`)
+  - those external workers now return through explicit `session_task_result` mailbox messages and update teammate session ledgers through explicit `session_telemetry` mailbox messages
   - reviewer planning results now carry explicit task-mutation payloads so the lead side inserts follow-up tasks and dependencies instead of external workers mutating the board directly
+  - analyst worker payloads now return lead-applied `state_updates`, and assigned host tasks still emit lead-side `task_context_prepared` events so `context_boundaries.json` remains accurate under full teammate offload
   - teammate auto-replies in the mailbox-driven reviewer flows now also come from external session-worker subprocesses rather than parent-runtime threads
-  - analyst tasks and broader host execution still execute on the lead-managed inline path, so host execution is only partially externalized
+  - built-in workflow teammate coverage is now fully off the lead-inline executor, but the backend is still an `external_process` session worker rather than a true host-backed teammate session
 
 ## Main Remaining Gaps
 
 1. Host teammate mode is still not true external host-backed execution.
-   Mailbox-driven reviewer/request-reply flows plus reviewer planning/report/llm tasks now cross an actual external subprocess boundary, but analyst tasks and broader host execution still execute on the lead-managed inline path rather than in independent host sessions.
+   Built-in workflow teammate task paths now cross an actual external subprocess boundary, but the backend is still an `external_process` session worker rather than a true host-managed session.
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
@@ -56,20 +58,20 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 
 ## Recommended Next Step
 
-Expand host transport beyond the reviewer slice.
+Replace the host session-worker subprocess backend with a true host-backed teammate session.
 
 Why this is next:
 - The mailbox/request-reply boundary is now credible enough to stop treating it as purely design work.
-- Reviewer planning now also crosses an explicit lead-applied task-mutation contract.
-- The next material gap is that analyst tasks and most other host execution still run lead-inline.
+- Built-in workflow teammate task paths now all cross explicit assignment/result/telemetry contracts.
+- The next material gap is backend authenticity rather than task-path coverage.
 - It matches the updated active plan after the external session-worker round.
 
 What that likely requires:
-- decide which analyst or other non-reviewer host paths can externalize next without reintroducing parent-runtime state access
+- replace the `external_process` worker backend without weakening the existing explicit mailbox/result/telemetry contracts
 - keep the existing external session-worker contract explicit instead of reintroducing shared in-process state
 - improve event/report surfacing only where needed to describe real external execution, not to add artifact-only detail
-- extend tests and smoke coverage for any additional externalized host tasks
-- after host execution is broader than the reviewer slice, move to lead-facing interaction and plan approval before replay-first work
+- extend tests and smoke coverage so a true host-backed backend can be distinguished from the current `external_process` session worker
+- after backend authenticity is improved, move to lead-facing interaction and plan approval before replay-first work
 
 ## Fast Validation Commands
 
@@ -80,11 +82,11 @@ python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
 ```powershell
-python agent_team_runtime.py --target . --output .codex_tmp\smoke_output_host_dynamic_session --provider heuristic --host-kind claude-code --teammate-mode host --peer-wait-seconds 1 --evidence-wait-seconds 1
+python agent_team_runtime.py --target . --output .codex_tmp\smoke_output_host_analyst_session --provider heuristic --host-kind claude-code --teammate-mode host --peer-wait-seconds 1 --evidence-wait-seconds 1
 ```
 
 ```powershell
-python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke_output_host_dynamic_session
+python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke_output_host_analyst_session
 ```
 
 If `python` resolves to a Windows Store alias on a new machine, use `py -3` or the concrete interpreter path instead.

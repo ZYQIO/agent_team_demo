@@ -13,6 +13,25 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host analyst session-worker contract
+- Goal: move built-in workflow analyst task paths off the host lead-inline executor without weakening the explicit lead-applied result contract
+- Changes:
+  - expanded the host assigned-task contract to include worker-payload-backed analyst task types from both built-in workflow packs
+  - taught assigned host workers to run those analyst tasks through the existing tmux/subprocess worker payload contract so scans and follow-ups return explicit `state_updates` instead of mutating shared state directly
+  - restored lead-side `task_context_prepared` logging for assigned host tasks so `context_boundaries.json` stays valid after full teammate offload
+  - extended regression coverage with a host analyst session-worker logic test and tightened host CLI assertions so analyst tasks must emit assignment/result/telemetry/completion records through the external session-worker path
+  - direction review: the remaining host gap is no longer task-path coverage; it is swapping the `external_process` backend for a true host-backed teammate session without weakening the explicit contracts
+- Validation:
+  - targeted host analyst session-worker regression passed
+  - targeted host CLI/end-to-end regression passed
+  - full suite: `107/107` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_analyst_session`
+  - real CLI repo-audit host smoke passed: `.codex_tmp\\smoke_output_host_repo_analyst_session`
+  - verifier passed for both smoke outputs
+  - smoke event review confirmed `discover_markdown`, `heading_audit`, `discover_repository`, and `extension_audit` now complete with `execution_mode=session_thread`, `completion_subject=session_task_result`, and `session_worker_backend=external_process`
+- Commit: pending
+- Next implication: built-in workflow teammate coverage is now externalized in host mode, so the next transport step is backend authenticity rather than more task-type expansion
+
 ### 2026-03-10 - Host planning session-worker contract
 - Goal: move host reviewer planning tasks off the lead-inline executor without giving external workers direct task-board access
 - Changes:

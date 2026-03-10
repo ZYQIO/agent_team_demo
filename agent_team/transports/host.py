@@ -927,6 +927,18 @@ def run_host_teammate_task_once(
                 task=task,
                 profile=profile,
             )
+            lead_context.logger.log(
+                "task_context_prepared",
+                agent=profile.name,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                scope=str(task_context.get("scope", "")),
+                visible_shared_state_keys=list(task_context.get("visible_shared_state_keys", [])),
+                visible_shared_state_key_count=int(task_context.get("visible_shared_state_key_count", 0)),
+                omitted_shared_state_key_count=int(task_context.get("omitted_shared_state_key_count", 0)),
+                dependency_task_ids=list(task_context.get("dependencies", [])),
+                transport="host",
+            )
             assignment_payload = {
                 "contract": "session_task_assignment",
                 "contract_version": 1,

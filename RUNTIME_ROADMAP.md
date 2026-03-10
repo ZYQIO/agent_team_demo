@@ -79,6 +79,7 @@ The intended architecture is now:
 | Host session telemetry contract | Completed | Host-mode long-lived session threads now publish explicit `session_telemetry` mailbox messages so teammate session ledger updates are applied on the lead side instead of worker threads mutating `session_registry` directly. |
 | Host external session-worker boundary | Completed | Host-mode mailbox reviewer/request-reply flows now run through external session-worker subprocesses backed by the file-backed mailbox transport while lead-side code still owns shared-state updates and task completion. |
 | Host reviewer planning task-mutation contract | Completed | Host-mode reviewer `dynamic_planning` and `repo_dynamic_planning` tasks now execute through the external assigned-task/session-worker path and return explicit task-mutation payloads for the lead side to apply. |
+| Host analyst session-worker contract | Completed | Host-mode analyst scans and follow-up tasks for the built-in workflow packs now execute through the external assigned-task/session-worker path and return explicit lead-applied state updates instead of mutating shared state directly. |
 | Session continuity on resume | Completed | Resumed runs now preserve prior teammate `session_id` values, increment session lifecycle counters, and emit explicit `teammate_session_resumed` events. |
 | Tmux session workspaces | Completed | Tmux-mode workers now get stable session-scoped workspace/temp directories that are surfaced in `teammate_sessions.json` and `session_boundaries.json`. |
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
@@ -424,8 +425,8 @@ Evidence review:
 
 Priority order for the next work:
 
-1. Expand the executable `host` transport skeleton beyond the reviewer slice
-   Goal: move analyst or other non-reviewer host tasks off the lead-inline executor now that mailbox reviewer flows plus reviewer planning/report/llm tasks already cross an actual external subprocess boundary.
+1. Replace the executable `host` session-worker subprocess backend with a true host-backed teammate session
+   Goal: preserve the explicit mailbox/result/telemetry contracts while making host execution more authentic than the current `external_process` worker backend.
 2. Add lead-facing team interaction plus plan approval
    Goal: match the official team-message and approval posture instead of keeping those capabilities as metadata only.
 3. Add true event-level state replay
@@ -524,7 +525,7 @@ Completed slice:
 Remaining focus:
 
 - true external host-backed sessions on top of the executable host transport skeleton
-- broader host externalization beyond the reviewer slice
+- backend authenticity beyond the current `external_process` session-worker implementation
 - lead-facing team interaction and plan approval
 - true event-level replay
 

@@ -10,7 +10,7 @@ The priority is execution isolation and real teammate transport behavior.
 Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
-Priority 4 is in progress: host mode now routes mailbox reviewer flows plus reviewer planning/report/llm tasks through the external session-worker contract, but broader host execution still needs to leave the lead-inline executor.
+Priority 4 is in progress: host mode now routes the built-in workflow teammate task paths through the external session-worker contract, but the backend is still an external subprocess worker rather than a true host-backed teammate session.
 
 Direction review (2026-03-10):
 - the last three transport-focused rounds improved execution semantics
@@ -31,6 +31,11 @@ Direction review (2026-03-10, reviewer planning checkpoint):
 - the latest three host transport rounds improved execution semantics rather than artifact shape
 - reviewer mailbox flows, planning, synthesis, and reporting now all cross explicit external assignment/result/telemetry contracts
 - the priority order still holds, but the remaining host transport gap is now broader than reviewer work and should shift toward analyst or other non-reviewer host execution before replay-first work
+
+Direction review (2026-03-10, analyst checkpoint):
+- the latest three host transport rounds still improved execution semantics and did not regress into artifact-only work
+- built-in workflow analyst task paths now also cross explicit external assignment/result/telemetry contracts
+- the remaining host gap is no longer task-path coverage; it is replacing the `external_process` session-worker backend with a true host-backed teammate session while preserving the explicit contract model
 
 Official parity check (2026-03-10, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
@@ -95,22 +100,25 @@ Acceptance criteria:
 - real host smoke green
 - verifier green
 
-### 4. Expand host transport beyond the reviewer slice toward true external teammate sessions
+### 4. Replace the host session-worker backend with true external host-backed teammate sessions
 Status: In Progress
 
 Why:
-- mailbox/request-reply flows plus reviewer planning/report/llm tasks now cross an external boundary, but analyst tasks and other host execution still keep broad portions of runtime work on the lead-inline path
-- the next value is broadening real external execution beyond the reviewer slice, not inventing more in-runtime mailbox ceremony
+- built-in workflow teammate task paths now cross an external boundary through explicit assignment/result/telemetry contracts
+- the next value is replacing the `external_process` backend with a real host-backed teammate session, not inventing more in-runtime mailbox ceremony
 
 Recent completed outcomes:
 - host assigned-task results now carry explicit task-mutation payloads for reviewer `dynamic_planning` and `repo_dynamic_planning`
 - lead-side host result application now owns inserted-task and dependency mutation application instead of letting external workers touch the board directly
 - task-context snapshots now include the minimal board/task view needed for host planning workers to compute mutations without a full parent-runtime board object
+- host assigned-task coverage now includes worker-payload-backed analyst tasks, so the built-in workflow teammate task paths no longer need the lead-inline executor
+- lead-side `task_context_prepared` logging now stays accurate for assigned host tasks, keeping `context_boundaries.json` valid under full teammate offload
 
 Acceptance criteria:
-- at least one additional non-reviewer host task path moves off the lead-inline executor
+- built-in workflow teammate task paths remain off the lead-inline executor
 - artifacts and event logs continue to describe the real boundary used for each task path
 - host task-mutation flows stay on explicit lead-applied contracts instead of regressing to direct shared-state or board mutation from worker contexts
+- the remaining backend swap does not hide whether a task ran through `external_process` versus a future true host-backed session
 
 ### 5. Add lead-facing team interaction and plan approval
 Status: Pending

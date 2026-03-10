@@ -768,6 +768,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 any(item.get("task_id") == "evidence_pack" for item in session_thread_dispatches)
             )
             self.assertTrue(
+                any(item.get("task_id") == "discover_markdown" for item in session_thread_dispatches)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "heading_audit" for item in session_thread_dispatches)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "length_audit" for item in session_thread_dispatches)
+            )
+            self.assertTrue(
                 any(item.get("task_id") == "dynamic_planning" for item in session_thread_dispatches)
             )
             self.assertTrue(
@@ -787,6 +796,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "discover_markdown" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "heading_audit" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "length_audit" for item in assignment_messages)
             )
             self.assertTrue(
                 any(item.get("task_id") == "dynamic_planning" for item in assignment_messages)
@@ -810,6 +828,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 any(item.get("task_id") == "evidence_pack" for item in result_messages)
             )
             self.assertTrue(
+                any(item.get("task_id") == "discover_markdown" for item in result_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "heading_audit" for item in result_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "length_audit" for item in result_messages)
+            )
+            self.assertTrue(
                 any(item.get("task_id") == "dynamic_planning" for item in result_messages)
             )
             self.assertTrue(
@@ -829,6 +856,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "discover_markdown" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "heading_audit" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "length_audit" for item in telemetry_messages)
             )
             self.assertTrue(
                 any(item.get("task_id") == "dynamic_planning" for item in telemetry_messages)
@@ -853,6 +889,15 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in session_thread_completions)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "discover_markdown" for item in session_thread_completions)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "heading_audit" for item in session_thread_completions)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "length_audit" for item in session_thread_completions)
             )
             self.assertTrue(
                 any(item.get("task_id") == "dynamic_planning" for item in session_thread_completions)
