@@ -748,6 +748,8 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         events.append(json.loads(line))
             event_names = {item.get("event") for item in events}
             self.assertIn("teammate_mode_host_enabled", event_names)
+            self.assertIn("host_session_worker_started", event_names)
+            self.assertIn("host_session_worker_stop_requested", event_names)
             self.assertIn("host_worker_task_dispatched", event_names)
             self.assertIn("host_worker_task_completed", event_names)
             session_thread_dispatches = [
@@ -756,6 +758,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 if item.get("event") == "host_worker_task_dispatched"
                 and item.get("execution_mode") == "session_thread"
             ]
+            self.assertTrue(
+                all(item.get("session_worker_backend") == "external_process" for item in session_thread_dispatches)
+            )
             self.assertTrue(
                 any(item.get("task_id") == "peer_challenge" for item in session_thread_dispatches)
             )
@@ -804,6 +809,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 if item.get("event") == "host_worker_task_completed"
                 and item.get("execution_mode") == "session_thread"
             ]
+            self.assertTrue(
+                all(item.get("session_worker_backend") == "external_process" for item in session_thread_completions)
+            )
             self.assertTrue(
                 any(item.get("task_id") == "peer_challenge" for item in session_thread_completions)
             )

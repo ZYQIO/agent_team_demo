@@ -578,36 +578,35 @@ def run_team(
             )
 
     stop_event = threading.Event()
-    workers = [
-        worker_factory(
-            context=AgentContext(
-                profile=profile,
-                target_dir=target_dir,
-                output_dir=output_dir,
-                goal=goal,
-                provider=provider,
-                runtime_config=runtime_config,
-                board=board,
-                mailbox=mailbox.transport_view(),
-                file_locks=file_locks,
-                shared_state=shared_state,
-                logger=logger,
-                runtime_script=runtime_script_path,
-                session_state=initial_session_states.get(profile.name, session_registry.session_for(profile.name)),
-                session_registry=session_registry,
-            ),
-            stop_event=stop_event,
-            handlers=workflow_handlers,
-            claim_tasks=not (
-                (
+    workers: List[threading.Thread] = []
+    if runtime_config.teammate_mode != "host":
+        workers = [
+            worker_factory(
+                context=AgentContext(
+                    profile=profile,
+                    target_dir=target_dir,
+                    output_dir=output_dir,
+                    goal=goal,
+                    provider=provider,
+                    runtime_config=runtime_config,
+                    board=board,
+                    mailbox=mailbox.transport_view(),
+                    file_locks=file_locks,
+                    shared_state=shared_state,
+                    logger=logger,
+                    runtime_script=runtime_script_path,
+                    session_state=initial_session_states.get(profile.name, session_registry.session_for(profile.name)),
+                    session_registry=session_registry,
+                ),
+                stop_event=stop_event,
+                handlers=workflow_handlers,
+                claim_tasks=not (
                     runtime_config.teammate_mode in {"tmux", "subprocess"}
                     and profile.agent_type == "analyst"
-                )
-                or runtime_config.teammate_mode == "host"
-            ),
-        )
-        for profile in profiles
-    ]
+                ),
+            )
+            for profile in profiles
+        ]
     if runtime_config.teammate_mode == "tmux":
         logger.log(
             "teammate_mode_tmux_enabled",
@@ -621,14 +620,11 @@ def run_team(
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
         )
     if runtime_config.teammate_mode == "host":
-        host_worker_threads: Dict[str, threading.Thread] = {}
-        for worker in workers:
-            worker_context = getattr(worker, "context", None)
-            worker_profile = getattr(worker_context, "profile", None)
-            worker_name = str(getattr(worker_profile, "name", "") or "")
-            if worker_name and hasattr(worker, "reserve_assigned_task"):
-                host_worker_threads[worker_name] = worker
-        setattr(lead_context, "_host_worker_threads", host_worker_threads)
+        host_transport.configure_host_session_workers(
+            lead_context=lead_context,
+            workflow_pack=workflow_pack_name,
+            model_config=effective_agent_team_config.model,
+        )
         logger.log(
             "teammate_mode_host_enabled",
             teammate_workers=[profile.name for profile in profiles],
@@ -768,6 +764,7 @@ def run_team(
         for worker in workers:
             worker.join(timeout=2.0)
         if runtime_config.teammate_mode == "host":
+            host_transport.stop_host_session_workers(lead_context=lead_context)
             host_transport.apply_host_session_telemetry_messages(lead_context=lead_context)
             host_transport.apply_host_session_result_messages(lead_context=lead_context)
         if runtime_config.teammate_mode == "tmux" and cleanup_tmux_analyst_sessions_fn is not None:

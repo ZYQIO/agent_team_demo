@@ -13,6 +13,23 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - External host session-worker boundary
+- Goal: replace in-runtime host session threads for mailbox-driven reviewer/request-reply flows with a real external process boundary
+- Changes:
+  - launched host-mode teammate session workers as external subprocesses through a hidden `--host-session-worker-file` entrypoint instead of parent-runtime threads
+  - extended assigned-task payloads with task-context snapshots so external session workers can keep mailbox reviewer state scoped without direct access to the lead runtime objects
+  - added host worker process lifecycle management plus explicit stop control messages, and replayed worker-to-lead `mail_sent` events from lead-observed mailbox traffic so `events.jsonl` stays contiguous without cross-process event-index races
+  - kept non-mailbox host tasks on the existing lead-inline path, but now tag host dispatch/completion events with `session_worker_backend` so event logs show whether work came from `external_process` or the inline path
+  - extended end-to-end coverage so host-mode CLI runs must emit `host_session_worker_started`, `host_session_worker_stop_requested`, and `session_worker_backend=external_process` for mailbox reviewer dispatch/completion
+- Validation:
+  - targeted host logic regressions passed
+  - targeted host CLI/end-to-end regressions passed
+  - full suite: `103/103` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_external_session`
+  - verifier passed for that smoke output
+  - smoke event review confirmed `host_session_worker_started`, `delivery_mode=external_host_worker`, reviewer `peer_challenge` / `evidence_pack` dispatch and completion with `session_worker_backend=external_process`, and lead-side `session_task_result` / `session_telemetry` application from external workers
+- Commit: pending in working tree
+- Next implication: mailbox/request-reply isolation is now credible enough to stop treating it as open design work; the next transport step is moving selected non-mailbox host tasks off the lead-inline executor
 ### 2026-03-10 - Host session telemetry mailbox contract
 - Goal: remove the remaining direct host session-thread writes into `teammate_sessions` so session ledger updates also cross an explicit mailbox boundary
 - Changes:

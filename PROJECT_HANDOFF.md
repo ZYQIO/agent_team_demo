@@ -20,13 +20,13 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `37b6124`
+- Latest runtime checkpoint commit: working tree after `37b6124` (external host session-worker round not yet committed)
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
   - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
   - transport-local mailbox views for runtime worker/helper sessions with atomic file claims during pull
-  - host-mode long-lived teammate session threads now use explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox messages so workflow state and teammate session ledger updates are applied on the lead side
+  - host-mode mailbox reviewer/request-reply flows now use external session-worker subprocesses plus explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox messages so workflow state and teammate session ledger updates are applied on the lead side
   - dynamic task insertion
   - progress artifacts and session ledgers
   - task-scoped context boundaries
@@ -39,35 +39,35 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
   - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
-  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now reach the reviewer's long-lived host session thread through explicit `session_task_assignment` mailbox messages, return through explicit `session_task_result` mailbox messages, and update teammate session ledgers through explicit `session_telemetry` mailbox messages
-  - host execution is still in-process runtime emulation rather than true external host-backed sessions
+  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now reach the reviewer's external session-worker subprocess through explicit `session_task_assignment` mailbox messages, return through explicit `session_task_result` mailbox messages, and update teammate session ledgers through explicit `session_telemetry` mailbox messages
+  - teammate auto-replies in those flows now also come from external session-worker subprocesses rather than parent-runtime threads
+  - non-mailbox host tasks still execute on the lead-managed inline path, so host execution is only partially externalized
 
 ## Main Remaining Gaps
 
-1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
-   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, transport-local mailbox views, and explicit host-mode assignment/result/session-telemetry contracts, but both ends still execute inside one parent runtime instead of crossing a real external request/reply boundary.
-2. Host teammate mode is still not true external host-backed execution.
-   The transport path is real, host/helper sessions consume transport-local mailbox views, and mailbox reviewer plus session-ledger flows now use explicit mailbox contracts on long-lived session threads, but all of that still happens inside the parent runtime instead of true external host-backed sessions.
+1. Host teammate mode is still not true external host-backed execution.
+   Mailbox-driven reviewer/request-reply flows now cross an actual external subprocess boundary, but non-mailbox host tasks (`dynamic_planning`, `llm_synthesis`, reporting) still execute on the lead-managed inline path rather than in independent host sessions.
+2. Event/report fidelity for external host workers is still lead-synthesized.
+   External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
    Host metadata models `plan_approval`, but there is no approval gate for teammate task-list mutations and no live team-message surface beyond logs/artifacts.
 4. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
 
-Finish the mailbox-boundary review for reviewer challenge tasks before attempting more external execution.
+Expand host transport beyond mailbox/request-reply flows.
 
 Why this is next:
-- It protects the project from claiming isolation where there is only parent-runtime mailbox access.
-- It is the main design dependency for believable external host-backed teammate sessions.
-- It matches the current active plan after the latest direction review.
+- The mailbox/request-reply boundary is now credible enough to stop treating it as purely design work.
+- The next material gap is that reviewer non-mailbox tasks and most other host execution still run lead-inline.
+- It matches the updated active plan after the external session-worker round.
 
 What that likely requires:
-- define how mailbox request/reply traffic can cross process or host boundaries
-- push the existing `session_task_assignment` / `session_task_result` / `session_telemetry` contracts across an actual external process or host boundary
-- decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
-- keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
-- extend tests, smoke run, and verifier expectations when the boundary changes
-- after transport boundaries are credible, add lead-facing team interaction and plan approval before replay-first work
+- decide which non-mailbox host tasks should move first off the lead-inline path
+- keep the existing external session-worker contract explicit instead of reintroducing shared in-process state
+- improve event/report surfacing only where needed to describe real external execution, not to add artifact-only detail
+- extend tests and smoke coverage for any additional externalized host tasks
+- after host execution is broader than mailbox/request-reply flows, move to lead-facing interaction and plan approval before replay-first work
 
 ## Fast Validation Commands
 
@@ -78,11 +78,11 @@ python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
 ```powershell
-python agent_team_runtime.py --target . --output .codex_tmp\smoke_output_host_session_telemetry --provider heuristic --host-kind claude-code --teammate-mode host --peer-wait-seconds 1 --evidence-wait-seconds 1
+python agent_team_runtime.py --target . --output .codex_tmp\smoke_output_host_external_session --provider heuristic --host-kind claude-code --teammate-mode host --peer-wait-seconds 1 --evidence-wait-seconds 1
 ```
 
 ```powershell
-python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke_output_host_session_telemetry
+python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke_output_host_external_session
 ```
 
 If `python` resolves to a Windows Store alias on a new machine, use `py -3` or the concrete interpreter path instead.

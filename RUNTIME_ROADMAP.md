@@ -77,6 +77,7 @@ The intended architecture is now:
 | Host mailbox assignment contract | Completed | Host-mode mailbox reviewer dispatch now uses explicit `session_task_assignment` mailbox messages so task assignment itself no longer depends on transport-private thread queues. |
 | Host mailbox result contract | Completed | Host-mode mailbox reviewer tasks now publish explicit `session_task_result` mailbox messages so lead-side code applies shared-state updates and task completion/failure instead of worker threads mutating workflow state directly. |
 | Host session telemetry contract | Completed | Host-mode long-lived session threads now publish explicit `session_telemetry` mailbox messages so teammate session ledger updates are applied on the lead side instead of worker threads mutating `session_registry` directly. |
+| Host external session-worker boundary | Completed | Host-mode mailbox reviewer/request-reply flows now run through external session-worker subprocesses backed by the file-backed mailbox transport while lead-side code still owns shared-state updates and task completion. |
 | Session continuity on resume | Completed | Resumed runs now preserve prior teammate `session_id` values, increment session lifecycle counters, and emit explicit `teammate_session_resumed` events. |
 | Tmux session workspaces | Completed | Tmux-mode workers now get stable session-scoped workspace/temp directories that are surfaced in `teammate_sessions.json` and `session_boundaries.json`. |
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
@@ -422,13 +423,11 @@ Evidence review:
 
 Priority order for the next work:
 
-1. Reassess mailbox-driven reviewer tasks for isolation boundaries
-   Goal: decide whether `peer_challenge` and `evidence_pack` can move from in-runtime session-thread execution to a true external request/reply boundary without breaking live mailbox semantics, now that file-backed mailbox backend, transport-local mailbox views, host session-thread dispatch, and mailbox assignment contract all exist.
-2. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
-   Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution after the mailbox boundary is defined.
-3. Add lead-facing team interaction plus plan approval
+1. Expand the executable `host` transport skeleton beyond mailbox/request-reply flows
+   Goal: move selected non-mailbox host tasks off the lead-inline executor now that mailbox reviewer/request-reply flows already cross an actual external subprocess boundary.
+2. Add lead-facing team interaction plus plan approval
    Goal: match the official team-message and approval posture instead of keeping those capabilities as metadata only.
-4. Add true event-level state replay
+3. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 
 

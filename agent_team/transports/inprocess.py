@@ -7,7 +7,14 @@ import time
 from types import ModuleType
 from typing import Any, Callable, Dict, List, Mapping, Optional
 
-from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
+from ..core import (
+    HOOK_EVENT_TEAMMATE_IDLE,
+    TEAMMATE_IDLE_HOOK_INTERVAL_SEC,
+    Message,
+    SharedState,
+    Task,
+    task_from_dict,
+)
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT, apply_session_telemetry_event
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 from . import tmux as tmux_transport
@@ -17,6 +24,7 @@ SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYP
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
 SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
 SESSION_TASK_RESULT_SUBJECT = "session_task_result"
+SESSION_CONTROL_SUBJECT = "session_control"
 AUTO_REPLY_SUBJECTS = {
     "peer_challenge_round1_request",
     "peer_challenge_round2_request",
@@ -48,6 +56,7 @@ class InProcessTeammateAgent(threading.Thread):
         self._assigned_task_lock = threading.Lock()
         self._assigned_task_active = False
         self._assigned_task_id = ""
+        self._assigned_task_contexts: Dict[str, Dict[str, Any]] = {}
         self._refresh_session_state()
 
     def can_accept_assigned_task(self) -> bool:
@@ -133,6 +142,9 @@ class InProcessTeammateAgent(threading.Thread):
             )
             self.release_assigned_task(message.task_id or "")
             return None
+        task_context = payload.get("task_context", {}) if isinstance(payload, dict) else {}
+        if isinstance(task_context, dict):
+            self._assigned_task_contexts[assigned_task.task_id] = task_context
         self.context.logger.log(
             "assigned_task_message_received",
             agent=self.context.profile.name,
@@ -141,6 +153,55 @@ class InProcessTeammateAgent(threading.Thread):
             sender=message.sender,
         )
         return assigned_task
+
+    def _consume_assigned_task_context(self, task_id: str) -> Dict[str, Any]:
+        if not task_id:
+            return {}
+        raw_task_context = self._assigned_task_contexts.pop(str(task_id), {})
+        if not isinstance(raw_task_context, dict):
+            return {}
+        return raw_task_context
+
+    def _merge_task_context_shared_state(
+        self,
+        original_shared_state: Any,
+        task_context: Dict[str, Any],
+    ) -> Any:
+        visible_state = task_context.get("visible_shared_state", {})
+        if not isinstance(visible_state, dict) or not visible_state:
+            return original_shared_state
+        if not isinstance(original_shared_state, SharedState):
+            return original_shared_state
+        merged_state = SharedState()
+        try:
+            baseline = original_shared_state.snapshot()
+        except AttributeError:
+            baseline = {}
+        if isinstance(baseline, dict):
+            for key, value in baseline.items():
+                merged_state.set(str(key), value)
+        for key, value in visible_state.items():
+            merged_state.set(str(key), value)
+        return merged_state
+
+    def _handle_session_control_message(self, message: Message) -> None:
+        if message.subject != SESSION_CONTROL_SUBJECT:
+            return
+        command = str(message.body or "").strip().lower()
+        try:
+            payload = json.loads(message.body)
+        except json.JSONDecodeError:
+            payload = {}
+        if isinstance(payload, dict):
+            command = str(payload.get("command", command) or command).strip().lower()
+        if command == "stop":
+            self.stop_event.set()
+            self.context.logger.log(
+                "session_control_received",
+                agent=self.context.profile.name,
+                task_id=message.task_id,
+                command=command,
+            )
 
     def _run_assigned_task(self, task: Task) -> None:
         try:
@@ -599,14 +660,25 @@ class InProcessTeammateAgent(threading.Thread):
                 self.context.file_locks.release(self.context.profile.name, lock_paths)
             return
         original_shared_state = self.context.shared_state
-        task_context = build_task_context_snapshot(self.context, task)
+        provided_task_context = self._consume_assigned_task_context(task.task_id)
+        task_context = provided_task_context or build_task_context_snapshot(self.context, task)
         task_transport = self._task_transport(task)
         uses_host_session_result_contract = self._uses_host_session_result_contract(
             task=task,
             task_transport=task_transport,
         )
+        shared_state_underlying = (
+            self._merge_task_context_shared_state(
+                original_shared_state=original_shared_state,
+                task_context=task_context,
+            )
+            if provided_task_context
+            else original_shared_state
+        )
+        if hasattr(self.context.board, "apply_task_context"):
+            self.context.board.apply_task_context(task_context)
         scoped_shared_state = ScopedSharedState(
-            _underlying=original_shared_state,
+            _underlying=shared_state_underlying,
             _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
             _write_through=not uses_host_session_result_contract,
         )
@@ -890,6 +962,7 @@ class InProcessTeammateAgent(threading.Thread):
                     lambda message: (
                         message.subject in AUTO_REPLY_SUBJECTS
                         or message.subject == SESSION_TASK_ASSIGNMENT_SUBJECT
+                        or message.subject == SESSION_CONTROL_SUBJECT
                     ),
                 )
             assigned_task: Optional[Task] = None
@@ -912,6 +985,8 @@ class InProcessTeammateAgent(threading.Thread):
                     self._auto_reply_evidence_request(message)
                 if message.subject == SESSION_TASK_ASSIGNMENT_SUBJECT:
                     assigned_task = self._assigned_task_from_message(message)
+                if message.subject == SESSION_CONTROL_SUBJECT:
+                    self._handle_session_control_message(message)
 
             if assigned_task is not None and self._activate_assigned_task(assigned_task):
                 self._run_assigned_task(assigned_task)

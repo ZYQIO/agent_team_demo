@@ -262,6 +262,10 @@ def run_host_teammate_task_once(
     )
 
 
+def run_host_session_worker_entrypoint(payload_file: pathlib.Path) -> int:
+    return host_transport.run_host_session_worker_entrypoint(payload_file=payload_file)
+
+
 def apply_host_session_result_messages(lead_context: AgentContext) -> int:
     return host_transport.apply_host_session_result_messages(lead_context=lead_context)
 
@@ -640,6 +644,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--host-session-worker-file",
+        default="",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -872,6 +881,8 @@ if __name__ == "__main__":
     args = parse_args()
     if args.worker_task_file:
         raise SystemExit(run_tmux_worker_entrypoint(pathlib.Path(args.worker_task_file).resolve()))
+    if args.host_session_worker_file:
+        raise SystemExit(run_host_session_worker_entrypoint(pathlib.Path(args.host_session_worker_file).resolve()))
     try:
         runtime_config = build_runtime_config_from_args(args)
         output_dir_path = pathlib.Path(args.output).resolve()
