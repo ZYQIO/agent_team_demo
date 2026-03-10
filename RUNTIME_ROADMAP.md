@@ -72,6 +72,7 @@ The intended architecture is now:
 | Task-context boundaries | Completed | Runtime now prepares task-scoped shared-state views, emits `task_context_prepared`, and writes `context_boundaries.json` for per-agent/task visibility auditing. |
 | Teammate session ledger | Completed | Runtime now maintains durable per-agent session ids, transport, recent task history, message history, and provider memory in `teammate_sessions.json`. |
 | File-backed mailbox backend | Completed | Runtime runs now use an output-scoped `_mailbox/` directory to preserve `send` / `pull` / `pull_matching` semantics across separate mailbox instances instead of relying on one in-memory inbox object. |
+| Mailbox transport views | Completed | File-backed mailbox pulls now atomically claim message files, and worker/helper contexts consume transport-local mailbox views instead of only the lead runtime mailbox object. |
 | Session continuity on resume | Completed | Resumed runs now preserve prior teammate `session_id` values, increment session lifecycle counters, and emit explicit `teammate_session_resumed` events. |
 | Tmux session workspaces | Completed | Tmux-mode workers now get stable session-scoped workspace/temp directories that are surfaced in `teammate_sessions.json` and `session_boundaries.json`. |
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
@@ -418,7 +419,7 @@ Evidence review:
 Priority order for the next work:
 
 1. Reassess mailbox-driven reviewer tasks for isolation boundaries
-   Goal: decide whether `peer_challenge` and `evidence_pack` can move off the parent mailbox path without breaking live request/reply semantics, now that a file-backed mailbox backend exists.
+   Goal: decide whether `peer_challenge` and `evidence_pack` can move off the parent mailbox path without breaking live request/reply semantics, now that file-backed mailbox backend and transport-local mailbox views both exist.
 2. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
    Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution after the mailbox boundary is defined.
 3. Add lead-facing team interaction plus plan approval

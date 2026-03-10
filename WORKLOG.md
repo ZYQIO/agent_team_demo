@@ -13,6 +13,22 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Mailbox transport views for worker/helper sessions
+- Goal: make external-looking transport paths actually consume the file-backed mailbox backend instead of only sharing the lead runtime mailbox object
+- Changes:
+  - hardened file-backed mailbox pulls with atomic file-claim semantics so multiple mailbox instances can safely consume the same `_mailbox/` transport
+  - added `Mailbox.transport_view()` and switched runtime worker/helper contexts plus host-dispatched task contexts to use transport-local mailbox views
+  - narrowed non-claiming mailbox helpers to request subjects only, so helper loops stop stealing non-request replies that belong to task-owning reviewer flows
+  - added regression coverage for shared-storage mailbox views, cross-instance `pull_matching` preservation, non-claiming helper filtering, and host transport mailbox-view usage
+- Validation:
+  - targeted mailbox/host regression tests passed
+  - full suite: `100/100` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_mailbox_view`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed `run_summary.json` still reports `mailbox_model=asynchronous file-backed inbox`
+- Commit: `0eb5619`
+- Next implication: the next mailbox-boundary step is moving mailbox-driven reviewer handlers off parent-inline execution, not just off a shared mailbox object
+
 ### 2026-03-10 - File-backed runtime mailbox backend
 - Goal: turn mailbox-boundary work into runtime behavior by making mailbox delivery available beyond a single in-memory mailbox object
 - Changes:

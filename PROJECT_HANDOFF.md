@@ -20,11 +20,12 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `74f2bda`
+- Latest runtime checkpoint commit: `0eb5619`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
   - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
+  - transport-local mailbox views for runtime worker/helper sessions with atomic file claims during pull
   - dynamic task insertion
   - progress artifacts and session ledgers
   - task-scoped context boundaries
@@ -42,9 +43,9 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Main Remaining Gaps
 
 1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
-   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, but external teammate transports do not consume it yet.
+   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend plus transport-local mailbox views, but the reviewer handlers themselves still execute inside the parent runtime and do not yet have a real external request/reply contract.
 2. Host teammate mode is still not true external host-backed execution.
-   The transport path is real, but handler logic still runs inside the parent runtime and shares the in-memory mailbox.
+   The transport path is real, and host/helper sessions now consume transport-local mailbox views, but handler logic still runs inside the parent runtime instead of true external host-backed sessions.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
    Host metadata models `plan_approval`, but there is no approval gate for teammate task-list mutations and no live team-message surface beyond logs/artifacts.
 4. Replay is still checkpoint-based rather than true event-level state replay.
@@ -60,7 +61,7 @@ Why this is next:
 
 What that likely requires:
 - define how mailbox request/reply traffic can cross process or host boundaries
-- wire external teammate transports to the file-backed mailbox backend instead of only the parent runtime mailbox object
+- build on the new transport-local mailbox views so reviewer challenge handlers can consume mailbox traffic without parent-inline execution
 - decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
 - keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
 - extend tests, smoke run, and verifier expectations when the boundary changes

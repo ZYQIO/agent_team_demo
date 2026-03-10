@@ -72,6 +72,8 @@ Current findings:
 - `peer_challenge` and `evidence_pack` depend on live request/reply mailbox loops against long-lived teammate sessions
 - subprocess mode now has an explicit guardrail that keeps these task types on the parent mailbox path until a real mailbox transport exists
 - runtime runs now use a file-backed mailbox backend under the output directory, so `send` / `pull` / `pull_matching` semantics no longer depend on one in-memory mailbox instance
+- file-backed mailbox pulls now atomically claim message files, and runtime worker/helper contexts consume transport-local mailbox views instead of only the lead mailbox object
+- the remaining gap is no longer mailbox object sharing; it is that mailbox-driven reviewer handlers still execute inside the parent runtime and do not yet have a true external request/reply contract
 
 Acceptance criteria:
 - decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions
