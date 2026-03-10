@@ -20,7 +20,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `7a95571`
+- Latest runtime checkpoint commit: `ea1f405`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
@@ -44,7 +44,9 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
    `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions, while the current worker payload path is a one-shot task surface.
 2. Host teammate mode is still not true external host-backed execution.
    The transport path is real, but handler logic still runs inside the parent runtime and shares the in-memory mailbox.
-3. Replay is still checkpoint-based rather than true event-level state replay.
+3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
+   Host metadata models `plan_approval`, but there is no approval gate for teammate task-list mutations and no live team-message surface beyond logs/artifacts.
+4. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
 
@@ -60,6 +62,7 @@ What that likely requires:
 - decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
 - keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
 - extend tests, smoke run, and verifier expectations when the boundary changes
+- after transport boundaries are credible, add lead-facing team interaction and plan approval before replay-first work
 
 ## Fast Validation Commands
 

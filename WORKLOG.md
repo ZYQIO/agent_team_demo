@@ -13,6 +13,19 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Official Claude parity review
+- Goal: re-check the final target against the current Claude Code Agent Teams docs and decide whether the project backlog has drifted
+- Changes:
+  - reviewed the current official Agent Teams docs against local parity assumptions
+  - confirmed the core target is still correct: long-lived teammates, shared coordination, direct messaging, and real independent teammate sessions
+  - identified backlog drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity features like lead-facing team interaction and plan approval
+  - updated `ACTIVE_PLAN.md`, `PARITY.md`, `PROJECT_HANDOFF.md`, and `RUNTIME_ROADMAP.md` so plan approval and lead-facing interaction move ahead of replay-first work
+- Validation:
+  - docs reviewed against current official Claude Code Agent Teams documentation
+  - internal doc set checked for priority consistency after the reorder
+- Commit: pending in working tree
+- Next implication: after mailbox/host execution boundaries, the next parity-critical gap is runtime plan approval plus a lead-facing team interaction surface
+
 ### 2026-03-10 - Mailbox reviewer boundary review and guardrails
 - Goal: perform the first explicit direction review after the recent transport rounds and prevent reviewer mailbox tasks from drifting into fake subprocess isolation
 - Changes:
@@ -25,7 +38,7 @@ Each entry should capture:
   - real CLI subprocess smoke passed: `.codex_tmp/smoke_output_mailbox_guardrail`
   - verifier passed for that smoke output
   - smoke artifact review confirmed reviewer `task_history` contains `peer_challenge=in-process`, `evidence_pack=in-process`, and `llm_synthesis=subprocess`
-- Commit: pending in working tree
+- Commit: `ea1f405`
 - Next implication: true external host-backed teammate execution now depends on a real mailbox transport contract instead of direct handler offload
 
 ### 2026-03-10 - Host teammate transport skeleton

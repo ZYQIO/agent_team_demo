@@ -15,6 +15,12 @@ The current objective is different:
 - Improve practical parity with Claude Code Agent Teams without breaking current behavior
 - Keep CLI, tests, artifacts, and skill scripts stable during the refactor
 
+Official parity review (2026-03-10):
+
+- the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
+- the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
+- current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
+
 ## 2. Target Architecture
 
 The intended architecture is now:
@@ -414,7 +420,9 @@ Priority order for the next work:
    Goal: decide whether `peer_challenge` and `evidence_pack` can move off the parent mailbox path without breaking live request/reply semantics.
 2. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
    Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution after the mailbox boundary is defined.
-3. Add true event-level state replay
+3. Add lead-facing team interaction plus plan approval
+   Goal: match the official team-message and approval posture instead of keeping those capabilities as metadata only.
+4. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 
 
@@ -511,6 +519,7 @@ Remaining focus:
 
 - true external host-backed sessions on top of the executable host transport skeleton
 - mailbox-driven reviewer isolation boundaries
+- lead-facing team interaction and plan approval
 - true event-level replay
 
 

@@ -16,6 +16,11 @@ Direction review (2026-03-10):
 - they did not drift into artifact-only work
 - the next priority remains mailbox-driven reviewer boundaries, and true external host sessions stay behind that design because both tracks need a believable mailbox transport story
 
+Official parity check (2026-03-10, against current Claude Code Agent Teams docs):
+- the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
+- the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
+- the clearest under-modeled official features are lead-facing teammate interaction and plan approval before teammate-driven task-list changes
+
 ## Priority Order
 
 ### 1. Move reviewer `llm_synthesis` into isolated worker execution
@@ -84,12 +89,25 @@ Acceptance criteria:
 - mailbox-dependent reviewer flows have a real cross-boundary request/reply path
 - artifacts describe real execution, not just posture
 
-### 5. Add true event-level replay
+### 5. Add lead-facing team interaction and plan approval
+Status: Pending
+
+Why:
+- current Claude Code Agent Teams docs emphasize centralized team messages, asking teammates for plans, and approval before teammate task-list changes
+- the runtime models host `plan_approval` capability metadata, but not the runtime behavior
+- this is closer to official parity than deeper replay work
+
+Acceptance criteria:
+- lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts
+- teammate plan proposals can be reviewed before task-list mutations are applied
+- task mutation policies align with host capability metadata instead of staying descriptive only
+
+### 6. Add true event-level replay
 Status: Pending
 
 Why:
 - current replay is still checkpoint-backed
-- this is valuable, but should not preempt transport work
+- this is valuable, but should not preempt transport work or the missing official parity features above
 
 ## What Not To Do Next
 
@@ -98,6 +116,7 @@ Do not spend the next round on:
 - more report append sections
 - more status dashboards
 - cosmetic refactors without transport impact
+- replay-first work that jumps ahead of plan approval or lead-facing team interaction
 
 ## Review Cadence
 
