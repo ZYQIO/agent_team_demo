@@ -29,7 +29,7 @@ Each entry should capture:
   - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_dynamic_session`
   - verifier passed for that smoke output
   - smoke event review confirmed reviewer `dynamic_planning` now uses `session_task_assignment` / `session_task_result` plus `execution_mode=session_thread`, `session_worker_backend=external_process`, `insert_task_count=2`, and `add_dependency_count=2`, while `recommendation_pack` remains on the same external session-worker contract
-- Commit: pending
+- Commit: `60312a8`
 - Next implication: the remaining host transport gap is no longer reviewer planning; it is externalizing analyst or other non-reviewer host work without weakening the explicit lead-applied contract model
 
 ### 2026-03-10 - Host report session-worker contract
