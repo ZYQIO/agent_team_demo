@@ -644,6 +644,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(
+                    entry.get("task_type") == "llm_synthesis" and entry.get("transport") == "subprocess"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+            self.assertTrue(
+                any(
                     entry.get("task_type") == "recommendation_pack" and entry.get("transport") == "subprocess"
                     for entry in reviewer_history
                     if isinstance(entry, dict)
@@ -676,6 +683,133 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 msg=f"stdout:\n{verified.stdout}\n\nstderr:\n{verified.stderr}",
             )
             self.assertIn("[verify] PASS", verified.stdout)
+
+    def test_cli_host_mode_completes_with_host_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output_host"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "a.md").write_text("# Title\nbody\n", encoding="utf-8")
+            (target_dir / "b.md").write_text("plain\nplain\nplain\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--host-kind",
+                "claude-code",
+                "--teammate-mode",
+                "host",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+            ]
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}",
+            )
+            self.assertIn("teammate_mode=host", completed.stdout)
+
+            events = []
+            with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        events.append(json.loads(line))
+            event_names = {item.get("event") for item in events}
+            self.assertIn("teammate_mode_host_enabled", event_names)
+            self.assertIn("host_worker_task_dispatched", event_names)
+            self.assertIn("host_worker_task_completed", event_names)
+
+            host_enforcement = json.loads(
+                (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(host_enforcement.get("session_enforcement"), "host_managed")
+            self.assertEqual(host_enforcement.get("workspace_enforcement"), "host_managed")
+            self.assertTrue(host_enforcement.get("host_native_session_active"))
+            self.assertTrue(host_enforcement.get("host_native_workspace_active"))
+
+            session_boundaries = json.loads(
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(
+                session_boundaries.get("boundary_mode_counts", {}).get("host_native_session", 0),
+                1,
+            )
+            host_boundaries = [
+                item
+                for item in session_boundaries.get("sessions", [])
+                if isinstance(item, dict) and item.get("boundary_mode") == "host_native_session"
+            ]
+            self.assertGreaterEqual(len(host_boundaries), 1)
+            first_boundary = host_boundaries[0]
+            self.assertEqual(first_boundary.get("transport"), "host")
+            self.assertTrue(str(first_boundary.get("transport_session_name", "")).startswith("claude-code:"))
+            self.assertTrue(str(first_boundary.get("workspace_root", "")).startswith("host://claude-code/sessions/"))
+            self.assertTrue(first_boundary.get("workspace_isolation_active"))
+
+            teammate_sessions = json.loads(
+                (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")
+            )
+            reviewer_sessions = [
+                item
+                for item in teammate_sessions.get("sessions", [])
+                if isinstance(item, dict) and item.get("agent_type") == "reviewer"
+            ]
+            self.assertEqual(len(reviewer_sessions), 1)
+            reviewer_history = reviewer_sessions[0].get("task_history", [])
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "llm_synthesis" and entry.get("transport") == "host"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+            self.assertTrue(
+                any(
+                    entry.get("task_type") == "recommendation_pack" and entry.get("transport") == "host"
+                    for entry in reviewer_history
+                    if isinstance(entry, dict)
+                )
+            )
+
+            verify_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "skills" / "agent-team-runtime" / "scripts" / "verify_run.py"),
+                "--output",
+                str(output_dir),
+            ]
+            verified = subprocess.run(
+                verify_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(
+                verified.returncode,
+                0,
+                msg=f"stdout:\n{verified.stdout}\n\nstderr:\n{verified.stderr}",
+            )
+            self.assertIn("[verify] PASS", verified.stdout)
+
 
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

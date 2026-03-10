@@ -13,6 +13,36 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host teammate transport skeleton
+- Goal: make `host` mode execute through a real transport path instead of only describing host posture in artifacts
+- Changes:
+  - added `agent_team/transports/host.py` and wired a distinct host transport path into the runtime engine and CLI
+  - made `--teammate-mode host` dispatch teammate tasks through host transport bookkeeping instead of the in-process worker path
+  - recorded `host_native_session` boundaries, `claude-code:<agent>` transport session names, and `host://claude-code/sessions/<session_id>/...` workspace descriptors from host-mode execution
+  - added targeted host runner coverage plus CLI end-to-end assertions for `host` mode artifacts and reviewer history
+- Validation:
+  - full suite: `95/95` tests passed
+  - real CLI host smoke passed: `.codex_tmp/smoke_output_host_mode`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed reviewer `task_history` contains `llm_synthesis=host` and `recommendation_pack=host`
+- Commit: pending in working tree
+- Next implication: the remaining host/session gap is true external host-backed execution, and the next runtime isolation question is mailbox-driven reviewer tasks
+
+### 2026-03-10 - Reviewer llm_synthesis subprocess isolation
+- Goal: finish the last large reviewer task still pinned in-process and keep transport work moving instead of adding more artifacts
+- Changes:
+  - added reviewer `llm_synthesis` to the existing subprocess worker path
+  - passed model config into reviewer worker payloads and rebuilt the provider inside the worker subprocess
+  - preserved the `llm_synthesis` shared-state contract so downstream `recommendation_pack` behavior stayed unchanged
+  - added worker-payload, reviewer-session, and CLI subprocess coverage for the new path
+- Validation:
+  - full suite: `93/93` tests passed
+  - real CLI subprocess smoke passed: `.codex_tmp/smoke_output_llm_subprocess`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed reviewer `task_history` contains `llm_synthesis=subprocess`
+- Commit: pending in working tree
+- Next implication: the next transport priority is host-native teammate execution, while mailbox-driven reviewer tasks remain the main isolation boundary question
+
 ### 2026-03-10 - Documentation handoff baseline
 - Goal: add durable project handoff material so work can continue from another context without reconstructing state from memory
 - Changes:

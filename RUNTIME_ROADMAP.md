@@ -1,6 +1,6 @@
 # Agent Team Runtime Roadmap
 
-Current status snapshot: `2026-03-09`
+Current status snapshot: `2026-03-10`
 
 This document tracks the working plan, completed refactors, validation status, and the recommended next tasks for `agent_team_demo`.
 
@@ -24,7 +24,7 @@ The intended architecture is now:
 - `agent_team/runtime/`
   Runtime internals: adjudication, persistence, engine
 - `agent_team/transports/`
-  Teammate execution transports: `in-process`, `tmux`, future host/session transport
+  Teammate execution transports: `in-process`, `subprocess`, `tmux`, `host`
 - `agent_team/workflows/`
   Workflow packs: task graph and workflow-specific handlers
 - `agent_team_runtime.py`
@@ -72,7 +72,9 @@ The intended architecture is now:
 | Tmux execution-root isolation | Completed | Tmux-mode workers now execute with session-local `cwd`, `HOME`, cache/config dirs, and subprocess fallback workdirs surfaced in session artifacts. |
 | Subprocess analyst mode | Completed | Analyst tasks can now run as first-class worker subprocesses without tmux, reusing session-scoped workdir/home/target isolation while reviewer tasks remain in-process. |
 | Subprocess reviewer planning | Completed | Reviewer `dynamic_planning` and `repo_dynamic_planning` tasks now execute in isolated worker subprocesses that return task-mutation plans for the parent runtime to apply; mailbox-driven reviewer tasks still stay in-process. |
-| Subprocess reviewer reporting | Completed | Reviewer `recommendation_pack` and `repo_recommendation_pack` tasks now render the base `final_report.md` inside isolated worker subprocesses; mailbox-driven and provider-backed reviewer tasks still stay in-process. |
+| Subprocess reviewer reporting | Completed | Reviewer `recommendation_pack` and `repo_recommendation_pack` tasks now render the base `final_report.md` inside isolated worker subprocesses; mailbox-driven reviewer tasks still stay in-process. |
+| Subprocess reviewer llm synthesis | Completed | Reviewer `llm_synthesis` now rebuilds the configured provider inside isolated worker subprocesses and preserves the existing `llm_synthesis` shared-state contract for downstream report generation. |
+| Host transport skeleton | Completed | `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries in runtime artifacts. |
 | Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions. |
 | Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
@@ -361,144 +363,59 @@ Key runtime artifact added during M8:
 
 ## 6. Validation Status
 
-Latest verified on `2026-03-09`.
+Latest verified on `2026-03-10`.
 
 ### Tests
 
 Command:
 
 ```bash
-python3 -m unittest discover -s agent_team_demo/tests -v
+python3 -m unittest discover -s agent_team_demo/tests -p "test_*.py"
 ```
 
 Result:
 
-- `78/78` tests passed
+- `95/95` tests passed
 
 ### Smoke Runs
 
-Standard smoke run:
+Reviewer subprocess smoke run:
 
 ```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset fast \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m7_fast
+python3 agent_team_demo/agent_team_runtime.py   --target .   --output .codex_tmp/smoke_output_llm_subprocess   --provider heuristic   --teammate-mode subprocess   --peer-wait-seconds 1   --evidence-wait-seconds 1
 ```
 
-tmux smoke run:
+Host transport smoke run:
 
 ```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset tmux \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m8_lease_ledger_tmux \
-  --extra-arg=--peer-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--evidence-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--no-auto-round3-on-challenge
-```
-
-tmux pause/resume history smoke run:
-
-```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset tmux \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m8_resume_history_tmux \
-  --max-completed-tasks 3 \
-  --extra-arg=--peer-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--evidence-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--no-auto-round3-on-challenge
-
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset tmux \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m8_resume_history_tmux \
-  --resume-from agent_team_demo/output_analysis_m8_resume_history_tmux/run_checkpoint.json
-```
-
-Second workflow smoke run:
-
-```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset fast \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m9_repo_audit \
-  --extra-arg=--workflow-pack \
-  --extra-arg=repo-audit
-```
-
-Second workflow tmux smoke run:
-
-```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/run_runtime.py \
-  --preset tmux \
-  --target agent_team_demo \
-  --output agent_team_demo/output_analysis_m9_repo_audit_tmux \
-  --extra-arg=--workflow-pack \
-  --extra-arg=repo-audit \
-  --extra-arg=--peer-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--evidence-wait-seconds \
-  --extra-arg=1 \
-  --extra-arg=--no-auto-round3-on-challenge
+python3 agent_team_demo/agent_team_runtime.py   --target .   --output .codex_tmp/smoke_output_host_mode   --provider heuristic   --host-kind claude-code   --teammate-mode host   --peer-wait-seconds 1   --evidence-wait-seconds 1
 ```
 
 Artifact verification:
 
 ```bash
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m7_fast
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py   --output .codex_tmp/smoke_output_llm_subprocess
 
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m8_lease_ledger_tmux
-
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m8_resume_history_tmux
-
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m8_resume_config_history_tmux
-
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m9_repo_audit
-
-python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py \
-  --output agent_team_demo/output_analysis_m9_repo_audit_tmux
+python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py   --output .codex_tmp/smoke_output_host_mode
 ```
 
-Verified output directories:
+Evidence review:
 
-- [output_analysis_m7_fast](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m7_fast)
-- [output_analysis_m8_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_tmux)
-- [output_analysis_m8_lifecycle_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lifecycle_tmux)
-- [output_analysis_m8_timeout_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_timeout_tmux)
-- [output_analysis_m8_spawn_retry_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_spawn_retry_tmux)
-- [output_analysis_m8_stale_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stale_cleanup_tmux)
-- [output_analysis_m8_stale_recovery_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stale_recovery_tmux)
-- [output_analysis_m8_active_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_active_cleanup_tmux)
-- [output_analysis_m8_orphan_cleanup_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_orphan_cleanup_tmux)
-- [output_analysis_m8_stable_session_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_stable_session_tmux)
-- [output_analysis_m8_reuse_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_reuse_tmux)
-- [output_analysis_m8_lease_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_tmux)
-- [output_analysis_m8_lease_ledger_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_lease_ledger_tmux)
-- [output_analysis_m8_resume_recovery_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_recovery_tmux)
-- [output_analysis_m8_resume_history_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_history_tmux)
-- [output_analysis_m8_resume_config_history_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m8_resume_config_history_tmux)
-- [output_analysis_m9_repo_audit](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit)
-- [output_analysis_m9_repo_audit_tmux](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/output_analysis_m9_repo_audit_tmux)
+- subprocess smoke confirms reviewer `task_history` contains `llm_synthesis=subprocess`
+- host smoke confirms `transport=host`, `boundary_mode=host_native_session`, and `workspace_root=host://claude-code/sessions/<session_id>`
+
 
 ## 7. Recommended Next Tasks
 
 Priority order for the next work:
 
-1. Continue tmux parity from `Partial` toward `Implemented`
-   Goal: move beyond current lifecycle/diagnostics/timeout/spawn-retry/stale-cleanup/stale-recovery/active-cleanup/orphan-cleanup coverage into stronger execution isolation, session reuse strategy, and interruption recovery.
-2. Add true event-level state replay
+1. Expand the executable `host` transport skeleton toward true external host-backed teammate sessions
+   Goal: move from a host-managed runtime path and host-native artifact posture into genuinely independent host-backed teammate execution.
+2. Reassess mailbox-driven reviewer tasks for isolation boundaries
+   Goal: decide whether `peer_challenge` and `evidence_pack` can move off the in-process path without breaking mailbox semantics.
+3. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
+
 
 ## 8. Proposed Next Milestones
 
@@ -585,13 +502,16 @@ Completed slice:
 - Added a durable teammate session ledger so every agent now has a persistent session id, transport, recent tasks, recent messages, and provider memory snapshot in runtime artifacts
 - Added `host_enforcement.json` so advertised host capabilities are separated from runtime-active enforcement decisions
 - Added `session_boundaries.json` and final-report summaries so host/session isolation posture is explicit instead of implicit in host metadata and transport internals
-- Verified tmux mode still passes smoke and artifact validation
+- Added reviewer `llm_synthesis` subprocess isolation with provider reconstruction and shared-state-compatible output
+- Added an executable `host` teammate mode with a distinct host transport path, `host_native_session` boundaries, and `host://<host-kind>/sessions/<session_id>/...` workspace descriptors
+- Verified subprocess and host-mode smoke runs plus artifact validation
 
 Remaining focus:
 
-- stronger tmux execution isolation
-- better interruption/recovery semantics
-- stronger host/session transport boundaries on top of the new teammate session ledger
+- true external host-backed sessions on top of the executable host transport skeleton
+- mailbox-driven reviewer isolation boundaries
+- true event-level replay
+
 
 ### M9: Second Workflow Pack
 

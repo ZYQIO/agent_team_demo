@@ -17,6 +17,8 @@ SESSION_HISTORY_LIMIT = 12
 
 
 def teammate_transport_for_profile(profile: AgentProfile, runtime_config: RuntimeConfig) -> str:
+    if runtime_config.teammate_mode == "host":
+        return "host"
     if runtime_config.teammate_mode == "tmux" and profile.agent_type == "analyst":
         return "tmux"
     if runtime_config.teammate_mode == "subprocess" and profile.agent_type == "analyst":
@@ -498,10 +500,11 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
         transport = str(session.get("transport", "") or "unknown")
         notes: List[str] = []
         workspace_isolation_active = bool(session.get("workspace_isolation_active", False))
-        if host_native_session_active:
+        if host_native_session_active and transport == "host":
             boundary_mode = "host_native_session"
             boundary_strength = "strong"
             isolation_source = "host"
+            notes.append("session_isolation_backed_by_host_transport")
         elif transport == "tmux" or transport.startswith("tmux"):
             boundary_mode = "tmux_worker_session"
             boundary_strength = "medium"

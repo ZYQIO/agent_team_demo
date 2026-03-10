@@ -7,10 +7,14 @@ Keep moving the project from a well-instrumented local runtime toward a more exe
 The priority is no longer new artifacts or visibility layers.
 The priority is execution isolation and real teammate transport behavior.
 
+Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
+Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
+The next priority is reassessing mailbox-driven reviewer tasks without inventing fake isolation semantics.
+
 ## Priority Order
 
 ### 1. Move reviewer `llm_synthesis` into isolated worker execution
-Status: Next
+Status: Completed (2026-03-10)
 
 Why:
 - it is the largest remaining reviewer task still running in-process
@@ -30,23 +34,21 @@ Acceptance criteria:
 - verifier green
 
 ### 2. Build a real host-native teammate transport skeleton
-Status: Pending
+Status: Completed (2026-03-10)
 
-Why:
-- current host integration is still posture / classification, not transport execution
-- this is the biggest remaining parity gap versus Claude Code Agent Teams
+Completed outcomes:
+- added a transport abstraction that is distinct from `in-process`, `subprocess`, and `tmux`
+- made `--teammate-mode host` executable through a lead-dispatched host transport path
+- routed session boundary artifacts from host-mode execution, including `host_native_session` boundaries and `host://<host-kind>/sessions/<session_id>/...` workspace descriptors
 
-Expected implementation shape:
-- add a transport abstraction that is distinct from `tmux` and `subprocess`
-- make `host` mode executable, not just descriptive
-- route session boundary artifacts from real host transport events
-
-Acceptance criteria:
-- `--teammate-mode host` or equivalent actually changes execution path
-- session boundaries identify host-native runtime behavior from execution, not from metadata only
+Validation evidence:
+- targeted host runner tests passed
+- full suite green
+- real host-mode smoke green
+- verifier green
 
 ### 3. Reassess reviewer mailbox tasks for isolation boundaries
-Status: Pending
+Status: Next
 
 Scope:
 - `peer_challenge`

@@ -2221,6 +2221,97 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("## Recommended Actions", report)
             self.assertIn("- Reduce oversized files", report)
 
+    def test_run_tmux_worker_payload_runs_markdown_llm_synthesis_in_worker(self) -> None:
+        result = runtime.run_tmux_worker_payload(
+            {
+                "task_type": "llm_synthesis",
+                "goal": "Audit markdown quality",
+                "output_dir": ".",
+                "model_config": {
+                    "provider_name": "heuristic",
+                    "model": "heuristic-v1",
+                    "openai_api_key_env": "OPENAI_API_KEY",
+                    "openai_base_url": "https://api.openai.com/v1",
+                    "require_llm": False,
+                    "timeout_sec": 5,
+                },
+                "task_context": {
+                    "visible_shared_state": {
+                        "workflow": {"pack": "markdown-audit"},
+                        "heading_issues": [{"path": "docs/a.md"}],
+                        "length_issues": [{"path": "docs/b.md", "line_count": 240}],
+                        "dynamic_plan": {"enabled": True, "inserted_tasks": ["heading_structure_followup"]},
+                        "peer_challenge": {},
+                        "lead_adjudication": {"verdict": "challenge", "score": 60},
+                        "evidence_pack": {"triggered": False, "reason": "not required"},
+                        "lead_re_adjudication": {"verdict": "accept", "score": 78, "rationale": "covered"},
+                    }
+                },
+                "board_snapshot": {
+                    "tasks": [
+                        {"task_id": "heading_audit", "result": {"files_without_headings": 1}},
+                        {"task_id": "length_audit", "result": {"long_files": 1}},
+                        {"task_id": "dynamic_planning", "result": {"enabled": True}},
+                    ]
+                },
+            }
+        )
+
+        llm_synthesis = result.get("state_updates", {}).get("llm_synthesis", {})
+        self.assertEqual(llm_synthesis.get("provider", {}).get("provider"), "heuristic")
+        self.assertTrue(llm_synthesis.get("content", "").strip())
+        self.assertEqual(result.get("result", {}).get("provider", {}).get("provider"), "heuristic")
+        self.assertTrue(result.get("result", {}).get("preview", "").strip())
+
+    def test_run_tmux_worker_payload_runs_repo_llm_synthesis_in_worker(self) -> None:
+        result = runtime.run_tmux_worker_payload(
+            {
+                "task_type": "llm_synthesis",
+                "goal": "Audit repository layout",
+                "output_dir": ".",
+                "task_context": {
+                    "visible_shared_state": {
+                        "workflow": {"pack": "repo-audit"},
+                        "agent_team_config": {
+                            "model": {
+                                "provider_name": "heuristic",
+                                "model": "heuristic-v1",
+                                "openai_api_key_env": "OPENAI_API_KEY",
+                                "openai_base_url": "https://api.openai.com/v1",
+                                "require_llm": False,
+                                "timeout_sec": 5,
+                            }
+                        },
+                        "repository_inventory": [{"path": "src/app.py"}, {"path": "docs/readme.md"}],
+                        "repository_large_files": [{"path": "src/big.py", "line_count": 360, "byte_count": 22000}],
+                        "repository_extension_summary": {
+                            "unique_extensions": 2,
+                            "files_without_extension": 0,
+                            "top_extensions": [{"extension": ".py", "file_count": 3, "total_lines": 180}],
+                        },
+                        "repo_dynamic_plan": {"enabled": True, "inserted_tasks": ["extension_hotspot_followup"]},
+                        "peer_challenge": {},
+                        "lead_adjudication": {"verdict": "challenge", "score": 63},
+                        "evidence_pack": {"triggered": False, "reason": "not required"},
+                        "lead_re_adjudication": {"verdict": "accept", "score": 81, "rationale": "covered"},
+                    }
+                },
+                "board_snapshot": {
+                    "tasks": [
+                        {"task_id": "extension_audit", "result": {"unique_extensions": 2}},
+                        {"task_id": "large_file_audit", "result": {"oversized_files": 1}},
+                        {"task_id": "repo_dynamic_planning", "result": {"enabled": True}},
+                    ]
+                },
+            }
+        )
+
+        llm_synthesis = result.get("state_updates", {}).get("llm_synthesis", {})
+        self.assertEqual(llm_synthesis.get("provider", {}).get("provider"), "heuristic")
+        self.assertIn("Priority actions:", llm_synthesis.get("content", ""))
+        self.assertEqual(result.get("result", {}).get("provider", {}).get("provider"), "heuristic")
+
+
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -3255,6 +3346,178 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("subprocess_worker_task_dispatched", event_names)
             self.assertIn("subprocess_worker_task_completed", event_names)
 
+    def test_reviewer_llm_synthesis_subprocess_passes_model_config_and_updates_shared_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="heading_audit",
+                        title="Heading audit",
+                        task_type="heading_audit",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                    runtime.Task(
+                        task_id="length_audit",
+                        title="Length audit",
+                        task_type="length_audit",
+                        required_skills={"analysis"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                    ),
+                    runtime.Task(
+                        task_id="llm_synthesis",
+                        title="Synthesize findings",
+                        task_type="llm_synthesis",
+                        required_skills={"llm"},
+                        dependencies=["heading_audit", "length_audit"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            heading_task = board.claim_specific(
+                task_id="heading_audit",
+                agent_name="analyst_alpha",
+                agent_skills={"analysis"},
+                agent_type="analyst",
+            )
+            length_task = board.claim_specific(
+                task_id="length_audit",
+                agent_name="analyst_beta",
+                agent_skills={"analysis"},
+                agent_type="analyst",
+            )
+            self.assertIsNotNone(heading_task)
+            self.assertIsNotNone(length_task)
+            board.complete("heading_audit", owner="analyst_alpha", result={"files_without_headings": 1})
+            board.complete("length_audit", owner="analyst_beta", result={"long_files": 1})
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set(
+                "agent_team_config",
+                runtime.build_agent_team_config(
+                    runtime_config=runtime.RuntimeConfig(teammate_mode="subprocess"),
+                    host_kind="generic-cli",
+                    provider_name="heuristic",
+                    model="heuristic-v1",
+                    openai_api_key_env="OPENAI_API_KEY",
+                    openai_base_url="https://api.openai.com/v1",
+                    require_llm=False,
+                    provider_timeout_sec=5,
+                    workflow_pack="markdown-audit",
+                ).to_dict(),
+            )
+            shared_state.set("workflow", {"pack": "markdown-audit", "preset": "default", "options": {}})
+            shared_state.set("heading_issues", [{"path": "docs/a.md"}])
+            shared_state.set("length_issues", [{"path": "docs/b.md", "line_count": 240}])
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            profile = runtime.AgentProfile(
+                name="reviewer_gamma",
+                skills={"review", "writer", "llm"},
+                agent_type="reviewer",
+            )
+            session_state = registry.ensure_profile(profile=profile, transport="in-process", status="ready")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="subprocess"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=threading.Event(),
+                claim_tasks=True,
+                handlers={"llm_synthesis": runtime.handle_llm_synthesis},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+            claimed = board.claim_specific(
+                task_id="llm_synthesis",
+                agent_name=profile.name,
+                agent_skills=profile.skills,
+                agent_type=profile.agent_type,
+            )
+            self.assertIsNotNone(claimed)
+            fake_execution = {
+                "ok": True,
+                "transport": "subprocess",
+                "payload": {
+                    "result": {
+                        "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                        "preview": "Priority actions: fix headings first",
+                    },
+                    "state_updates": {
+                        "llm_synthesis": {
+                            "provider": {"provider": "heuristic", "model": "heuristic-v1", "mode": "local"},
+                            "content": "Priority actions: fix headings first",
+                        }
+                    },
+                },
+                "diagnostics": {
+                    "tmux_session_workspace_root": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer"),
+                    "tmux_session_workspace_workdir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "target_snapshot"),
+                    "tmux_session_workspace_home_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "home"),
+                    "tmux_session_workspace_target_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "target_snapshot"),
+                    "tmux_session_workspace_tmp_dir": str(output_dir / "_tmux_session_workspaces" / "reviewer_gamma" / "session-reviewer" / "tmp"),
+                    "tmux_session_workspace_scope": "tmux_session_workspace",
+                    "tmux_session_workspace_isolated": True,
+                },
+            }
+            with mock.patch.object(runtime.tmux_transport, "run_tmux_worker_task", return_value=fake_execution) as run_worker:
+                agent._run_task(claimed)
+
+            dispatched_payload = run_worker.call_args.kwargs["payload"]
+            self.assertEqual(dispatched_payload.get("model_config", {}).get("provider_name"), "heuristic")
+            self.assertEqual(dispatched_payload.get("model_config", {}).get("model"), "heuristic-v1")
+            llm_task = next(item for item in board.snapshot()["tasks"] if item["task_id"] == "llm_synthesis")
+            self.assertEqual(llm_task["status"], "completed")
+            session = registry.session_for("reviewer_gamma")
+            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertEqual(session.get("task_history", [])[-1].get("task_type"), "llm_synthesis")
+            self.assertEqual(session.get("task_history", [])[-1].get("transport"), "subprocess")
+            self.assertEqual(
+                shared_state.get("llm_synthesis", {}).get("provider", {}).get("provider"),
+                "heuristic",
+            )
+            self.assertIn(
+                "Priority actions: fix headings first",
+                shared_state.get("llm_synthesis", {}).get("content", ""),
+            )
+
+
     def test_build_host_enforcement_snapshot_marks_subprocess_mode_transport_managed(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -3376,12 +3639,131 @@ class RuntimeLogicTests(unittest.TestCase):
         )
         registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
         analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
-        registry.ensure_profile(profile=analyst, transport="in-process", status="ready")
+        registry.ensure_profile(profile=analyst, transport="host", status="ready")
 
         snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
 
         self.assertEqual(snapshot["boundary_mode_counts"]["host_native_session"], 1)
         self.assertEqual(snapshot["boundary_strength_counts"]["strong"], 1)
+
+    def test_run_host_teammate_task_once_executes_task_and_records_host_boundary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="host_review",
+                        title="Host review",
+                        task_type="host_review",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set(
+                "host",
+                {
+                    "kind": "claude-code",
+                    "session_transport": "session",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                        "auto_context_files": True,
+                    },
+                    "limits": [],
+                    "note": "",
+                },
+            )
+            shared_state.set(
+                "host_runtime_enforcement",
+                {
+                    "host_kind": "claude-code",
+                    "configured_session_transport": "session",
+                    "requested_teammate_mode": "host",
+                    "session_enforcement": "host_managed",
+                    "workspace_enforcement": "host_managed",
+                    "host_native_session_active": True,
+                    "host_native_workspace_active": True,
+                    "host_managed_context_requested": True,
+                    "host_managed_context_active": True,
+                    "effective_boundary_source": "host",
+                    "effective_boundary_strength": "strong",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "notes": ["host_transport_manages_session_boundaries"],
+                },
+            )
+            shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+            shared_state.set("team_profiles", [{"name": "reviewer_gamma", "agent_type": "reviewer", "skills": ["review"]}])
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+            registry.ensure_profile(profile=reviewer, transport="host", status="ready")
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="host transport test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_registry=registry,
+            )
+
+            def _handler(context, task):
+                context.shared_state.set("host_result", {"task_id": task.task_id, "transport": "host"})
+                return {"ok": True, "transport": "host"}
+
+            ran = runtime.run_host_teammate_task_once(
+                lead_context=lead_context,
+                teammate_profiles=[reviewer],
+                handlers={"host_review": _handler},
+            )
+
+            self.assertTrue(ran)
+            task_snapshot = board.snapshot()["tasks"][0]
+            self.assertEqual(task_snapshot["status"], "completed")
+            self.assertEqual(shared_state.get("host_result", {}).get("transport"), "host")
+            session = registry.session_for("reviewer_gamma")
+            self.assertEqual(session.get("transport"), "host")
+            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertEqual(session.get("transport_session_name"), "claude-code:reviewer_gamma")
+            self.assertTrue(str(session.get("workspace_root", "")).startswith("host://claude-code/sessions/"))
+            boundaries = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+            self.assertEqual(boundaries.get("boundary_mode_counts", {}).get("host_native_session", 0), 1)
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            event_names = {item.get("event") for item in events}
+            self.assertIn("host_worker_task_dispatched", event_names)
+            self.assertIn("host_worker_task_completed", event_names)
+
 
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

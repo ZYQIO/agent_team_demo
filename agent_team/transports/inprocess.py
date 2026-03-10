@@ -126,6 +126,8 @@ class InProcessTeammateAgent(threading.Thread):
             return fallback_reply
 
     def _task_transport(self, task: Task) -> str:
+        if self.context.runtime_config.teammate_mode == "host":
+            return "host"
         if (
             self.context.runtime_config.teammate_mode == "subprocess"
             and self.context.profile.agent_type == "reviewer"
@@ -173,6 +175,9 @@ class InProcessTeammateAgent(threading.Thread):
         runtime_script = getattr(self.context, "runtime_script", None)
         if runtime_script is None:
             raise RuntimeError("runtime_script unavailable for subprocess worker task")
+        visible_shared_state = task_context.get("visible_shared_state", {})
+        if not isinstance(visible_shared_state, dict):
+            visible_shared_state = {}
         payload = {
             "task_type": task.task_type,
             "task_payload": task.payload,
@@ -180,10 +185,15 @@ class InProcessTeammateAgent(threading.Thread):
             "output_dir": str(self.context.output_dir),
             "goal": self.context.goal,
             "task_context": task_context,
-            "shared_state": task_context.get("visible_shared_state", {}),
+            "shared_state": visible_shared_state,
             "board_snapshot": self.context.board.snapshot(),
             "runtime_config": self.context.runtime_config.to_dict(),
         }
+        agent_team_config = visible_shared_state.get("agent_team_config", {})
+        if isinstance(agent_team_config, dict):
+            model_config = agent_team_config.get("model", {})
+            if isinstance(model_config, dict) and model_config:
+                payload["model_config"] = dict(model_config)
         if self.context.session_registry is not None:
             payload["session_state"] = dict(self.context.session_state)
         self.context.logger.log("subprocess_worker_task_dispatched", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type)
@@ -460,8 +470,13 @@ class InProcessTeammateAgent(threading.Thread):
         session_transport = "in-process"
         if (
             not self.claim_tasks
-            and self.context.runtime_config.teammate_mode in {"tmux", "subprocess"}
-            and self.context.profile.agent_type == "analyst"
+            and (
+                (
+                    self.context.runtime_config.teammate_mode in {"tmux", "subprocess"}
+                    and self.context.profile.agent_type == "analyst"
+                )
+                or self.context.runtime_config.teammate_mode == "host"
+            )
         ):
             session_transport = str(self.context.session_state.get("transport", "") or "")
         if self.context.session_registry is not None:

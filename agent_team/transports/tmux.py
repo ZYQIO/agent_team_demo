@@ -32,6 +32,7 @@ TMUX_ANALYST_TASK_TYPES = {
 SUBPROCESS_REVIEWER_TASK_TYPES = {
     "dynamic_planning",
     "repo_dynamic_planning",
+    "llm_synthesis",
     "recommendation_pack",
     "repo_recommendation_pack",
 }
@@ -1312,13 +1313,50 @@ def _build_worker_reporting_context(
     output_dir: pathlib.Path,
     board_snapshot: Dict[str, Any],
     shared_state: Dict[str, Any],
+    provider: Any = None,
 ) -> Any:
-    return SimpleNamespace(
-        goal=str(goal or ""),
-        output_dir=output_dir,
-        board=_WorkerBoardSnapshot(board_snapshot),
-        shared_state=_WorkerSharedStateView(shared_state),
-    )
+    context = {
+        "goal": str(goal or ""),
+        "output_dir": output_dir,
+        "board": _WorkerBoardSnapshot(board_snapshot),
+        "shared_state": _WorkerSharedStateView(shared_state),
+    }
+    if provider is not None:
+        context["provider"] = provider
+    return SimpleNamespace(**context)
+
+
+def _resolve_worker_model_config(
+    shared_state: Dict[str, Any],
+    payload_model_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    if isinstance(payload_model_config, dict) and payload_model_config:
+        return dict(payload_model_config)
+    agent_team_config = shared_state.get("agent_team_config", {})
+    if not isinstance(agent_team_config, dict):
+        return {}
+    model_config = agent_team_config.get("model", {})
+    if not isinstance(model_config, dict):
+        return {}
+    return dict(model_config)
+
+
+def _resolve_worker_workflow_pack(shared_state: Dict[str, Any]) -> str:
+    workflow = shared_state.get("workflow", {})
+    if isinstance(workflow, dict):
+        pack = str(workflow.get("pack", "") or "").strip()
+        if pack:
+            return pack
+    agent_team_config = shared_state.get("agent_team_config", {})
+    if isinstance(agent_team_config, dict):
+        workflow = agent_team_config.get("workflow", {})
+        if isinstance(workflow, dict):
+            pack = str(workflow.get("pack", "") or "").strip()
+            if pack:
+                return pack
+    if shared_state.get("repository_inventory") or shared_state.get("repository_large_files"):
+        return "repo-audit"
+    return "markdown-audit"
 
 
 def _worker_recommendation_pack(
@@ -1355,6 +1393,62 @@ def _worker_repo_recommendation_pack(
     )
     result = handle_repo_recommendation_pack(context, None)
     return {"result": result}
+
+
+def _worker_llm_synthesis(
+    goal: str,
+    output_dir: pathlib.Path,
+    board_snapshot: Dict[str, Any],
+    shared_state: Dict[str, Any],
+    model_config: Dict[str, Any],
+) -> Dict[str, Any]:
+    from ..models import build_provider
+
+    resolved_model_config = _resolve_worker_model_config(
+        shared_state=shared_state,
+        payload_model_config=model_config,
+    )
+    timeout_sec = resolved_model_config.get(
+        "timeout_sec",
+        resolved_model_config.get("provider_timeout_sec", 60),
+    )
+    try:
+        effective_timeout_sec = int(timeout_sec or 60)
+    except (TypeError, ValueError):
+        effective_timeout_sec = 60
+    provider, _ = build_provider(
+        provider_name=str(
+            resolved_model_config.get("provider_name", resolved_model_config.get("provider", "heuristic"))
+            or "heuristic"
+        ),
+        model=str(resolved_model_config.get("model", "heuristic-v1") or "heuristic-v1"),
+        openai_api_key_env=str(
+            resolved_model_config.get("openai_api_key_env", "OPENAI_API_KEY") or "OPENAI_API_KEY"
+        ),
+        openai_base_url=str(
+            resolved_model_config.get("openai_base_url", "https://api.openai.com/v1")
+            or "https://api.openai.com/v1"
+        ),
+        require_llm=bool(resolved_model_config.get("require_llm", False)),
+        timeout_sec=effective_timeout_sec,
+    )
+    context = _build_worker_reporting_context(
+        goal=goal,
+        output_dir=output_dir,
+        board_snapshot=board_snapshot,
+        shared_state=shared_state,
+        provider=provider,
+    )
+    workflow_pack = _resolve_worker_workflow_pack(shared_state=shared_state)
+    if workflow_pack == "repo-audit":
+        from ..workflows.repo_audit_reporting import handle_llm_synthesis
+    else:
+        from ..workflows.markdown_audit_reporting import handle_llm_synthesis
+
+    result = handle_llm_synthesis(context, None)
+    synthesis = context.shared_state.get("llm_synthesis", {})
+    state_updates = {"llm_synthesis": synthesis} if isinstance(synthesis, dict) else {}
+    return {"result": result, "state_updates": state_updates}
 
 
 def _worker_dynamic_planning(
@@ -1428,6 +1522,9 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     runtime_config = payload.get("runtime_config", {})
     if not isinstance(runtime_config, dict):
         runtime_config = {}
+    model_config = payload.get("model_config", {})
+    if not isinstance(model_config, dict):
+        model_config = {}
     goal = str(payload.get("goal", "") or "")
 
     if task_type == "discover_markdown":
@@ -1485,6 +1582,15 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             shared_state=shared_state,
             runtime_config=runtime_config,
             board_snapshot=board_snapshot,
+        )
+    if task_type == "llm_synthesis":
+        output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()
+        return _worker_llm_synthesis(
+            goal=goal,
+            output_dir=output_dir,
+            board_snapshot=board_snapshot,
+            shared_state=shared_state,
+            model_config=model_config,
         )
     if task_type == "recommendation_pack":
         output_dir = pathlib.Path(str(payload.get("output_dir", "."))).resolve()

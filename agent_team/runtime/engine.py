@@ -69,6 +69,7 @@ TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
 TaskHandlers = Mapping[str, TaskHandler]
 TeammateFactory = Callable[..., threading.Thread]
 TmuxRunner = Callable[[AgentContext, Sequence[AgentProfile], pathlib.Path, int], bool]
+HostRunner = Callable[[AgentContext, Sequence[AgentProfile], TaskHandlers], bool]
 TmuxCleanupRunner = Callable[[AgentContext, Sequence[AgentProfile]], Any]
 TmuxRecoveryRunner = Callable[[AgentContext, Sequence[AgentProfile], Optional[pathlib.Path]], Any]
 
@@ -139,6 +140,15 @@ def _missing_tmux_runner(
 ) -> bool:
     del lead_context, analyst_profiles, runtime_script, worker_timeout_sec
     raise RuntimeError("tmux teammate mode requires a tmux runner function")
+
+
+def _missing_host_runner(
+    lead_context: AgentContext,
+    teammate_profiles: Sequence[AgentProfile],
+    handlers: TaskHandlers,
+) -> bool:
+    del lead_context, teammate_profiles, handlers
+    raise RuntimeError("host teammate mode requires a host runner function")
 
 
 def run_lead_task_once(
@@ -250,6 +260,7 @@ def run_team(
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
+    run_host_teammate_task_once_fn: Optional[HostRunner] = None,
     recover_tmux_analyst_sessions_fn: Optional[TmuxRecoveryRunner] = None,
     cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
     runtime_script: Optional[pathlib.Path] = None,
@@ -273,6 +284,7 @@ def run_team(
     report_task_ids = [str(task_id) for task_id in workflow_runtime_metadata.report_task_ids]
     worker_factory = teammate_agent_factory or _default_teammate_agent_factory
     tmux_runner = run_tmux_analyst_task_once_fn or _missing_tmux_runner
+    host_runner = run_host_teammate_task_once_fn or _missing_host_runner
     runtime_script_path = runtime_script or pathlib.Path(__file__).resolve()
 
     resume_payload: Dict[str, Any] = {}
@@ -578,8 +590,11 @@ def run_team(
             stop_event=stop_event,
             handlers=workflow_handlers,
             claim_tasks=not (
-                runtime_config.teammate_mode in {"tmux", "subprocess"}
-                and profile.agent_type == "analyst"
+                (
+                    runtime_config.teammate_mode in {"tmux", "subprocess"}
+                    and profile.agent_type == "analyst"
+                )
+                or runtime_config.teammate_mode == "host"
             ),
         )
         for profile in profiles
@@ -595,6 +610,13 @@ def run_team(
             "teammate_mode_subprocess_enabled",
             analyst_workers=[profile.name for profile in analyst_profiles],
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
+        )
+    if runtime_config.teammate_mode == "host":
+        logger.log(
+            "teammate_mode_host_enabled",
+            teammate_workers=[profile.name for profile in profiles],
+            host_kind=host_metadata.get("kind", ""),
+            host_session_transport=host_metadata.get("session_transport", ""),
         )
 
     for worker in workers:
@@ -628,6 +650,7 @@ def run_team(
     try:
         while True:
             ran_tmux_task = False
+            ran_host_task = False
             if runtime_config.teammate_mode in {"tmux", "subprocess"}:
                 while tmux_runner(
                     lead_context=lead_context,
@@ -636,12 +659,19 @@ def run_team(
                     worker_timeout_sec=runtime_config.tmux_worker_timeout_sec,
                 ):
                     ran_tmux_task = True
+            if runtime_config.teammate_mode == "host":
+                while host_runner(
+                    lead_context=lead_context,
+                    teammate_profiles=profiles,
+                    handlers=workflow_handlers,
+                ):
+                    ran_host_task = True
             ran_lead_task = run_lead_tasks_once(
                 lead_context=lead_context,
                 lead_task_order=lead_task_order,
                 handlers=workflow_handlers,
             )
-            ran_lead_task = ran_lead_task or ran_tmux_task
+            ran_lead_task = ran_lead_task or ran_tmux_task or ran_host_task
             messages = mailbox.pull(lead_context.profile.name)
             for message in messages:
                 logger.log(

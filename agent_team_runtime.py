@@ -93,6 +93,7 @@ from agent_team.runtime.engine import (
     run_team as run_team_impl,
 )
 from agent_team.transports.inprocess import InProcessTeammateAgent
+import agent_team.transports.host as host_transport
 import agent_team.transports.tmux as tmux_transport
 from agent_team.workflows import build_workflow_handlers, build_workflow_tasks
 from agent_team.workflows.markdown_audit_handlers import (
@@ -242,6 +243,18 @@ def recover_tmux_analyst_sessions(
     )
 
 
+def run_host_teammate_task_once(
+    lead_context: AgentContext,
+    teammate_profiles: Sequence[AgentProfile],
+    handlers: Mapping[str, TaskHandler],
+) -> bool:
+    return host_transport.run_host_teammate_task_once(
+        lead_context=lead_context,
+        teammate_profiles=teammate_profiles,
+        handlers=handlers,
+    )
+
+
 def run_tmux_analyst_task_once(
     lead_context: AgentContext,
     analyst_profiles: Sequence[AgentProfile],
@@ -324,6 +337,7 @@ def run_team(
         agent_team_config=agent_team_config,
         teammate_agent_factory=TeammateAgent,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
+        run_host_teammate_task_once_fn=run_host_teammate_task_once,
         recover_tmux_analyst_sessions_fn=recover_tmux_analyst_sessions,
         cleanup_tmux_analyst_sessions_fn=cleanup_tmux_analyst_sessions,
         runtime_script=pathlib.Path(__file__).resolve(),
@@ -441,8 +455,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--teammate-mode",
         default="in-process",
-        choices=["in-process", "subprocess", "tmux"],
-        help="Teammate execution mode. `subprocess` and `tmux` use process workers for analyst tasks.",
+        choices=["in-process", "subprocess", "tmux", "host"],
+        help=(
+            "Teammate execution mode. `subprocess` uses process workers for analyst tasks plus selected "
+            "reviewer tasks; `tmux` uses process workers for analyst tasks; `host` uses the host transport "
+            "skeleton for teammate dispatch when host-managed sessions are requested."
+        ),
     )
     parser.add_argument(
         "--provider",
