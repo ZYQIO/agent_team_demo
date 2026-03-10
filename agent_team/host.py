@@ -38,27 +38,57 @@ def _default_runtime_enforcement(
     capabilities = _normalize_capabilities(host_metadata.get("capabilities", {}))
     host_supports_native_sessions = bool(capabilities.get("independent_sessions", False))
     host_supports_workspace_isolation = bool(capabilities.get("workspace_isolation", False))
+    host_supports_managed_context = bool(capabilities.get("auto_context_files", False))
     requested_teammate_mode = str(runtime_config.get("teammate_mode", "") or "in-process")
     host_managed_context_requested = bool(policies.get("allow_host_managed_context", True))
     notes: List[str] = ["host_runtime_enforcement_missing"]
-    if host_supports_native_sessions:
+
+    if requested_teammate_mode == "tmux":
+        session_enforcement = "transport_managed"
+        workspace_enforcement = "transport_managed"
+        host_native_session_active = False
+        host_native_workspace_active = False
+        effective_boundary_source = "transport"
+        effective_boundary_strength = "medium"
+        notes.append("tmux_transport_manages_session_boundaries")
+    elif requested_teammate_mode == "subprocess":
+        session_enforcement = "transport_managed"
+        workspace_enforcement = "transport_managed"
+        host_native_session_active = False
+        host_native_workspace_active = False
+        effective_boundary_source = "transport"
+        effective_boundary_strength = "medium"
+        notes.append("subprocess_transport_manages_session_boundaries")
+        notes.append("transport_isolation_partial_to_analyst_workers")
+    else:
+        session_enforcement = "runtime_managed"
+        workspace_enforcement = "runtime_managed"
+        host_native_session_active = False
+        host_native_workspace_active = False
+        effective_boundary_source = "runtime"
+        effective_boundary_strength = "emulated"
+        if requested_teammate_mode == "in-process":
+            notes.append("runtime_threads_share_process_state")
+
+    if host_supports_native_sessions and not host_native_session_active:
         notes.append("host_independent_sessions_advertised_only")
-    if host_supports_workspace_isolation:
+    if host_supports_workspace_isolation and not host_native_workspace_active:
         notes.append("host_workspace_isolation_advertised_only")
-    if host_managed_context_requested and bool(capabilities.get("auto_context_files", False)):
+    if host_managed_context_requested and host_supports_managed_context:
         notes.append("host_managed_context_not_bound_to_runtime")
+
     return {
         "host_kind": str(host_metadata.get("kind", "") or ""),
         "configured_session_transport": str(host_metadata.get("session_transport", "") or ""),
         "requested_teammate_mode": requested_teammate_mode,
-        "session_enforcement": "runtime_managed",
-        "workspace_enforcement": "runtime_managed",
-        "host_native_session_active": False,
-        "host_native_workspace_active": False,
+        "session_enforcement": session_enforcement,
+        "workspace_enforcement": workspace_enforcement,
+        "host_native_session_active": host_native_session_active,
+        "host_native_workspace_active": host_native_workspace_active,
         "host_managed_context_requested": host_managed_context_requested,
         "host_managed_context_active": False,
-        "effective_boundary_source": "runtime",
-        "effective_boundary_strength": "emulated",
+        "effective_boundary_source": effective_boundary_source,
+        "effective_boundary_strength": effective_boundary_strength,
         "capabilities": capabilities,
         "limits": _normalize_string_list(host_metadata.get("limits", [])),
         "note": str(host_metadata.get("note", "") or ""),
@@ -119,6 +149,11 @@ class HostAdapter:
             session_enforcement = "transport_managed"
             host_native_session_active = False
             notes.append("tmux_transport_manages_session_boundaries")
+        elif requested_teammate_mode == "subprocess":
+            session_enforcement = "transport_managed"
+            host_native_session_active = False
+            notes.append("subprocess_transport_manages_session_boundaries")
+            notes.append("transport_isolation_partial_to_analyst_workers")
         else:
             session_enforcement = "runtime_managed"
             host_native_session_active = False
@@ -128,7 +163,7 @@ class HostAdapter:
         if host_native_session_active and host_supports_workspace_isolation:
             workspace_enforcement = "host_managed"
             host_native_workspace_active = True
-        elif requested_teammate_mode == "tmux":
+        elif requested_teammate_mode in {"tmux", "subprocess"}:
             workspace_enforcement = "transport_managed"
             host_native_workspace_active = False
         else:

@@ -536,6 +536,125 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertIn("[verify] PASS", verified.stdout)
 
+    def test_cli_subprocess_mode_completes_with_worker_boundaries(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output_subprocess"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "a.md").write_text("# Title\nbody\n", encoding="utf-8")
+            (target_dir / "b.md").write_text("plain\nplain\nplain\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--teammate-mode",
+                "subprocess",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+            ]
+            completed = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=120,
+            )
+            self.assertEqual(
+                completed.returncode,
+                0,
+                msg=f"stdout:\n{completed.stdout}\n\nstderr:\n{completed.stderr}",
+            )
+            self.assertIn("teammate_mode=subprocess", completed.stdout)
+
+            events = []
+            with (output_dir / "events.jsonl").open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        events.append(json.loads(line))
+            event_names = {item.get("event") for item in events}
+            self.assertIn("teammate_mode_subprocess_enabled", event_names)
+            self.assertIn("tmux_worker_task_dispatched", event_names)
+            self.assertIn("tmux_worker_task_completed", event_names)
+
+            diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+            self.assertTrue(diagnostics_path.exists())
+            diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
+            self.assertGreaterEqual(len(diagnostics_lines), 1)
+            first_record = json.loads(diagnostics_lines[0])
+            self.assertEqual(first_record.get("transport_requested"), "subprocess")
+            self.assertEqual(first_record.get("transport_used"), "subprocess")
+            self.assertFalse(first_record.get("fallback_used", False))
+
+            host_enforcement = json.loads(
+                (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(host_enforcement.get("session_enforcement"), "transport_managed")
+            self.assertEqual(host_enforcement.get("workspace_enforcement"), "transport_managed")
+            self.assertIn(
+                "transport_isolation_partial_to_analyst_workers",
+                host_enforcement.get("notes", []),
+            )
+
+            session_boundaries = json.loads(
+                (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(
+                session_boundaries.get("boundary_mode_counts", {}).get("worker_subprocess_session", 0),
+                1,
+            )
+            self.assertGreaterEqual(
+                session_boundaries.get("boundary_mode_counts", {}).get("runtime_emulated_session", 0),
+                1,
+            )
+            subprocess_boundaries = [
+                item
+                for item in session_boundaries.get("sessions", [])
+                if isinstance(item, dict) and item.get("transport") == "subprocess"
+            ]
+            self.assertGreaterEqual(len(subprocess_boundaries), 1)
+            first_boundary = subprocess_boundaries[0]
+            self.assertTrue(first_boundary.get("workspace_isolation_active"))
+            self.assertTrue(first_boundary.get("workspace_workdir"))
+            self.assertTrue(first_boundary.get("workspace_home_dir"))
+            self.assertTrue(first_boundary.get("workspace_target_dir"))
+
+            summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.get("tmux_session_cleanup_summary_path", ""), "")
+            self.assertEqual(summary.get("tmux_session_recovery_summary_path", ""), "")
+            self.assertEqual(summary.get("tmux_session_leases_path", ""), "")
+
+            verify_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "skills" / "agent-team-runtime" / "scripts" / "verify_run.py"),
+                "--output",
+                str(output_dir),
+            ]
+            verified = subprocess.run(
+                verify_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            self.assertEqual(
+                verified.returncode,
+                0,
+                msg=f"stdout:\n{verified.stdout}\n\nstderr:\n{verified.stderr}",
+            )
+            self.assertIn("[verify] PASS", verified.stdout)
+
     def test_cli_resume_from_checkpoint_completes_run(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

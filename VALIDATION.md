@@ -113,6 +113,16 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode tmux
 ```
 
+Subprocess-mode smoke check:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --target . \
+  --output agent_team_demo/output_smoke_subprocess \
+  --provider heuristic \
+  --teammate-mode subprocess
+```
+
 Resume smoke check:
 
 ```bash

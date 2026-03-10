@@ -441,8 +441,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--teammate-mode",
         default="in-process",
-        choices=["in-process", "tmux"],
-        help="Teammate execution mode. `tmux` uses process workers for analyst tasks.",
+        choices=["in-process", "subprocess", "tmux"],
+        help="Teammate execution mode. `subprocess` and `tmux` use process workers for analyst tasks.",
     )
     parser.add_argument(
         "--provider",

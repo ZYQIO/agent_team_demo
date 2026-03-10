@@ -193,6 +193,38 @@ def _sync_session_boundary_from_lease(
     )
 
 
+def _record_worker_boundary_from_diagnostics(
+    lead_context: Any,
+    worker_name: str,
+    transport: str,
+    execution_diagnostics: Dict[str, Any],
+    retained_for_reuse: bool = False,
+    reuse_authorized: bool = False,
+    transport_reuse_count: int = 0,
+) -> None:
+    if lead_context.session_registry is None:
+        return
+    lead_context.session_registry.record_boundary(
+        agent_name=worker_name,
+        transport=transport,
+        transport_session_name=str(
+            execution_diagnostics.get("tmux_session_name", "")
+            or execution_diagnostics.get("tmux_preferred_session_name", "")
+            or preferred_tmux_session_name(worker_name)
+        ),
+        workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+        workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
+        workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
+        workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
+        workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+        workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+        workspace_isolation_active=bool(execution_diagnostics.get("tmux_session_workspace_isolated", False)),
+        retained_for_reuse=bool(retained_for_reuse),
+        reuse_authorized=bool(reuse_authorized),
+        transport_reuse_count=max(0, int(transport_reuse_count or 0)),
+    )
+
+
 def _tmux_session_exists(session_name: str) -> Dict[str, Any]:
     completed = subprocess.run(
         ["tmux", "has-session", "-t", session_name],
@@ -374,13 +406,14 @@ def _load_tmux_target_snapshot_metadata(metadata_path: pathlib.Path) -> Dict[str
 
 def _tmux_snapshot_ignore_names(excluded_roots: Sequence[pathlib.Path]) -> Callable[[str, List[str]], List[str]]:
     resolved_roots = [path.resolve() for path in excluded_roots]
+    ignored_names = {".git", ".codex_tmp", "__pycache__", ".pytest_cache"}
 
     def _ignore(dir_path: str, names: List[str]) -> List[str]:
         current = pathlib.Path(dir_path)
         ignored: List[str] = []
         for name in names:
             candidate = current / name
-            if name == ".git":
+            if name in ignored_names:
                 ignored.append(name)
                 continue
             if any(_path_is_within(candidate, root) for root in resolved_roots):
@@ -2198,46 +2231,62 @@ def run_tmux_analyst_task_once(
             lease_status = "failed"
             if "subprocess" in transport:
                 lease_status = "fallback_subprocess"
-            lease_entry = _update_tmux_session_lease(
-                lead_context=lead_context,
-                worker_name=profile.name,
-                session_name=str(
-                    execution_diagnostics.get("tmux_session_name", "")
-                    or execution_diagnostics.get("tmux_preferred_session_name", "")
-                    or preferred_tmux_session_name(profile.name)
-                ),
-                status=lease_status,
-                task_id=task.task_id,
-                task_type=task.task_type,
-                transport=transport,
-                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
-                retained_for_reuse=bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False)),
-                reused_existing=bool(
-                    execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
-                ),
-                reuse_authorized=allow_existing_session_reuse,
-                error=error,
-                workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
-                workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
-                workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
-                workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
-                workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
-                workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
-                workspace_isolation_active=bool(
-                    execution_diagnostics.get("tmux_session_workspace_isolated", False)
-                ),
-            )
-            if lead_context.session_registry is not None:
-                _sync_session_boundary_from_lease(
+            if lead_context.runtime_config.teammate_mode == "tmux":
+                lease_entry = _update_tmux_session_lease(
                     lead_context=lead_context,
                     worker_name=profile.name,
-                    lease_entry=lease_entry,
-                    transport=transport or "tmux",
+                    session_name=str(
+                        execution_diagnostics.get("tmux_session_name", "")
+                        or execution_diagnostics.get("tmux_preferred_session_name", "")
+                        or preferred_tmux_session_name(profile.name)
+                    ),
+                    status=lease_status,
+                    task_id=task.task_id,
+                    task_type=task.task_type,
+                    transport=transport,
+                    cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+                    retained_for_reuse=bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False)),
+                    reused_existing=bool(
+                        execution_diagnostics.get("tmux_preferred_session_reused_existing", False)
+                    ),
+                    reuse_authorized=allow_existing_session_reuse,
+                    error=error,
+                    workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                    workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
+                    workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
+                    workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
+                    workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+                    workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+                    workspace_isolation_active=bool(
+                        execution_diagnostics.get("tmux_session_workspace_isolated", False)
+                    ),
+                )
+                if lead_context.session_registry is not None:
+                    _sync_session_boundary_from_lease(
+                        lead_context=lead_context,
+                        worker_name=profile.name,
+                        lease_entry=lease_entry,
+                        transport=transport or "tmux",
+                    )
+                    lead_context.session_state = lead_context.session_registry.record_task_result(
+                        agent_name=profile.name,
+                        task=task,
+                        transport=transport or "tmux",
+                        success=False,
+                        status="error",
+                    )
+            elif lead_context.session_registry is not None:
+                _record_worker_boundary_from_diagnostics(
+                    lead_context=lead_context,
+                    worker_name=profile.name,
+                    transport=transport or "subprocess",
+                    execution_diagnostics=execution_diagnostics,
+                    reuse_authorized=allow_existing_session_reuse,
                 )
                 lead_context.session_state = lead_context.session_registry.record_task_result(
                     agent_name=profile.name,
                     task=task,
-                    transport=transport or "tmux",
+                    transport=transport or "subprocess",
                     success=False,
                     status="error",
                 )
@@ -2322,51 +2371,67 @@ def run_tmux_analyst_task_once(
             result = {"raw_result": result}
         transport = str(execution.get("transport", ""))
         retained_for_reuse = bool(execution_diagnostics.get("tmux_session_retained_for_reuse", False))
-        lease_status = "retained" if retained_for_reuse else "released"
-        if "subprocess" in transport:
-            lease_status = "fallback_subprocess"
-        session_status = "retained" if retained_for_reuse else "ready"
-        if "subprocess" in transport:
-            session_status = "fallback_subprocess"
-        lease_entry = _update_tmux_session_lease(
-            lead_context=lead_context,
-            worker_name=profile.name,
-            session_name=str(
-                execution_diagnostics.get("tmux_session_name", "")
-                or execution_diagnostics.get("tmux_preferred_session_name", "")
-                or preferred_tmux_session_name(profile.name)
-            ),
-            status=lease_status,
-            task_id=task.task_id,
-            task_type=task.task_type,
-            transport=transport,
-            cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
-            retained_for_reuse=retained_for_reuse,
-            reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
-            reuse_authorized=allow_existing_session_reuse,
-            workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
-            workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
-            workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
-            workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
-            workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
-            workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
-            workspace_isolation_active=bool(
-                execution_diagnostics.get("tmux_session_workspace_isolated", False)
-            ),
-        )
-        if lead_context.session_registry is not None:
-            _sync_session_boundary_from_lease(
+        if lead_context.runtime_config.teammate_mode == "tmux":
+            lease_status = "retained" if retained_for_reuse else "released"
+            if "subprocess" in transport:
+                lease_status = "fallback_subprocess"
+            session_status = "retained" if retained_for_reuse else "ready"
+            if "subprocess" in transport:
+                session_status = "fallback_subprocess"
+            lease_entry = _update_tmux_session_lease(
                 lead_context=lead_context,
                 worker_name=profile.name,
-                lease_entry=lease_entry,
-                transport=transport or "tmux",
+                session_name=str(
+                    execution_diagnostics.get("tmux_session_name", "")
+                    or execution_diagnostics.get("tmux_preferred_session_name", "")
+                    or preferred_tmux_session_name(profile.name)
+                ),
+                status=lease_status,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport,
+                cleanup_result=str(execution_diagnostics.get("tmux_cleanup_result", "")),
+                retained_for_reuse=retained_for_reuse,
+                reused_existing=bool(execution_diagnostics.get("tmux_preferred_session_reused_existing", False)),
+                reuse_authorized=allow_existing_session_reuse,
+                workspace_root=str(execution_diagnostics.get("tmux_session_workspace_root", "")),
+                workspace_workdir=str(execution_diagnostics.get("tmux_session_workspace_workdir", "")),
+                workspace_home_dir=str(execution_diagnostics.get("tmux_session_workspace_home_dir", "")),
+                workspace_target_dir=str(execution_diagnostics.get("tmux_session_workspace_target_dir", "")),
+                workspace_tmp_dir=str(execution_diagnostics.get("tmux_session_workspace_tmp_dir", "")),
+                workspace_scope=str(execution_diagnostics.get("tmux_session_workspace_scope", "")),
+                workspace_isolation_active=bool(
+                    execution_diagnostics.get("tmux_session_workspace_isolated", False)
+                ),
+            )
+            if lead_context.session_registry is not None:
+                _sync_session_boundary_from_lease(
+                    lead_context=lead_context,
+                    worker_name=profile.name,
+                    lease_entry=lease_entry,
+                    transport=transport or "tmux",
+                )
+                lead_context.session_state = lead_context.session_registry.record_task_result(
+                    agent_name=profile.name,
+                    task=task,
+                    transport=transport or "tmux",
+                    success=True,
+                    status=session_status,
+                )
+        elif lead_context.session_registry is not None:
+            _record_worker_boundary_from_diagnostics(
+                lead_context=lead_context,
+                worker_name=profile.name,
+                transport=transport or "subprocess",
+                execution_diagnostics=execution_diagnostics,
+                reuse_authorized=allow_existing_session_reuse,
             )
             lead_context.session_state = lead_context.session_registry.record_task_result(
                 agent_name=profile.name,
                 task=task,
-                transport=transport or "tmux",
+                transport=transport or "subprocess",
                 success=True,
-                status=session_status,
+                status="ready",
             )
         lead_context.board.complete(task_id=task.task_id, owner=profile.name, result=result)
         lead_context.mailbox.send(

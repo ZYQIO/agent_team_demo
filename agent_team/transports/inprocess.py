@@ -440,7 +440,7 @@ class InProcessTeammateAgent(threading.Thread):
         session_transport = "in-process"
         if (
             not self.claim_tasks
-            and self.context.runtime_config.teammate_mode == "tmux"
+            and self.context.runtime_config.teammate_mode in {"tmux", "subprocess"}
             and self.context.profile.agent_type == "analyst"
         ):
             session_transport = str(self.context.session_state.get("transport", "") or "")

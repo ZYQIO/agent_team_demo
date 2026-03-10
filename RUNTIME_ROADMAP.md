@@ -70,6 +70,7 @@ The intended architecture is now:
 | Tmux workspace recovery continuity | Completed | Retained tmux lease recovery now restores workspace/session boundary metadata before the next analyst task runs. |
 | Tmux target snapshot isolation | Completed | Tmux-mode workers now rewrite `target_dir` reads to a stable session-local source snapshot and persist the isolated `workspace_target_dir` in session artifacts. |
 | Tmux execution-root isolation | Completed | Tmux-mode workers now execute with session-local `cwd`, `HOME`, cache/config dirs, and subprocess fallback workdirs surfaced in session artifacts. |
+| Subprocess analyst mode | Completed | Analyst tasks can now run as first-class worker subprocesses without tmux, reusing session-scoped workdir/home/target isolation while reviewer tasks remain in-process. |
 | Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions. |
 | Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |

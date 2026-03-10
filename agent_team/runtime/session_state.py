@@ -19,6 +19,8 @@ SESSION_HISTORY_LIMIT = 12
 def teammate_transport_for_profile(profile: AgentProfile, runtime_config: RuntimeConfig) -> str:
     if runtime_config.teammate_mode == "tmux" and profile.agent_type == "analyst":
         return "tmux"
+    if runtime_config.teammate_mode == "subprocess" and profile.agent_type == "analyst":
+        return "subprocess"
     return "in-process"
 
 

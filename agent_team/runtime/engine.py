@@ -575,7 +575,8 @@ def run_team(
             stop_event=stop_event,
             handlers=workflow_handlers,
             claim_tasks=not (
-                runtime_config.teammate_mode == "tmux" and profile.agent_type == "analyst"
+                runtime_config.teammate_mode in {"tmux", "subprocess"}
+                and profile.agent_type == "analyst"
             ),
         )
         for profile in profiles
@@ -583,6 +584,12 @@ def run_team(
     if runtime_config.teammate_mode == "tmux":
         logger.log(
             "teammate_mode_tmux_enabled",
+            analyst_workers=[profile.name for profile in analyst_profiles],
+            reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
+        )
+    if runtime_config.teammate_mode == "subprocess":
+        logger.log(
+            "teammate_mode_subprocess_enabled",
             analyst_workers=[profile.name for profile in analyst_profiles],
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
         )
@@ -618,7 +625,7 @@ def run_team(
     try:
         while True:
             ran_tmux_task = False
-            if runtime_config.teammate_mode == "tmux":
+            if runtime_config.teammate_mode in {"tmux", "subprocess"}:
                 while tmux_runner(
                     lead_context=lead_context,
                     analyst_profiles=analyst_profiles,

@@ -17,9 +17,9 @@ This folder now contains two layers:
   - compatibility hook events: `TeammateIdle` and `TaskCompleted`
   - team progress artifacts and lead-facing progress summary
   - explicit teammate task-context boundaries with per-run context summary artifact
-  - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and tmux session workspace metadata
-  - explicit session-boundary posture artifact describing host-native, tmux-backed, or runtime-emulated session isolation
-  - teammate execution mode toggle (`in-process` / `tmux`, with subprocess fallback when tmux binary is unavailable)
+  - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
+  - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
+  - teammate execution mode toggle (`in-process` / `subprocess` / `tmux`, with subprocess fallback when tmux binary is unavailable)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
   - event logs + final report artifacts
@@ -301,7 +301,7 @@ The report now includes:
 - LLM synthesis
 - Final recommended actions
 - Host enforcement summary (configured host transport vs runtime-active enforcement)
-- Session boundary summary (host-native vs tmux-backed vs runtime-emulated teammate session isolation)
+- Session boundary summary (host-native vs tmux-backed vs worker-subprocess-backed vs runtime-emulated teammate session isolation)
 - Teammate session summary (per-agent session status, transport, memory depth, recent task history)
 - Team progress summary (per-agent completed/failed/ready/blocked counts)
 - Context boundary summary (task-scoped shared-state visibility by agent/task in `context_boundaries.json`)

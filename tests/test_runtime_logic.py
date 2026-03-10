@@ -2020,6 +2020,49 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("AGENT_TEAM_SESSION_ID", diagnostics.get("tmux_session_env_keys", []))
             self.assertIn("HOME", diagnostics.get("tmux_session_env_keys", []))
 
+    def test_run_tmux_worker_task_ignores_codex_tmp_in_target_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "repo"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "guide.md").write_text("# Guide\nBody\n", encoding="utf-8")
+            (target_dir / ".codex_tmp").mkdir(parents=True, exist_ok=True)
+            (target_dir / ".codex_tmp" / "ephemeral.txt").write_text("ignore me\n", encoding="utf-8")
+            output_dir = target_dir / "artifacts"
+            output_dir.mkdir(parents=True, exist_ok=True)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            config = runtime.RuntimeConfig(teammate_mode="subprocess")
+            subprocess_ok = subprocess.CompletedProcess(
+                args=["python"],
+                returncode=0,
+                stdout=json.dumps({"result": {"ok": True}, "state_updates": {}}),
+                stderr="",
+            )
+
+            with mock.patch.object(runtime, "_execute_worker_subprocess", return_value=subprocess_ok) as run_subprocess:
+                result = runtime._run_tmux_worker_task(
+                    runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                    output_dir=output_dir,
+                    runtime_config=config,
+                    payload={
+                        "task_type": "discover_markdown",
+                        "target_dir": str(target_dir),
+                        "session_state": {
+                            "session_id": "session-alpha",
+                        },
+                    },
+                    worker_name="analyst_alpha",
+                    logger=logger,
+                    timeout_sec=1,
+                )
+
+            self.assertTrue(result["ok"])
+            isolated_target_dir = pathlib.Path(run_subprocess.call_args.kwargs["worker_env"]["AGENT_TEAM_WORKSPACE_TARGET_DIR"])
+            self.assertFalse((isolated_target_dir / ".codex_tmp").exists())
+            self.assertTrue((isolated_target_dir / "guide.md").exists())
+            diagnostics = result.get("diagnostics", {})
+            self.assertEqual(diagnostics.get("tmux_session_workspace_target_status"), "created")
+
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -2716,6 +2759,20 @@ class RuntimeLogicTests(unittest.TestCase):
             )
             self.assertTrue(all(item.get("resume_from") == str(resume_from) for item in resumed_events))
 
+    def test_teammate_transport_for_profile_supports_subprocess_mode(self) -> None:
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+        config = runtime.RuntimeConfig(teammate_mode="subprocess")
+
+        self.assertEqual(
+            runtime.teammate_transport_for_profile(profile=analyst, runtime_config=config),
+            "subprocess",
+        )
+        self.assertEqual(
+            runtime.teammate_transport_for_profile(profile=reviewer, runtime_config=config),
+            "in-process",
+        )
+
     def test_build_session_boundary_snapshot_distinguishes_tmux_and_runtime_sessions(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -2847,7 +2904,90 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(started[-1].get("transport"), "tmux")
             self.assertEqual(stopped[-1].get("transport"), "tmux")
 
-    def test_build_host_enforcement_snapshot_defaults_to_runtime_managed_when_host_only_advertises_capabilities(self) -> None:
+    def test_subprocess_mailbox_helper_does_not_override_worker_transport(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(participants=["lead", "analyst_alpha"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="subprocess")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="subprocess"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                session_state=session_state,
+                session_registry=registry,
+            )
+            stop_event = threading.Event()
+            stop_event.set()
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=stop_event,
+                claim_tasks=False,
+                handlers={},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+
+            agent.run()
+
+            session = registry.session_for("analyst_alpha")
+            self.assertEqual(session["transport"], "subprocess")
+            self.assertEqual(session["status"], "stopped")
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            started = [item for item in events if item.get("event") == "teammate_session_started"]
+            stopped = [item for item in events if item.get("event") == "teammate_session_stopped"]
+            self.assertEqual(started[-1].get("transport"), "subprocess")
+            self.assertEqual(stopped[-1].get("transport"), "subprocess")
+
+    def test_build_host_enforcement_snapshot_marks_subprocess_mode_transport_managed(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "codex",
+                "session_transport": "tooling-session",
+                "capabilities": {
+                    "independent_sessions": False,
+                    "workspace_isolation": False,
+                    "auto_context_files": True,
+                },
+                "limits": ["session_isolation_emulated"],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="subprocess").to_dict())
+        shared_state.set("policies", {"allow_host_managed_context": True})
+
+        snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_enforcement"], "transport_managed")
+        self.assertEqual(snapshot["workspace_enforcement"], "transport_managed")
+        self.assertFalse(snapshot["host_native_session_active"])
+        self.assertIn("subprocess_transport_manages_session_boundaries", snapshot["notes"])
+        self.assertIn("transport_isolation_partial_to_analyst_workers", snapshot["notes"])
+
+    def test_build_host_enforcement_snapshot_defaults_to_runtime_managed_when_host_only_advertises_capabilities(
+        self,
+    ) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
             "host",
