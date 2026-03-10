@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import pathlib
+import queue
 import threading
 import time
 from types import ModuleType
-from typing import Any, Callable, Dict, List, Mapping
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from ..core import HOOK_EVENT_TEAMMATE_IDLE, TEAMMATE_IDLE_HOOK_INTERVAL_SEC, Message, Task, task_from_dict
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
@@ -42,7 +43,46 @@ class InProcessTeammateAgent(threading.Thread):
         self._profile_has_skill_fn = profile_has_skill_fn
         self._traceback_module = traceback_module
         self._local_memory: List[Dict[str, str]] = []
+        self._assigned_tasks: "queue.Queue[Task]" = queue.Queue()
+        self._assigned_task_lock = threading.Lock()
+        self._assigned_task_active = False
         self._refresh_session_state()
+
+    def can_accept_assigned_task(self) -> bool:
+        if self.claim_tasks or self.stop_event.is_set():
+            return False
+        with self._assigned_task_lock:
+            return (not self._assigned_task_active) and self._assigned_tasks.empty()
+
+    def submit_assigned_task(self, task: Task) -> bool:
+        if self.claim_tasks or self.stop_event.is_set():
+            return False
+        with self._assigned_task_lock:
+            if self._assigned_task_active or not self._assigned_tasks.empty():
+                return False
+            self._assigned_tasks.put_nowait(task)
+        return True
+
+    def _next_assigned_task(self) -> Optional[Task]:
+        if self.claim_tasks:
+            return None
+        try:
+            task = self._assigned_tasks.get_nowait()
+        except queue.Empty:
+            return None
+        with self._assigned_task_lock:
+            self._assigned_task_active = True
+        return task
+
+    def _finish_assigned_task(self) -> None:
+        with self._assigned_task_lock:
+            self._assigned_task_active = False
+
+    def _run_assigned_task(self, task: Task) -> None:
+        try:
+            self._run_task(task)
+        finally:
+            self._finish_assigned_task()
 
     def _refresh_session_state(self) -> None:
         if self.context.session_registry is None:
@@ -535,6 +575,11 @@ class InProcessTeammateAgent(threading.Thread):
                     self._auto_reply_peer_challenge(message)
                 if message.subject == "evidence_request":
                     self._auto_reply_evidence_request(message)
+
+            assigned_task = self._next_assigned_task()
+            if assigned_task is not None:
+                self._run_assigned_task(assigned_task)
+                continue
 
             if self.claim_tasks:
                 task = self.context.board.claim_next(

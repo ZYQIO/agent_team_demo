@@ -6,6 +6,11 @@ from typing import Any, Dict, Mapping, Sequence
 
 from ..core import AgentProfile
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
+from . import tmux as tmux_transport
+
+
+MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
+HOST_WORKER_THREADS_ATTR = "_host_worker_threads"
 
 
 def _host_transport_identity(lead_context: Any, profile: AgentProfile) -> Dict[str, Any]:
@@ -52,6 +57,39 @@ def _host_transport_identity(lead_context: Any, profile: AgentProfile) -> Dict[s
     }
 
 
+def _host_worker_thread(lead_context: Any, profile_name: str) -> Any:
+    raw_workers = getattr(lead_context, HOST_WORKER_THREADS_ATTR, {})
+    if not isinstance(raw_workers, dict):
+        return None
+    worker = raw_workers.get(str(profile_name))
+    if worker is None:
+        return None
+    if not hasattr(worker, "submit_assigned_task") or not hasattr(worker, "can_accept_assigned_task"):
+        return None
+    return worker
+
+
+def _record_host_boundary(
+    lead_context: Any,
+    profile: AgentProfile,
+    transport_identity: Dict[str, Any],
+) -> None:
+    if lead_context.session_registry is None:
+        return
+    lead_context.session_registry.record_boundary(
+        agent_name=profile.name,
+        transport="host",
+        transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+        workspace_root=str(transport_identity.get("workspace_root", "") or ""),
+        workspace_workdir=str(transport_identity.get("workspace_workdir", "") or ""),
+        workspace_home_dir=str(transport_identity.get("workspace_home_dir", "") or ""),
+        workspace_target_dir=str(transport_identity.get("workspace_target_dir", "") or ""),
+        workspace_tmp_dir=str(transport_identity.get("workspace_tmp_dir", "") or ""),
+        workspace_scope=str(transport_identity.get("workspace_scope", "") or ""),
+        workspace_isolation_active=bool(transport_identity.get("workspace_isolation_active", False)),
+    )
+
+
 def run_host_teammate_task_once(
     lead_context: Any,
     teammate_profiles: Sequence[AgentProfile],
@@ -64,6 +102,9 @@ def run_host_teammate_task_once(
     ordered_profiles = list(teammate_profiles[rr_index:]) + list(teammate_profiles[:rr_index])
 
     for offset, profile in enumerate(ordered_profiles):
+        session_worker = _host_worker_thread(lead_context=lead_context, profile_name=profile.name)
+        if session_worker is not None and not session_worker.can_accept_assigned_task():
+            continue
         task = lead_context.board.claim_next(
             agent_name=profile.name,
             agent_skills=profile.skills,
@@ -73,6 +114,32 @@ def run_host_teammate_task_once(
             continue
         next_index = (rr_index + offset + 1) % len(teammate_profiles)
         lead_context.shared_state.set("_host_rr_index", next_index)
+        transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
+
+        if task.task_type in MAILBOX_REVIEWER_TASK_TYPES and session_worker is not None:
+            _record_host_boundary(
+                lead_context=lead_context,
+                profile=profile,
+                transport_identity=transport_identity,
+            )
+            if not session_worker.submit_assigned_task(task):
+                lead_context.board.defer(
+                    task_id=task.task_id,
+                    owner=profile.name,
+                    reason="host worker session busy",
+                )
+                return True
+            lead_context.logger.log(
+                "host_worker_task_dispatched",
+                worker=profile.name,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                host_kind=str(transport_identity.get("host_kind", "") or ""),
+                host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+                execution_mode="session_thread",
+            )
+            return True
 
         lock_paths = [str(pathlib.Path(path).resolve()) for path in task.locked_paths]
         if lock_paths and not lead_context.file_locks.acquire(profile.name, lock_paths):
@@ -113,7 +180,6 @@ def run_host_teammate_task_once(
             task=task,
             profile=profile,
         )
-        transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
         session_state: Dict[str, Any] = {}
         if lead_context.session_registry is not None:
             session_state = lead_context.session_registry.bind_task(
@@ -122,18 +188,12 @@ def run_host_teammate_task_once(
                 transport="host",
                 task_context=task_context,
             )
-            session_state = lead_context.session_registry.record_boundary(
-                agent_name=profile.name,
-                transport="host",
-                transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
-                workspace_root=str(transport_identity.get("workspace_root", "") or ""),
-                workspace_workdir=str(transport_identity.get("workspace_workdir", "") or ""),
-                workspace_home_dir=str(transport_identity.get("workspace_home_dir", "") or ""),
-                workspace_target_dir=str(transport_identity.get("workspace_target_dir", "") or ""),
-                workspace_tmp_dir=str(transport_identity.get("workspace_tmp_dir", "") or ""),
-                workspace_scope=str(transport_identity.get("workspace_scope", "") or ""),
-                workspace_isolation_active=bool(transport_identity.get("workspace_isolation_active", False)),
+            _record_host_boundary(
+                lead_context=lead_context,
+                profile=profile,
+                transport_identity=transport_identity,
             )
+            session_state = lead_context.session_registry.session_for(profile.name)
 
         worker_context = lead_context.__class__(
             profile=profile,
@@ -166,6 +226,7 @@ def run_host_teammate_task_once(
             host_kind=str(transport_identity.get("host_kind", "") or ""),
             host_session_transport=str(transport_identity.get("session_transport", "") or ""),
             transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+            execution_mode="inline",
         )
         lead_context.logger.log(
             "task_context_prepared",

@@ -620,6 +620,14 @@ def run_team(
             reviewer_workers=[profile.name for profile in profiles if profile.agent_type != "analyst"],
         )
     if runtime_config.teammate_mode == "host":
+        host_worker_threads: Dict[str, threading.Thread] = {}
+        for worker in workers:
+            worker_context = getattr(worker, "context", None)
+            worker_profile = getattr(worker_context, "profile", None)
+            worker_name = str(getattr(worker_profile, "name", "") or "")
+            if worker_name and hasattr(worker, "submit_assigned_task"):
+                host_worker_threads[worker_name] = worker
+        setattr(lead_context, "_host_worker_threads", host_worker_threads)
         logger.log(
             "teammate_mode_host_enabled",
             teammate_workers=[profile.name for profile in profiles],
