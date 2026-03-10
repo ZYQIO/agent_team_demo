@@ -71,6 +71,7 @@ Current findings:
 - the worker payload path is single-shot and only receives a shared-state snapshot plus task payload
 - `peer_challenge` and `evidence_pack` depend on live request/reply mailbox loops against long-lived teammate sessions
 - subprocess mode now has an explicit guardrail that keeps these task types on the parent mailbox path until a real mailbox transport exists
+- runtime runs now use a file-backed mailbox backend under the output directory, so `send` / `pull` / `pull_matching` semantics no longer depend on one in-memory mailbox instance
 
 Acceptance criteria:
 - decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions

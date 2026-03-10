@@ -88,6 +88,81 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("analyst_beta", question)
         self.assertIn("threshold strategy", question)
 
+    def test_file_backed_mailbox_delivers_messages_across_instances(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            mailbox_dir = output_dir / "mailbox"
+            sender_mailbox = runtime.Mailbox(
+                participants=["lead", "analyst_alpha"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+                clear_storage=True,
+            )
+            recipient_mailbox = runtime.Mailbox(
+                participants=["lead", "analyst_alpha"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+            )
+
+            sender_mailbox.send(
+                sender="lead",
+                recipient="analyst_alpha",
+                subject="assignment",
+                body="inspect headings",
+                task_id="heading_audit",
+            )
+            pulled = recipient_mailbox.pull("analyst_alpha")
+
+            self.assertEqual(len(pulled), 1)
+            self.assertEqual(pulled[0].sender, "lead")
+            self.assertEqual(pulled[0].subject, "assignment")
+            self.assertEqual(pulled[0].task_id, "heading_audit")
+            self.assertEqual(sender_mailbox.model_name(), "asynchronous file-backed inbox")
+
+    def test_file_backed_mailbox_pull_matching_preserves_unmatched_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            mailbox_dir = output_dir / "mailbox"
+            sender_mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+                clear_storage=True,
+            )
+            recipient_mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+            )
+
+            sender_mailbox.send(
+                sender="lead",
+                recipient="reviewer_gamma",
+                subject="peer_challenge_round1_request",
+                body="round1",
+                task_id="peer_challenge",
+            )
+            sender_mailbox.send(
+                sender="lead",
+                recipient="reviewer_gamma",
+                subject="lead_verdict",
+                body="accept",
+                task_id="lead_adjudication",
+            )
+
+            matched = recipient_mailbox.pull_matching(
+                "reviewer_gamma",
+                lambda message: message.subject == "peer_challenge_round1_request",
+            )
+            remaining = recipient_mailbox.pull("reviewer_gamma")
+
+            self.assertEqual(len(matched), 1)
+            self.assertEqual(matched[0].task_id, "peer_challenge")
+            self.assertEqual(len(remaining), 1)
+            self.assertEqual(remaining[0].subject, "lead_verdict")
+
     def test_taskboard_claim_respects_allowed_agent_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             logger = runtime.EventLogger(output_dir=pathlib.Path(tmp))

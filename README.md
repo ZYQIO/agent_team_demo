@@ -9,7 +9,7 @@ This folder now contains two layers:
 - A richer local MVP inspired by Claude Code Agent Teams:
   - lead + teammates
   - shared task board with dependencies
-  - mailbox messaging
+  - mailbox messaging with output-scoped file-backed delivery in runtime runs
   - teammate debate rounds (round1 challenge + round2 rebuttal + optional round3 refinement)
   - lead adjudication with configurable verdict thresholds and rubric weights
   - challenge-closed-loop: supplemental evidence pack + lead re-adjudication

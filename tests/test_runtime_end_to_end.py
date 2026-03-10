@@ -130,10 +130,19 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 pathlib.Path(str(summary.get("team_progress_report_path", ""))).resolve(),
                 (output_dir / runtime.TEAM_PROGRESS_REPORT_FILENAME).resolve(),
             )
+            self.assertEqual(summary.get("mailbox_model"), "asynchronous file-backed inbox")
+            self.assertEqual(
+                pathlib.Path(str(summary.get("mailbox_storage_dir", ""))).resolve(),
+                (output_dir / "_mailbox").resolve(),
+            )
 
             shared_state = json.loads((output_dir / "shared_state.json").read_text(encoding="utf-8"))
             self.assertIn("markdown_inventory", shared_state)
             self.assertIn("llm_synthesis", shared_state)
+            self.assertEqual(
+                shared_state.get("team", {}).get("mailbox_model"),
+                "asynchronous file-backed inbox",
+            )
 
             host_enforcement = json.loads(
                 (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")

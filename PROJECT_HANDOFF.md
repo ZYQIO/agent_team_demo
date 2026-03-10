@@ -24,6 +24,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
+  - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
   - dynamic task insertion
   - progress artifacts and session ledgers
   - task-scoped context boundaries
@@ -41,7 +42,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Main Remaining Gaps
 
 1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
-   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions, while the current worker payload path is a one-shot task surface.
+   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, but external teammate transports do not consume it yet.
 2. Host teammate mode is still not true external host-backed execution.
    The transport path is real, but handler logic still runs inside the parent runtime and shares the in-memory mailbox.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
@@ -59,6 +60,7 @@ Why this is next:
 
 What that likely requires:
 - define how mailbox request/reply traffic can cross process or host boundaries
+- wire external teammate transports to the file-backed mailbox backend instead of only the parent runtime mailbox object
 - decide whether teammate auto-replies stay in long-lived workers or move to a lead-mediated transport contract
 - keep `peer_challenge` / `evidence_pack` on the parent mailbox path until that design exists
 - extend tests, smoke run, and verifier expectations when the boundary changes

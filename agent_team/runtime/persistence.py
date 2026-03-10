@@ -1143,7 +1143,6 @@ def write_artifacts(
     rewind_seed_event_index: Optional[int] = None,
     rewind_seed_event_count: int = 0,
 ) -> None:
-    del mailbox
     board_path = output_dir / "task_board.json"
     board_snapshot = board.snapshot()
     board_path.write_text(
@@ -1300,10 +1299,8 @@ def write_artifacts(
         "tmux_session_recovery_summary_path": tmux_recovery_summary_path_str,
         "tmux_session_recovery_history_path": tmux_recovery_history_path_str,
         "tmux_session_leases_path": tmux_session_leases_path_str,
-        "mailbox_model": team_snapshot.get(
-            "mailbox_model",
-            "asynchronous pull-based inbox",
-        ),
+        "mailbox_model": mailbox.model_name(),
+        "mailbox_storage_dir": str(mailbox.storage_dir) if mailbox.storage_dir else "",
         "provider": provider_meta.to_dict(),
         "runtime_config": runtime_config.to_dict(),
         "host": state_snapshot.get("host", {}),

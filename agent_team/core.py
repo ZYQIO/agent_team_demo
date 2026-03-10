@@ -4,6 +4,7 @@ import dataclasses
 import datetime as dt
 import json
 import pathlib
+import shutil
 import threading
 import uuid
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set
@@ -189,10 +190,92 @@ class SharedState:
 
 
 class Mailbox:
-    def __init__(self, participants: Sequence[str], logger: EventLogger) -> None:
-        self._queues: Dict[str, List[Message]] = {name: [] for name in participants}
+    def __init__(
+        self,
+        participants: Sequence[str],
+        logger: EventLogger,
+        storage_dir: Optional[pathlib.Path] = None,
+        clear_storage: bool = False,
+    ) -> None:
+        normalized_participants = [str(name) for name in participants if str(name)]
+        self._participants: Set[str] = set(normalized_participants)
+        self._queues: Dict[str, List[Message]] = {name: [] for name in normalized_participants}
         self._lock = threading.Lock()
         self._logger = logger
+        self._storage_dir = pathlib.Path(storage_dir).resolve() if storage_dir else None
+        if self._storage_dir is not None:
+            if clear_storage and self._storage_dir.exists():
+                shutil.rmtree(self._storage_dir)
+            self._storage_dir.mkdir(parents=True, exist_ok=True)
+            for participant in sorted(self._participants):
+                self._recipient_dir(participant).mkdir(parents=True, exist_ok=True)
+
+    @property
+    def storage_dir(self) -> Optional[pathlib.Path]:
+        return self._storage_dir
+
+    def model_name(self) -> str:
+        if self._storage_dir is not None:
+            return "asynchronous file-backed inbox"
+        return "asynchronous pull-based inbox"
+
+    def _recipient_dir(self, recipient: str) -> pathlib.Path:
+        if self._storage_dir is None:
+            raise RuntimeError("recipient_dir requested for in-memory mailbox")
+        return self._storage_dir / str(recipient)
+
+    def _message_file_path(self, recipient: str, message: Message) -> pathlib.Path:
+        if self._storage_dir is None:
+            raise RuntimeError("message_file_path requested for in-memory mailbox")
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        return self._recipient_dir(recipient) / f"{stamp}_{message.message_id}.json"
+
+    def _deserialize_message(self, payload: Dict[str, Any]) -> Message:
+        return Message(
+            message_id=str(payload.get("message_id", "") or ""),
+            sent_at=str(payload.get("sent_at", "") or utc_now()),
+            sender=str(payload.get("sender", "") or ""),
+            recipient=str(payload.get("recipient", "") or ""),
+            subject=str(payload.get("subject", "") or ""),
+            body=str(payload.get("body", "") or ""),
+            task_id=str(payload.get("task_id", "")) or None,
+        )
+
+    def _store_message_file(self, message: Message) -> None:
+        recipient_dir = self._recipient_dir(message.recipient)
+        recipient_dir.mkdir(parents=True, exist_ok=True)
+        target = self._message_file_path(message.recipient, message)
+        temp_path = target.with_suffix(".tmp")
+        temp_path.write_text(json.dumps(message.to_dict(), ensure_ascii=False), encoding="utf-8")
+        temp_path.replace(target)
+
+    def _pull_file_messages(
+        self,
+        recipient: str,
+        matcher: Optional[Callable[[Message], bool]] = None,
+    ) -> List[Message]:
+        recipient_dir = self._recipient_dir(recipient)
+        recipient_dir.mkdir(parents=True, exist_ok=True)
+        matched: List[Message] = []
+        with self._lock:
+            for message_path in sorted(recipient_dir.glob("*.json")):
+                try:
+                    payload = json.loads(message_path.read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    continue
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                message = self._deserialize_message(payload)
+                if matcher is not None and not matcher(message):
+                    continue
+                matched.append(message)
+                try:
+                    message_path.unlink()
+                except FileNotFoundError:
+                    continue
+        return matched
 
     def send(
         self,
@@ -212,19 +295,26 @@ class Mailbox:
             task_id=task_id,
         )
         with self._lock:
-            self._queues.setdefault(recipient, []).append(message)
+            self._participants.add(str(recipient))
+            if self._storage_dir is None:
+                self._queues.setdefault(recipient, []).append(message)
+        if self._storage_dir is not None:
+            self._store_message_file(message)
         self._logger.log("mail_sent", **message.to_dict())
 
     def broadcast(self, sender: str, subject: str, body: str) -> None:
         with self._lock:
-            recipients = [name for name in self._queues if name != sender]
+            recipients = [name for name in self._participants if name != sender]
         for recipient in recipients:
             self.send(sender=sender, recipient=recipient, subject=subject, body=body)
 
     def pull(self, recipient: str) -> List[Message]:
-        with self._lock:
-            pending = self._queues.get(recipient, [])
-            self._queues[recipient] = []
+        if self._storage_dir is not None:
+            pending = self._pull_file_messages(recipient=recipient)
+        else:
+            with self._lock:
+                pending = self._queues.get(recipient, [])
+                self._queues[recipient] = []
         if pending:
             self._logger.log(
                 "mail_pulled",
@@ -239,16 +329,19 @@ class Mailbox:
         recipient: str,
         matcher: Callable[[Message], bool],
     ) -> List[Message]:
-        with self._lock:
-            queue = self._queues.get(recipient, [])
-            matched: List[Message] = []
-            rest: List[Message] = []
-            for message in queue:
-                if matcher(message):
-                    matched.append(message)
-                else:
-                    rest.append(message)
-            self._queues[recipient] = rest
+        if self._storage_dir is not None:
+            matched = self._pull_file_messages(recipient=recipient, matcher=matcher)
+        else:
+            with self._lock:
+                queue = self._queues.get(recipient, [])
+                matched = []
+                rest: List[Message] = []
+                for message in queue:
+                    if matcher(message):
+                        matched.append(message)
+                    else:
+                        rest.append(message)
+                self._queues[recipient] = rest
         if matched:
             self._logger.log(
                 "mail_pulled_matching",

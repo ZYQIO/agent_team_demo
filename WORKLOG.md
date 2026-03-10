@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - File-backed runtime mailbox backend
+- Goal: turn mailbox-boundary work into runtime behavior by making mailbox delivery available beyond a single in-memory mailbox object
+- Changes:
+  - extended `Mailbox` with an optional file-backed backend that preserves `send`, `broadcast`, `pull`, and `pull_matching` semantics across separate mailbox instances
+  - switched runtime runs to use an output-scoped `_mailbox/` directory and surfaced the active mailbox model/storage path in `shared_state.json` and `run_summary.json`
+  - added unit coverage for cross-instance mailbox delivery and `pull_matching` behavior, plus end-to-end assertions for mailbox metadata in CLI artifacts
+  - updated `ACTIVE_PLAN.md`, `PARITY.md`, `PROJECT_HANDOFF.md`, `README.md`, and `RUNTIME_ROADMAP.md` to reflect that mailbox transport groundwork is now implemented
+- Validation:
+  - full suite: `98/98` tests passed
+  - real CLI subprocess smoke passed: `.codex_tmp/smoke_output_file_mailbox`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed `run_summary.json` reports `mailbox_model=asynchronous file-backed inbox`
+- Commit: pending in working tree
+- Next implication: the next mailbox-boundary step is wiring external teammate transports to the new file-backed backend instead of only using the parent runtime mailbox object
+
 ### 2026-03-10 - Official Claude parity review
 - Goal: re-check the final target against the current Claude Code Agent Teams docs and decide whether the project backlog has drifted
 - Changes:

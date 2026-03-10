@@ -15,7 +15,7 @@ This file tracks practical parity against Claude Code Agent Teams as of 2026-03-
 | Lead + teammate model | Implemented | `lead` plus three teammate roles run concurrently. |
 | Shared task board with dependencies | Implemented | `pending/blocked/in_progress/completed/failed` lifecycle. |
 | Task claim gating by role type | Implemented | `Task.allowed_agent_types` supports Task(agent_type)-style restriction. |
-| Inter-agent mailbox | Implemented | Pull-based inbox with targeted and broadcast messaging. |
+| Inter-agent mailbox | Implemented | Pull-based inbox with targeted and broadcast messaging; runtime runs now use an output-scoped file-backed mailbox backend so mailbox semantics are no longer tied to a single in-memory mailbox instance. |
 | Lead-facing team interaction surface | Gap | Claude Code Agent Teams exposes centralized team messages and lightweight teammate interaction during a run; this runtime only records mailbox traffic in logs/artifacts and has no live lead-facing control surface yet. |
 | Peer challenge loop | Implemented | Round1/round2/optional round3 with configurable wait and thresholds. |
 | Lead adjudication + re-adjudication | Implemented | Initial verdict plus evidence bonus and final verdict. |

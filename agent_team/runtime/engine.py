@@ -465,7 +465,12 @@ def run_team(
     analyst_profiles = [profile for profile in profiles if profile.agent_type == "analyst"]
     lead_name = str(effective_agent_team_config.team.lead_name or "lead")
     participants = [lead_name] + [profile.name for profile in profiles]
-    mailbox = Mailbox(participants=participants, logger=logger)
+    mailbox = Mailbox(
+        participants=participants,
+        logger=logger,
+        storage_dir=output_dir / "_mailbox",
+        clear_storage=True,
+    )
     shared_state = SharedState()
     if resume_payload:
         restore_shared_state_from_checkpoint_payload(shared_state=shared_state, checkpoint_payload=resume_payload)
@@ -474,7 +479,10 @@ def run_team(
     shared_state.set("host", host_metadata)
     shared_state.set(HOST_RUNTIME_ENFORCEMENT_KEY, host_runtime_enforcement)
     logger.log("host_runtime_enforcement_resolved", **host_runtime_enforcement)
-    shared_state.set("team", effective_agent_team_config.team.to_dict())
+    runtime_team_snapshot = effective_agent_team_config.team.to_dict()
+    runtime_team_snapshot["mailbox_model"] = mailbox.model_name()
+    runtime_team_snapshot["mailbox_storage_dir"] = str(mailbox.storage_dir) if mailbox.storage_dir else ""
+    shared_state.set("team", runtime_team_snapshot)
     shared_state.set("workflow", effective_agent_team_config.workflow.to_dict())
     shared_state.set("workflow_lead_task_order", lead_task_order)
     shared_state.set("workflow_report_task_ids", report_task_ids)
