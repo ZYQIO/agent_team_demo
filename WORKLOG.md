@@ -25,7 +25,7 @@ Each entry should capture:
   - real CLI subprocess smoke passed: `.codex_tmp/smoke_output_file_mailbox`
   - verifier passed for that smoke output
   - smoke artifact review confirmed `run_summary.json` reports `mailbox_model=asynchronous file-backed inbox`
-- Commit: pending in working tree
+- Commit: `74f2bda`
 - Next implication: the next mailbox-boundary step is wiring external teammate transports to the new file-backed backend instead of only using the parent runtime mailbox object
 
 ### 2026-03-10 - Official Claude parity review
@@ -38,7 +38,7 @@ Each entry should capture:
 - Validation:
   - docs reviewed against current official Claude Code Agent Teams documentation
   - internal doc set checked for priority consistency after the reorder
-- Commit: pending in working tree
+- Commit: `230c493`
 - Next implication: after mailbox/host execution boundaries, the next parity-critical gap is runtime plan approval plus a lead-facing team interaction surface
 
 ### 2026-03-10 - Mailbox reviewer boundary review and guardrails
