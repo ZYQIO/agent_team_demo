@@ -15,14 +15,13 @@ from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 from . import tmux as tmux_transport
 from .inprocess import (
+    HOST_SESSION_ASSIGNED_TASK_TYPES,
     SESSION_CONTROL_SUBJECT,
     SESSION_TASK_ASSIGNMENT_SUBJECT,
     SESSION_TASK_RESULT_SUBJECT,
     InProcessTeammateAgent,
 )
 
-
-MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
 HOST_WORKER_THREADS_ATTR = "_host_worker_threads"
 HOST_WORKER_RUNTIME_ATTR = "_host_worker_runtime"
 HOST_EXTERNAL_WORKER_NAMES_ATTR = "_host_external_worker_names"
@@ -44,6 +43,10 @@ class _StaticTaskBoard:
         dependency_results = task_context.get("dependency_results", {})
         if isinstance(dependency_results, Mapping):
             for task_id, result in dependency_results.items():
+                self._task_results[str(task_id)] = result
+        visible_task_results = task_context.get("visible_task_results", {})
+        if isinstance(visible_task_results, Mapping):
+            for task_id, result in visible_task_results.items():
                 self._task_results[str(task_id)] = result
         visible_state = task_context.get("visible_shared_state", {})
         if isinstance(visible_state, Mapping):
@@ -754,7 +757,7 @@ def run_host_teammate_task_once(
             )
             return True
 
-        if task.task_type in MAILBOX_REVIEWER_TASK_TYPES:
+        if task.task_type in HOST_SESSION_ASSIGNED_TASK_TYPES:
             ensure_host_session_workers(
                 lead_context=lead_context,
                 teammate_profiles=teammate_profiles,

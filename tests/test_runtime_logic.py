@@ -4753,6 +4753,193 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("unrelated_secret", snapshot["omitted_shared_state_keys"])
             self.assertIn("discover_markdown", snapshot["dependency_results"])
 
+    def test_build_task_context_snapshot_includes_visible_task_results_for_llm_synthesis(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            llm_task = runtime.Task(
+                task_id="llm_synthesis",
+                title="Synthesize findings",
+                task_type="llm_synthesis",
+                required_skills={"review", "llm"},
+                dependencies=["heading_audit", "length_audit", "peer_challenge", "lead_re_adjudication"],
+                payload={},
+                locked_paths=[],
+                allowed_agent_types={"reviewer"},
+            )
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="discover_markdown",
+                        title="discover",
+                        task_type="discover_markdown",
+                        required_skills={"inventory"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                        status="completed",
+                        result={"files": 3},
+                    ),
+                    runtime.Task(
+                        task_id="heading_audit",
+                        title="heading",
+                        task_type="heading_audit",
+                        required_skills={"analysis"},
+                        dependencies=["discover_markdown"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                        status="completed",
+                        result={"files_without_headings": 1},
+                    ),
+                    runtime.Task(
+                        task_id="length_audit",
+                        title="length",
+                        task_type="length_audit",
+                        required_skills={"analysis"},
+                        dependencies=["discover_markdown"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                        status="completed",
+                        result={"long_files": 2},
+                    ),
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="plan",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=["heading_audit", "length_audit"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                        status="completed",
+                        result={"enabled": True, "inserted_tasks": ["heading_structure_followup"]},
+                    ),
+                    runtime.Task(
+                        task_id="heading_structure_followup",
+                        title="followup",
+                        task_type="heading_structure_followup",
+                        required_skills={"analysis"},
+                        dependencies=["dynamic_planning"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                        status="completed",
+                        result={"lowest_heading_density": [{"path": "docs/a.md"}]},
+                    ),
+                    runtime.Task(
+                        task_id="length_risk_followup",
+                        title="length followup",
+                        task_type="length_risk_followup",
+                        required_skills={"analysis"},
+                        dependencies=["dynamic_planning"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"analyst"},
+                        status="completed",
+                        result={"high_risk_long_files": [{"path": "docs/b.md"}]},
+                    ),
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=["dynamic_planning"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                        status="completed",
+                        result={"summary": "challenge done"},
+                    ),
+                    runtime.Task(
+                        task_id="lead_adjudication",
+                        title="adjudicate",
+                        task_type="lead_adjudication",
+                        required_skills={"lead"},
+                        dependencies=["peer_challenge"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                        status="completed",
+                        result={"verdict": "challenge"},
+                    ),
+                    runtime.Task(
+                        task_id="evidence_pack",
+                        title="evidence",
+                        task_type="evidence_pack",
+                        required_skills={"review"},
+                        dependencies=["lead_adjudication"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                        status="completed",
+                        result={"triggered": False},
+                    ),
+                    runtime.Task(
+                        task_id="lead_re_adjudication",
+                        title="re-adjudicate",
+                        task_type="lead_re_adjudication",
+                        required_skills={"lead"},
+                        dependencies=["evidence_pack"],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                        status="completed",
+                        result={"verdict": "accept"},
+                    ),
+                    llm_task,
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("heading_issues", [{"path": "docs/a.md"}])
+            shared_state.set("length_issues", [{"path": "docs/b.md", "line_count": 220}])
+            shared_state.set("unrelated_secret", {"token": "hidden"})
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="reviewer_gamma", skills={"review", "llm"}, agent_type="reviewer"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+
+            snapshot = runtime.build_task_context_snapshot(
+                context=context,
+                task=llm_task,
+            )
+
+            visible_results = snapshot["visible_task_results"]
+            self.assertIn("heading_audit", visible_results)
+            self.assertIn("length_audit", visible_results)
+            self.assertIn("dynamic_planning", visible_results)
+            self.assertIn("heading_structure_followup", visible_results)
+            self.assertIn("length_risk_followup", visible_results)
+            self.assertIn("lead_adjudication", visible_results)
+            self.assertIn("lead_re_adjudication", visible_results)
+            self.assertNotIn("discover_markdown", visible_results)
+            self.assertTrue(
+                set(visible_results.keys()).issubset(set(snapshot["visible_task_result_ids"])),
+            )
+
     def test_scoped_shared_state_hides_non_visible_keys(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set("visible", 1)

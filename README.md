@@ -19,7 +19,7 @@ This folder now contains two layers:
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
-  - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host mode now launching external session-worker subprocesses for mailbox-driven reviewer/request-reply flows via explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox contracts while non-mailbox host tasks remain lead-inline)
+  - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host mode now launching external session-worker subprocesses for mailbox-driven reviewer/request-reply flows plus reviewer `llm_synthesis` via explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox contracts while host planning/report tasks remain lead-inline)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
   - event logs + final report artifacts
@@ -203,7 +203,7 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode host
 ```
 
-Host mode currently uses external session-worker subprocesses for mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`) and teammate auto-replies, while other host tasks still execute on the lead-managed inline path.
+Host mode currently uses external session-worker subprocesses for mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer `llm_synthesis`, and teammate auto-replies, while host planning/report tasks still execute on the lead-managed inline path.
 
 Resume from a checkpoint:
 

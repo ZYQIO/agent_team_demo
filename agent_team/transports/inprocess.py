@@ -22,6 +22,7 @@ from . import tmux as tmux_transport
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
+HOST_SESSION_ASSIGNED_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | {"llm_synthesis"}
 SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
 SESSION_TASK_RESULT_SUBJECT = "session_task_result"
 SESSION_CONTROL_SUBJECT = "session_control"
@@ -216,7 +217,7 @@ class InProcessTeammateAgent(threading.Thread):
         return (
             (not self.claim_tasks)
             and task_transport == "host"
-            and task.task_type in MAILBOX_REVIEWER_TASK_TYPES
+            and task.task_type in HOST_SESSION_ASSIGNED_TASK_TYPES
         )
 
     def _publish_assigned_task_result(

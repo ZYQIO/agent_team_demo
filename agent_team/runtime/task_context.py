@@ -103,10 +103,41 @@ TASK_TYPE_VISIBLE_STATE_KEYS: Dict[str, Set[str]] = {
 }
 
 
+TASK_TYPE_VISIBLE_TASK_RESULT_IDS: Dict[str, Set[str]] = {
+    "llm_synthesis": {
+        "dynamic_planning",
+        "heading_audit",
+        "heading_structure_followup",
+        "lead_adjudication",
+        "lead_re_adjudication",
+        "length_audit",
+        "length_risk_followup",
+        "peer_challenge",
+        "evidence_pack",
+        "extension_audit",
+        "extension_hotspot_followup",
+        "large_file_audit",
+        "repo_dynamic_planning",
+        "directory_hotspot_followup",
+    },
+    "recommendation_pack": {
+        "heading_audit",
+        "length_audit",
+    },
+    "repo_recommendation_pack": {
+        "large_file_audit",
+    },
+}
+
+
 def visible_state_keys_for_task(task_type: str) -> List[str]:
     scoped = set(COMMON_VISIBLE_STATE_KEYS)
     scoped.update(TASK_TYPE_VISIBLE_STATE_KEYS.get(str(task_type or ""), set()))
     return sorted(scoped)
+
+
+def visible_task_result_ids_for_task(task_type: str) -> List[str]:
+    return sorted(TASK_TYPE_VISIBLE_TASK_RESULT_IDS.get(str(task_type or ""), set()))
 
 
 @dataclasses.dataclass
@@ -163,6 +194,12 @@ def build_task_context_snapshot(
         for key in visible_keys
         if key in state_snapshot
     }
+    visible_task_result_ids = visible_task_result_ids_for_task(task.task_type)
+    visible_task_results = {}
+    for result_task_id in visible_task_result_ids:
+        result = context.board.get_task_result(result_task_id)
+        if result is not None:
+            visible_task_results[result_task_id] = result
     omitted_keys = sorted(
         key for key in state_snapshot.keys()
         if key not in visible_key_set
@@ -184,6 +221,9 @@ def build_task_context_snapshot(
         "dependency_results": dependency_results,
         "visible_shared_state_keys": visible_keys,
         "visible_shared_state": visible_state,
+        "visible_task_result_ids": visible_task_result_ids,
+        "visible_task_results": visible_task_results,
+        "visible_task_result_count": len(visible_task_results),
         "omitted_shared_state_keys": omitted_keys,
         "visible_shared_state_key_count": len(visible_state),
         "omitted_shared_state_key_count": len(omitted_keys),

@@ -39,14 +39,14 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
   - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
-  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now reach the reviewer's external session-worker subprocess through explicit `session_task_assignment` mailbox messages, return through explicit `session_task_result` mailbox messages, and update teammate session ledgers through explicit `session_telemetry` mailbox messages
-  - teammate auto-replies in those flows now also come from external session-worker subprocesses rather than parent-runtime threads
-  - non-mailbox host tasks still execute on the lead-managed inline path, so host execution is only partially externalized
+  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) plus reviewer `llm_synthesis` now reach the reviewer's external session-worker subprocess through explicit `session_task_assignment` mailbox messages, return through explicit `session_task_result` mailbox messages, and update teammate session ledgers through explicit `session_telemetry` mailbox messages
+  - teammate auto-replies in the mailbox-driven reviewer flows now also come from external session-worker subprocesses rather than parent-runtime threads
+  - host planning/report tasks still execute on the lead-managed inline path, so host execution is only partially externalized
 
 ## Main Remaining Gaps
 
 1. Host teammate mode is still not true external host-backed execution.
-   Mailbox-driven reviewer/request-reply flows now cross an actual external subprocess boundary, but non-mailbox host tasks (`dynamic_planning`, `llm_synthesis`, reporting) still execute on the lead-managed inline path rather than in independent host sessions.
+   Mailbox-driven reviewer/request-reply flows plus reviewer `llm_synthesis` now cross an actual external subprocess boundary, but host planning/report tasks (`dynamic_planning`, reporting) still execute on the lead-managed inline path rather than in independent host sessions.
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
@@ -59,11 +59,11 @@ Expand host transport beyond mailbox/request-reply flows.
 
 Why this is next:
 - The mailbox/request-reply boundary is now credible enough to stop treating it as purely design work.
-- The next material gap is that reviewer non-mailbox tasks and most other host execution still run lead-inline.
+- The next material gap is that host planning/report tasks and most other host execution still run lead-inline.
 - It matches the updated active plan after the external session-worker round.
 
 What that likely requires:
-- decide which non-mailbox host tasks should move first off the lead-inline path
+- decide which remaining host planning/report tasks should move first off the lead-inline path
 - keep the existing external session-worker contract explicit instead of reintroducing shared in-process state
 - improve event/report surfacing only where needed to describe real external execution, not to add artifact-only detail
 - extend tests and smoke coverage for any additional externalized host tasks
