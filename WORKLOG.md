@@ -29,7 +29,7 @@ Each entry should capture:
   - real CLI repo-audit host smoke passed: `.codex_tmp\\smoke_output_host_repo_analyst_session`
   - verifier passed for both smoke outputs
   - smoke event review confirmed `discover_markdown`, `heading_audit`, `discover_repository`, and `extension_audit` now complete with `execution_mode=session_thread`, `completion_subject=session_task_result`, and `session_worker_backend=external_process`
-- Commit: pending
+- Commit: `423e445`
 - Next implication: built-in workflow teammate coverage is now externalized in host mode, so the next transport step is backend authenticity rather than more task-type expansion
 
 ### 2026-03-10 - Host planning session-worker contract
