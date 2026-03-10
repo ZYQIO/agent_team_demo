@@ -13,6 +13,24 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host report session-worker contract
+- Goal: move host reviewer report tasks off the lead-inline executor while preserving explicit lead-side file-lock ownership
+- Changes:
+  - expanded the host assigned-task contract to include reviewer `recommendation_pack` and `repo_recommendation_pack`
+  - added lead-side tracking for assigned-task `locked_paths` so report-file locks are acquired before dispatch and released only after the lead applies `session_task_result`
+  - fixed the assigned-lock registry bootstrap bug where missing lock state was stored in a transient dict instead of on `lead_context`
+  - extended host regression coverage for report-task session-thread dispatch plus lock release and tightened host CLI assertions so `recommendation_pack` must emit assignment/result/telemetry/completion records through the external session-worker path
+- Validation:
+  - targeted host mailbox/session-thread regression passed
+  - targeted host report lock-lifecycle regression passed
+  - targeted host CLI/end-to-end regression passed
+  - full suite: `105/105` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_report_session`
+  - verifier passed for that smoke output
+  - smoke event review confirmed reviewer `recommendation_pack` now uses `session_task_assignment` / `session_task_result` plus `execution_mode=session_thread` and `session_worker_backend=external_process`, while `dynamic_planning` remains inline
+- Commit: pending
+- Next implication: the remaining host reviewer gap is dynamic task planning, which now requires explicit task-mutation contracts rather than more task-type allowlist expansion
+
 ### 2026-03-10 - Host llm_synthesis session-worker contract
 - Goal: move the first non-mailbox, non-locking host reviewer task off the lead-inline executor without weakening task-context boundaries
 - Changes:

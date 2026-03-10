@@ -10,7 +10,7 @@ The priority is execution isolation and real teammate transport behavior.
 Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
-Priority 4 is in progress: host mode now also routes reviewer `llm_synthesis` through the external session-worker contract while host planning/report tasks still need to leave the lead-inline executor.
+Priority 4 is in progress: host mode now routes mailbox reviewer flows, reviewer `llm_synthesis`, and report tasks through the external session-worker contract while host planning tasks still need to leave the lead-inline executor.
 
 Direction review (2026-03-10):
 - the last three transport-focused rounds improved execution semantics
@@ -94,7 +94,7 @@ Acceptance criteria:
 Status: In Progress
 
 Why:
-- mailbox/request-reply flows and reviewer `llm_synthesis` now cross an external boundary, but host mode still keeps planning/report tasks on the lead-inline path
+- mailbox/request-reply flows, reviewer `llm_synthesis`, and report tasks now cross an external boundary, but host mode still keeps planning tasks on the lead-inline path
 - the next value is broadening real external execution, not inventing more in-runtime mailbox ceremony
 
 Acceptance criteria:

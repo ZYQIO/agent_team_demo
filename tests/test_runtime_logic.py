@@ -4193,6 +4193,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 [{"name": "reviewer_gamma", "agent_type": "reviewer", "skills": ["review"]}],
             )
             file_locks = runtime.FileLockRegistry(logger=logger)
+            worker_file_locks = runtime.FileLockRegistry(logger=logger)
             provider, _ = runtime.build_provider(
                 provider_name="heuristic",
                 model="heuristic-v1",
@@ -4239,7 +4240,7 @@ class RuntimeLogicTests(unittest.TestCase):
                 runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
                 board=board,
                 mailbox=mailbox.transport_view(),
-                file_locks=file_locks,
+                file_locks=worker_file_locks,
                 shared_state=shared_state,
                 logger=logger,
                 runtime_script=pathlib.Path(runtime.__file__).resolve(),
@@ -4634,6 +4635,205 @@ class RuntimeLogicTests(unittest.TestCase):
             ]
             self.assertEqual(len(failure_events), 1)
             self.assertEqual(failure_events[0].get("completion_contract"), "mailbox_message")
+
+    def test_host_recommendation_pack_dispatches_to_session_thread_and_releases_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            report_path = (output_dir / "final_report.md").resolve()
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="recommendation_pack",
+                        title="Write recommendation report",
+                        task_type="recommendation_pack",
+                        required_skills={"review", "writer"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[str(report_path)],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=output_dir / "_mailbox",
+                clear_storage=True,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set(
+                "host",
+                {
+                    "kind": "claude-code",
+                    "session_transport": "session",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "note": "",
+                },
+            )
+            shared_state.set(
+                "host_runtime_enforcement",
+                {
+                    "host_kind": "claude-code",
+                    "configured_session_transport": "session",
+                    "requested_teammate_mode": "host",
+                    "session_enforcement": "host_managed",
+                    "workspace_enforcement": "host_managed",
+                    "host_native_session_active": True,
+                    "host_native_workspace_active": True,
+                    "host_managed_context_requested": True,
+                    "host_managed_context_active": True,
+                    "effective_boundary_source": "host",
+                    "effective_boundary_strength": "strong",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "notes": ["host_transport_manages_session_boundaries"],
+                },
+            )
+            shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+            shared_state.set(
+                "team_profiles",
+                [{"name": "reviewer_gamma", "agent_type": "reviewer", "skills": ["review", "writer"]}],
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review", "writer"}, agent_type="reviewer")
+
+            class _FakeHostWorker:
+                worker_backend = "external_process"
+
+                def __init__(self) -> None:
+                    self.assigned_task_id = ""
+
+                def can_accept_assigned_task(self) -> bool:
+                    return not self.assigned_task_id
+
+                def reserve_assigned_task(self, task_id: str) -> bool:
+                    if self.assigned_task_id:
+                        return False
+                    self.assigned_task_id = str(task_id)
+                    return True
+
+                def release_assigned_task(self, task_id: str = "") -> None:
+                    if task_id and self.assigned_task_id and self.assigned_task_id != str(task_id):
+                        return
+                    self.assigned_task_id = ""
+
+            worker = _FakeHostWorker()
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="host report task test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+            )
+            setattr(lead_context, "_host_worker_threads", {"reviewer_gamma": worker})
+
+            dispatched = runtime.run_host_teammate_task_once(
+                lead_context=lead_context,
+                teammate_profiles=[reviewer],
+                handlers={"recommendation_pack": lambda _context, _task: {"report_path": str(report_path)}},
+            )
+            self.assertTrue(dispatched)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["recommendation_pack"]["status"], "in_progress")
+            self.assertEqual(file_locks.snapshot().get(str(report_path)), "reviewer_gamma")
+            self.assertEqual(worker.assigned_task_id, "recommendation_pack")
+
+            mailbox.send(
+                sender="reviewer_gamma",
+                recipient="lead",
+                subject=runtime.SESSION_TASK_RESULT_SUBJECT,
+                body=json.dumps(
+                    {
+                        "contract": "session_task_result",
+                        "contract_version": 1,
+                        "transport": "host",
+                        "execution_mode": "session_thread",
+                        "task_id": "recommendation_pack",
+                        "task_type": "recommendation_pack",
+                        "worker": "reviewer_gamma",
+                        "success": True,
+                        "result": {"report_path": str(report_path)},
+                        "error": "",
+                        "state_updates": {},
+                    },
+                    ensure_ascii=False,
+                ),
+                task_id="recommendation_pack",
+            )
+            self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["recommendation_pack"]["status"], "completed")
+            self.assertEqual(
+                pathlib.Path(str(board_snapshot["recommendation_pack"]["result"]["report_path"])).resolve(),
+                report_path,
+            )
+            self.assertEqual(file_locks.snapshot(), {})
+            self.assertEqual(worker.assigned_task_id, "")
+
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            dispatch_events = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_dispatched"
+                and item.get("task_id") == "recommendation_pack"
+            ]
+            self.assertEqual(len(dispatch_events), 1)
+            self.assertEqual(dispatch_events[0].get("execution_mode"), "session_thread")
+            completion_events = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_completed"
+                and item.get("task_id") == "recommendation_pack"
+            ]
+            self.assertEqual(len(completion_events), 1)
+            self.assertEqual(completion_events[0].get("execution_mode"), "session_thread")
+            assignment_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_ASSIGNMENT_SUBJECT
+                and item.get("task_id") == "recommendation_pack"
+            ]
+            self.assertEqual(len(assignment_messages), 1)
+            result_messages = [
+                item
+                for item in events
+                if item.get("event") == "mail_sent"
+                and item.get("subject") == runtime.SESSION_TASK_RESULT_SUBJECT
+                and item.get("task_id") == "recommendation_pack"
+            ]
+            self.assertGreaterEqual(len(result_messages), 1)
 
 
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:

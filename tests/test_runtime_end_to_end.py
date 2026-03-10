@@ -770,6 +770,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in session_thread_dispatches)
             )
+            self.assertTrue(
+                any(item.get("task_id") == "recommendation_pack" for item in session_thread_dispatches)
+            )
             assignment_messages = [
                 item
                 for item in events
@@ -784,6 +787,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "recommendation_pack" for item in assignment_messages)
             )
             result_messages = [
                 item
@@ -800,6 +806,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in result_messages)
             )
+            self.assertTrue(
+                any(item.get("task_id") == "recommendation_pack" for item in result_messages)
+            )
             telemetry_messages = [
                 item
                 for item in events
@@ -814,6 +823,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "recommendation_pack" for item in telemetry_messages)
             )
             session_thread_completions = [
                 item
@@ -832,6 +844,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in session_thread_completions)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "recommendation_pack" for item in session_thread_completions)
             )
 
             host_enforcement = json.loads(

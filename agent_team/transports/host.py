@@ -25,6 +25,7 @@ from .inprocess import (
 HOST_WORKER_THREADS_ATTR = "_host_worker_threads"
 HOST_WORKER_RUNTIME_ATTR = "_host_worker_runtime"
 HOST_EXTERNAL_WORKER_NAMES_ATTR = "_host_external_worker_names"
+HOST_ASSIGNED_TASK_LOCKS_ATTR = "_host_assigned_task_locks"
 HOST_WORKER_PAYLOAD_DIRNAME = "_host_session_workers"
 
 
@@ -298,6 +299,48 @@ def configure_host_session_workers(
     )
     setattr(lead_context, HOST_WORKER_THREADS_ATTR, {})
     setattr(lead_context, HOST_EXTERNAL_WORKER_NAMES_ATTR, set())
+    setattr(lead_context, HOST_ASSIGNED_TASK_LOCKS_ATTR, {})
+
+
+def _host_assigned_task_locks(lead_context: Any) -> Dict[str, Dict[str, Any]]:
+    raw_locks = getattr(lead_context, HOST_ASSIGNED_TASK_LOCKS_ATTR, None)
+    if not isinstance(raw_locks, dict):
+        raw_locks = {}
+        setattr(lead_context, HOST_ASSIGNED_TASK_LOCKS_ATTR, raw_locks)
+    return raw_locks
+
+
+def _remember_assigned_task_lock(
+    lead_context: Any,
+    task_id: str,
+    owner: str,
+    lock_paths: Sequence[str],
+) -> None:
+    normalized_task_id = str(task_id or "")
+    normalized_owner = str(owner or "")
+    normalized_paths = [str(pathlib.Path(path).resolve()) for path in lock_paths if str(path)]
+    if not normalized_task_id or not normalized_owner or not normalized_paths:
+        return
+    _host_assigned_task_locks(lead_context=lead_context)[normalized_task_id] = {
+        "owner": normalized_owner,
+        "paths": normalized_paths,
+    }
+
+
+def _release_assigned_task_lock(lead_context: Any, task_id: str) -> None:
+    normalized_task_id = str(task_id or "")
+    if not normalized_task_id:
+        return
+    raw_lock = _host_assigned_task_locks(lead_context=lead_context).pop(normalized_task_id, None)
+    if not isinstance(raw_lock, dict):
+        return
+    owner = str(raw_lock.get("owner", "") or "")
+    raw_paths = raw_lock.get("paths", [])
+    if not owner or not isinstance(raw_paths, list):
+        return
+    lock_paths = [str(pathlib.Path(path).resolve()) for path in raw_paths if str(path)]
+    if lock_paths:
+        lead_context.file_locks.release(owner, lock_paths)
 
 
 def _build_host_worker_payload(
@@ -689,6 +732,7 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
         )
         return False
     finally:
+        _release_assigned_task_lock(lead_context=lead_context, task_id=task_id)
         session_worker = _host_worker_thread(lead_context=lead_context, profile_name=worker)
         if session_worker is not None and hasattr(session_worker, "release_assigned_task"):
             session_worker.release_assigned_task(task_id)
@@ -793,6 +837,21 @@ def run_host_teammate_task_once(
                     reason="host worker session busy",
                 )
                 return True
+            lock_paths = [str(pathlib.Path(path).resolve()) for path in task.locked_paths]
+            if lock_paths and not lead_context.file_locks.acquire(profile.name, lock_paths):
+                session_worker.release_assigned_task(task.task_id)
+                lead_context.board.defer(
+                    task_id=task.task_id,
+                    owner=profile.name,
+                    reason="file lock unavailable",
+                )
+                return True
+            _remember_assigned_task_lock(
+                lead_context=lead_context,
+                task_id=task.task_id,
+                owner=profile.name,
+                lock_paths=lock_paths,
+            )
             task_context = build_task_context_snapshot(
                 context=lead_context,
                 task=task,
@@ -815,6 +874,7 @@ def run_host_teammate_task_once(
                     task_id=task.task_id,
                 )
             except Exception:
+                _release_assigned_task_lock(lead_context=lead_context, task_id=task.task_id)
                 session_worker.release_assigned_task(task.task_id)
                 raise
             lead_context.logger.log(

@@ -22,7 +22,11 @@ from . import tmux as tmux_transport
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
-HOST_SESSION_ASSIGNED_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | {"llm_synthesis"}
+HOST_SESSION_ASSIGNED_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | {
+    "llm_synthesis",
+    "recommendation_pack",
+    "repo_recommendation_pack",
+}
 SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
 SESSION_TASK_RESULT_SUBJECT = "session_task_result"
 SESSION_CONTROL_SUBJECT = "session_control"
