@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host session telemetry mailbox contract
+- Goal: remove the remaining direct host session-thread writes into `teammate_sessions` so session ledger updates also cross an explicit mailbox boundary
+- Changes:
+  - added explicit `session_telemetry` mailbox messages for host long-lived session threads and a lead-side apply path that updates `session_registry`
+  - switched host session-thread status, message-seen, task bind/result, and provider-memory bookkeeping to local telemetry plus lead-side application instead of direct `session_registry` writes
+  - hardened the engine and host transport so telemetry/result messages are applied whether they are picked up by the host runner or by the lead mailbox loop, and drained stop-status telemetry during shutdown before final artifacts are written
+  - extended regression coverage for session telemetry application, host mailbox reviewer session history, and end-to-end host reviewer task ledger consistency
+- Validation:
+  - full suite: `103/103` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_session_telemetry`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed `session_telemetry` plus `host_session_telemetry_received` events, reviewer `peer_challenge` / `evidence_pack` entries in `teammate_sessions.json`, and host reviewer session status finishing as `stopped`
+- Commit: `37b6124`
+- Next implication: mailbox contract definition is now sufficient for both workflow state and session-ledger state; the next step is pushing those contracts across a true external host-backed session boundary, not adding more in-runtime ledgers or replay work
+
 ### 2026-03-10 - Host reviewer mailbox result contract
 - Goal: externalize host reviewer mailbox task results so shared-state updates and task completion/failure are applied by the lead side instead of worker threads mutating runtime state directly
 - Changes:

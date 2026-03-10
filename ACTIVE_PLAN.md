@@ -21,6 +21,11 @@ Direction review (2026-03-10, mailbox contract checkpoint):
 - the priority order does not need to change
 - the mailbox review scope is now narrower: assignment and result contracts exist, so the next transport step is pushing that contract across a real external host/session boundary
 
+Direction review (2026-03-10, host session telemetry checkpoint):
+- the latest rounds still moved execution semantics forward and did not drift into artifact-only work
+- reviewer mailbox workflow state and teammate session-ledger updates now both cross explicit mailbox contracts
+- the next priority is no longer defining more in-runtime contracts; it is replacing the in-runtime host session thread with a true external host-backed boundary
+
 Official parity check (2026-03-10, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
 - the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
@@ -80,11 +85,12 @@ Current findings:
 - file-backed mailbox pulls now atomically claim message files, and runtime worker/helper contexts consume transport-local mailbox views instead of only the lead mailbox object
 - in host mode, mailbox-driven reviewer tasks now dispatch through an explicit `session_task_assignment` mailbox message onto the long-lived teammate session thread instead of executing lead-inline
 - in host mode, mailbox-driven reviewer task results now return through an explicit `session_task_result` mailbox message, and lead-side result application now owns shared-state updates plus task completion/failure instead of the worker mutating the workflow state directly
-- the remaining gap is no longer mailbox contract shape; it is that both sides of the contract still run inside one parent runtime, and session lifecycle/ledger state is still shared in-process rather than crossing a true external host/session boundary
+- in host mode, long-lived session threads now also publish explicit `session_telemetry` mailbox messages so teammate session ledger updates are applied on the lead side instead of worker threads mutating `session_registry` directly
+- the remaining gap is no longer mailbox contract shape; it is that both sides of the workflow/session contracts still run inside one parent runtime instead of crossing a true external host/session boundary
 
 Acceptance criteria:
 - decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions
-- document the mailbox contract required for external execution and keep both assignment and result paths explicit
+- document the mailbox contract required for external execution and keep assignment, result, and session-telemetry paths explicit
 - keep regression coverage that prevents accidental subprocess offload before that contract exists
 
 ### 4. Expand host transport toward true external teammate sessions
