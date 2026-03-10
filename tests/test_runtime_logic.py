@@ -4835,6 +4835,236 @@ class RuntimeLogicTests(unittest.TestCase):
             ]
             self.assertGreaterEqual(len(result_messages), 1)
 
+    def test_host_dynamic_planning_result_applies_task_mutations_by_lead(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="Plan follow-up work",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=output_dir / "_mailbox",
+                clear_storage=True,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("heading_issues", [{"path": "a.md"}])
+            shared_state.set("length_issues", [{"path": "b.md", "line_count": 220}])
+            shared_state.set(
+                "host",
+                {
+                    "kind": "claude-code",
+                    "session_transport": "session",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "note": "",
+                },
+            )
+            shared_state.set(
+                "host_runtime_enforcement",
+                {
+                    "host_kind": "claude-code",
+                    "configured_session_transport": "session",
+                    "requested_teammate_mode": "host",
+                    "session_enforcement": "host_managed",
+                    "workspace_enforcement": "host_managed",
+                    "host_native_session_active": True,
+                    "host_native_workspace_active": True,
+                    "host_managed_context_requested": True,
+                    "host_managed_context_active": True,
+                    "effective_boundary_source": "host",
+                    "effective_boundary_strength": "strong",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "notes": ["host_transport_manages_session_boundaries"],
+                },
+            )
+            shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+            shared_state.set(
+                "team_profiles",
+                [{"name": "reviewer_gamma", "agent_type": "reviewer", "skills": ["review"]}],
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+
+            class _FakeHostWorker:
+                worker_backend = "external_process"
+
+                def __init__(self) -> None:
+                    self.assigned_task_id = ""
+
+                def can_accept_assigned_task(self) -> bool:
+                    return not self.assigned_task_id
+
+                def reserve_assigned_task(self, task_id: str) -> bool:
+                    if self.assigned_task_id:
+                        return False
+                    self.assigned_task_id = str(task_id)
+                    return True
+
+                def release_assigned_task(self, task_id: str = "") -> None:
+                    if task_id and self.assigned_task_id and self.assigned_task_id != str(task_id):
+                        return
+                    self.assigned_task_id = ""
+
+            worker = _FakeHostWorker()
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="host dynamic planning test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+            )
+            setattr(lead_context, "_host_worker_threads", {"reviewer_gamma": worker})
+
+            dispatched = runtime.run_host_teammate_task_once(
+                lead_context=lead_context,
+                teammate_profiles=[reviewer],
+                handlers={"dynamic_planning": runtime.handle_dynamic_planning},
+            )
+            self.assertTrue(dispatched)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["dynamic_planning"]["status"], "in_progress")
+            self.assertEqual(worker.assigned_task_id, "dynamic_planning")
+
+            mailbox.send(
+                sender="reviewer_gamma",
+                recipient="lead",
+                subject=runtime.SESSION_TASK_RESULT_SUBJECT,
+                body=json.dumps(
+                    {
+                        "contract": "session_task_result",
+                        "contract_version": 1,
+                        "transport": "host",
+                        "execution_mode": "session_thread",
+                        "task_id": "dynamic_planning",
+                        "task_type": "dynamic_planning",
+                        "worker": "reviewer_gamma",
+                        "success": True,
+                        "result": {
+                            "enabled": True,
+                            "inserted_tasks": ["heading_structure_followup", "length_risk_followup"],
+                            "peer_challenge_dependencies_added": ["heading_structure_followup", "length_risk_followup"],
+                        },
+                        "error": "",
+                        "state_updates": {
+                            "dynamic_plan": {
+                                "enabled": True,
+                                "inserted_tasks": ["heading_structure_followup", "length_risk_followup"],
+                                "peer_challenge_dependencies_added": ["heading_structure_followup", "length_risk_followup"],
+                            }
+                        },
+                        "task_mutations": {
+                            "insert_tasks": [
+                                {
+                                    "task_id": "heading_structure_followup",
+                                    "title": "Run heading structure follow-up audit",
+                                    "task_type": "heading_structure_followup",
+                                    "required_skills": ["analysis"],
+                                    "dependencies": ["dynamic_planning"],
+                                    "payload": {"top_n": 8},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["analyst"],
+                                },
+                                {
+                                    "task_id": "length_risk_followup",
+                                    "title": "Run length risk follow-up audit",
+                                    "task_type": "length_risk_followup",
+                                    "required_skills": ["analysis"],
+                                    "dependencies": ["dynamic_planning"],
+                                    "payload": {"line_threshold": 180, "top_n": 8},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["analyst"],
+                                },
+                            ],
+                            "add_dependencies": [
+                                {"task_id": "peer_challenge", "dependency_id": "heading_structure_followup"},
+                                {"task_id": "peer_challenge", "dependency_id": "length_risk_followup"},
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                task_id="dynamic_planning",
+            )
+            self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["dynamic_planning"]["status"], "completed")
+            self.assertIn("heading_structure_followup", board_snapshot)
+            self.assertIn("length_risk_followup", board_snapshot)
+            self.assertEqual(
+                set(board_snapshot["peer_challenge"]["dependencies"]),
+                {"heading_structure_followup", "length_risk_followup"},
+            )
+            self.assertEqual(
+                shared_state.get("dynamic_plan", {}).get("inserted_tasks"),
+                ["heading_structure_followup", "length_risk_followup"],
+            )
+            self.assertEqual(worker.assigned_task_id, "")
+
+            events = [
+                json.loads(line)
+                for line in logger.path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            completion_events = [
+                item
+                for item in events
+                if item.get("event") == "host_worker_task_completed"
+                and item.get("task_id") == "dynamic_planning"
+            ]
+            self.assertEqual(len(completion_events), 1)
+            self.assertEqual(completion_events[0].get("execution_mode"), "session_thread")
+            self.assertEqual(completion_events[0].get("insert_task_count"), 2)
+            self.assertEqual(completion_events[0].get("add_dependency_count"), 2)
+
 
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

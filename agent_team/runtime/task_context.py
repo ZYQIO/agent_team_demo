@@ -209,6 +209,13 @@ def build_task_context_snapshot(
         for dep_id in task.dependencies
     }
     board_snapshot = context.board.snapshot()
+    board_task_ids = []
+    for item in board_snapshot.get("tasks", []):
+        if not isinstance(item, Mapping):
+            continue
+        task_id = str(item.get("task_id", "") or "")
+        if task_id:
+            board_task_ids.append(task_id)
     task_status_counts = _task_status_counts(board_snapshot.get("tasks", []))
     return {
         "task_id": task.task_id,
@@ -227,6 +234,8 @@ def build_task_context_snapshot(
         "omitted_shared_state_keys": omitted_keys,
         "visible_shared_state_key_count": len(visible_state),
         "omitted_shared_state_key_count": len(omitted_keys),
+        "board_task_ids": board_task_ids,
+        "board_task_count": len(board_task_ids),
         "task_status_counts": task_status_counts,
         "scope": "task_scoped_shared_state_view",
     }

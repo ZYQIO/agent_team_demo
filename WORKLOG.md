@@ -13,6 +13,25 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host planning session-worker contract
+- Goal: move host reviewer planning tasks off the lead-inline executor without giving external workers direct task-board access
+- Changes:
+  - expanded the host assigned-task contract to include reviewer `dynamic_planning` and `repo_dynamic_planning`
+  - extended task-context snapshots with minimal board task identity so host planning workers can compute mutations without a full parent-runtime board object
+  - taught the host assigned-task result contract to carry explicit `task_mutations` payloads and taught the lead side to apply inserted tasks and dependency changes before completing the planning task
+  - extended regression coverage so host-mode logic and CLI runs now require `dynamic_planning` to emit assignment/result/telemetry/completion records through the external session-worker path
+  - direction review: the latest three host transport rounds still improved execution semantics, and the next host gap is now broader externalization beyond the reviewer slice rather than more reviewer-specific contract work
+- Validation:
+  - targeted host planning-mutation regression passed
+  - targeted host mailbox/session-thread regression passed
+  - targeted host CLI/end-to-end regression passed
+  - full suite: `106/106` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_dynamic_session`
+  - verifier passed for that smoke output
+  - smoke event review confirmed reviewer `dynamic_planning` now uses `session_task_assignment` / `session_task_result` plus `execution_mode=session_thread`, `session_worker_backend=external_process`, `insert_task_count=2`, and `add_dependency_count=2`, while `recommendation_pack` remains on the same external session-worker contract
+- Commit: pending
+- Next implication: the remaining host transport gap is no longer reviewer planning; it is externalizing analyst or other non-reviewer host work without weakening the explicit lead-applied contract model
+
 ### 2026-03-10 - Host report session-worker contract
 - Goal: move host reviewer report tasks off the lead-inline executor while preserving explicit lead-side file-lock ownership
 - Changes:

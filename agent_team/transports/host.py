@@ -9,7 +9,7 @@ import traceback
 from typing import Any, Dict, Mapping, Optional, Sequence
 
 from ..config import ModelConfig, RuntimeConfig
-from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState
+from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState, task_from_dict
 from ..models import build_provider
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
@@ -343,6 +343,63 @@ def _release_assigned_task_lock(lead_context: Any, task_id: str) -> None:
         lead_context.file_locks.release(owner, lock_paths)
 
 
+def _apply_host_task_mutations(
+    lead_context: Any,
+    worker: str,
+    task_type: str,
+    result: Any,
+    state_updates: Any,
+    task_mutations: Any,
+) -> Dict[str, Any]:
+    normalized_state_updates = state_updates if isinstance(state_updates, dict) else {}
+    normalized_mutations = task_mutations if isinstance(task_mutations, dict) else {}
+    normalized_result = result if isinstance(result, dict) else {"raw_result": result}
+    inserted_task_ids = []
+    added_dependency_ids = []
+
+    raw_insert_tasks = normalized_mutations.get("insert_tasks", [])
+    if isinstance(raw_insert_tasks, list):
+        tasks_to_insert = [task_from_dict(item) for item in raw_insert_tasks if isinstance(item, dict)]
+        if tasks_to_insert:
+            inserted_task_ids = lead_context.board.add_tasks(tasks=tasks_to_insert, inserted_by=worker)
+
+    raw_dependencies = normalized_mutations.get("add_dependencies", [])
+    if isinstance(raw_dependencies, list):
+        for item in raw_dependencies:
+            if not isinstance(item, dict):
+                continue
+            dependency_task_id = str(item.get("task_id", "") or "")
+            dependency_id = str(item.get("dependency_id", "") or "")
+            if not dependency_task_id or not dependency_id:
+                continue
+            if lead_context.board.add_dependency(
+                task_id=dependency_task_id,
+                dependency_id=dependency_id,
+                updated_by=worker,
+            ):
+                added_dependency_ids.append(dependency_id)
+
+    state_update_key = (
+        "dynamic_plan"
+        if task_type == "dynamic_planning"
+        else "repo_dynamic_plan"
+        if task_type == "repo_dynamic_planning"
+        else ""
+    )
+    if state_update_key and isinstance(normalized_result, dict):
+        normalized_result["inserted_tasks"] = inserted_task_ids
+        normalized_result["peer_challenge_dependencies_added"] = added_dependency_ids
+        state_value = normalized_state_updates.get(state_update_key)
+        if isinstance(state_value, dict):
+            state_value["inserted_tasks"] = list(inserted_task_ids)
+            state_value["peer_challenge_dependencies_added"] = list(added_dependency_ids)
+
+    for key, value in normalized_state_updates.items():
+        lead_context.shared_state.set(str(key), value)
+
+    return normalized_result
+
+
 def _build_host_worker_payload(
     lead_context: Any,
     profile: AgentProfile,
@@ -651,6 +708,9 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
     state_updates = payload.get("state_updates", {})
     if not isinstance(state_updates, dict):
         state_updates = {}
+    task_mutations = payload.get("task_mutations", {})
+    if not isinstance(task_mutations, dict):
+        task_mutations = {}
     error = str(payload.get("error", "") or "")
     transport_identity = _host_completion_identity(
         lead_context=lead_context,
@@ -667,14 +727,22 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
         task_type=task_type,
         success=success,
         state_update_keys=sorted(state_updates.keys()) if success else [],
+        insert_task_count=len(task_mutations.get("insert_tasks", [])) if success else 0,
+        add_dependency_count=len(task_mutations.get("add_dependencies", [])) if success else 0,
         completion_subject=SESSION_TASK_RESULT_SUBJECT,
         session_worker_backend=session_worker_backend,
     )
     try:
         if success:
-            for key, value in state_updates.items():
-                lead_context.shared_state.set(str(key), value)
-            lead_context.board.complete(task_id=task_id, owner=worker, result=result)
+            normalized_result = _apply_host_task_mutations(
+                lead_context=lead_context,
+                worker=worker,
+                task_type=task_type,
+                result=result,
+                state_updates=state_updates,
+                task_mutations=task_mutations,
+            )
+            lead_context.board.complete(task_id=task_id, owner=worker, result=normalized_result)
             lead_context.mailbox.send(
                 sender=worker,
                 recipient=lead_context.profile.name,
@@ -694,6 +762,8 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
                 completion_contract="mailbox_message",
                 completion_subject=SESSION_TASK_RESULT_SUBJECT,
                 state_update_keys=sorted(state_updates.keys()),
+                insert_task_count=len(task_mutations.get("insert_tasks", [])),
+                add_dependency_count=len(task_mutations.get("add_dependencies", [])),
                 session_worker_backend=session_worker_backend,
             )
         else:

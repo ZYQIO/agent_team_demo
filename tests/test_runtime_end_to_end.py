@@ -768,6 +768,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 any(item.get("task_id") == "evidence_pack" for item in session_thread_dispatches)
             )
             self.assertTrue(
+                any(item.get("task_id") == "dynamic_planning" for item in session_thread_dispatches)
+            )
+            self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in session_thread_dispatches)
             )
             self.assertTrue(
@@ -784,6 +787,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in assignment_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "dynamic_planning" for item in assignment_messages)
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in assignment_messages)
@@ -804,6 +810,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 any(item.get("task_id") == "evidence_pack" for item in result_messages)
             )
             self.assertTrue(
+                any(item.get("task_id") == "dynamic_planning" for item in result_messages)
+            )
+            self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in result_messages)
             )
             self.assertTrue(
@@ -820,6 +829,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in telemetry_messages)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "dynamic_planning" for item in telemetry_messages)
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in telemetry_messages)
@@ -841,6 +853,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertTrue(
                 any(item.get("task_id") == "evidence_pack" for item in session_thread_completions)
+            )
+            self.assertTrue(
+                any(item.get("task_id") == "dynamic_planning" for item in session_thread_completions)
             )
             self.assertTrue(
                 any(item.get("task_id") == "llm_synthesis" for item in session_thread_completions)
