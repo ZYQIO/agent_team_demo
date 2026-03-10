@@ -73,8 +73,8 @@ Current findings:
 - subprocess mode now has an explicit guardrail that keeps these task types on the parent mailbox path until a real mailbox transport exists
 - runtime runs now use a file-backed mailbox backend under the output directory, so `send` / `pull` / `pull_matching` semantics no longer depend on one in-memory mailbox instance
 - file-backed mailbox pulls now atomically claim message files, and runtime worker/helper contexts consume transport-local mailbox views instead of only the lead mailbox object
-- in host mode, mailbox-driven reviewer tasks now dispatch onto the long-lived teammate session thread instead of executing lead-inline
-- the remaining gap is no longer mailbox object sharing or lead-inline execution in host mode; it is that reviewer mailbox flows still do not cross a true external process or host boundary with an explicit request/reply contract
+- in host mode, mailbox-driven reviewer tasks now dispatch through an explicit `session_task_assignment` mailbox message onto the long-lived teammate session thread instead of executing lead-inline
+- the remaining gap is no longer assignment-side contract definition; it is that result publication, shared-state mutation, and task completion still happen against shared in-runtime objects instead of a true external request/reply boundary
 
 Acceptance criteria:
 - decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions

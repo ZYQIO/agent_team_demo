@@ -13,6 +13,22 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host reviewer mailbox assignment contract
+- Goal: replace transport-private host reviewer task assignment with an explicit mailbox contract that can later cross a real process or host boundary
+- Changes:
+  - replaced host reviewer session-thread assignment queueing with explicit `session_task_assignment` mailbox messages containing the claimed task payload
+  - updated long-lived non-claiming teammate sessions to reserve assignment slots, consume assignment messages from mailbox, and log `assigned_task_message_received`
+  - tagged host dispatch events with `dispatch_contract=mailbox_message` for mailbox-dispatched reviewer tasks and `dispatch_contract=inline_call` for unchanged inline paths
+  - extended unit and end-to-end coverage so host-mode reviewer mailbox tasks must emit both `session_thread` dispatch events and `session_task_assignment` mail events
+- Validation:
+  - targeted host logic/end-to-end regressions passed
+  - full suite: `101/101` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_assignment_contract`
+  - verifier passed for that smoke output
+  - smoke event review confirmed `lead -> reviewer_gamma` `session_task_assignment` messages for `peer_challenge` and `evidence_pack`
+- Commit: `be756fd`
+- Next implication: the remaining external-boundary gap is result/state-update/task-completion return contract, not assignment delivery
+
 ### 2026-03-10 - Host mailbox reviewer session-thread dispatch
 - Goal: stop running host-mode mailbox reviewer tasks lead-inline and move them onto the long-lived teammate session path
 - Changes:
