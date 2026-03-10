@@ -587,7 +587,7 @@ def run_team(
                 provider=provider,
                 runtime_config=runtime_config,
                 board=board,
-                mailbox=mailbox,
+                mailbox=mailbox.transport_view(),
                 file_locks=file_locks,
                 shared_state=shared_state,
                 logger=logger,

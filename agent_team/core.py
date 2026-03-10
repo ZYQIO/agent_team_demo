@@ -230,6 +230,11 @@ class Mailbox:
         stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         return self._recipient_dir(recipient) / f"{stamp}_{message.message_id}.json"
 
+    def _claim_dir(self, recipient: str) -> pathlib.Path:
+        if self._storage_dir is None:
+            raise RuntimeError("claim_dir requested for in-memory mailbox")
+        return self._recipient_dir(recipient) / "_claims"
+
     def _deserialize_message(self, payload: Dict[str, Any]) -> Message:
         return Message(
             message_id=str(payload.get("message_id", "") or ""),
@@ -249,6 +254,16 @@ class Mailbox:
         temp_path.write_text(json.dumps(message.to_dict(), ensure_ascii=False), encoding="utf-8")
         temp_path.replace(target)
 
+    def transport_view(self) -> "Mailbox":
+        if self._storage_dir is None:
+            return self
+        return Mailbox(
+            participants=sorted(self._participants),
+            logger=self._logger,
+            storage_dir=self._storage_dir,
+            clear_storage=False,
+        )
+
     def _pull_file_messages(
         self,
         recipient: str,
@@ -256,23 +271,44 @@ class Mailbox:
     ) -> List[Message]:
         recipient_dir = self._recipient_dir(recipient)
         recipient_dir.mkdir(parents=True, exist_ok=True)
+        claim_dir = self._claim_dir(recipient)
+        claim_dir.mkdir(parents=True, exist_ok=True)
         matched: List[Message] = []
         with self._lock:
             for message_path in sorted(recipient_dir.glob("*.json")):
+                claimed_path = claim_dir / f"{message_path.stem}.{uuid.uuid4().hex}.json"
                 try:
-                    payload = json.loads(message_path.read_text(encoding="utf-8"))
+                    message_path.replace(claimed_path)
+                except FileNotFoundError:
+                    continue
+                except OSError:
+                    continue
+                try:
+                    payload = json.loads(claimed_path.read_text(encoding="utf-8"))
                 except FileNotFoundError:
                     continue
                 except (OSError, json.JSONDecodeError):
+                    try:
+                        claimed_path.unlink()
+                    except OSError:
+                        pass
                     continue
                 if not isinstance(payload, dict):
+                    try:
+                        claimed_path.unlink()
+                    except OSError:
+                        pass
                     continue
                 message = self._deserialize_message(payload)
                 if matcher is not None and not matcher(message):
+                    try:
+                        claimed_path.replace(message_path)
+                    except OSError:
+                        pass
                     continue
                 matched.append(message)
                 try:
-                    message_path.unlink()
+                    claimed_path.unlink()
                 except FileNotFoundError:
                     continue
         return matched

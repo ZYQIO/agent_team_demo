@@ -14,6 +14,12 @@ from . import tmux as tmux_transport
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
+AUTO_REPLY_SUBJECTS = {
+    "peer_challenge_round1_request",
+    "peer_challenge_round2_request",
+    "peer_challenge_round3_request",
+    "evidence_request",
+}
 
 
 class InProcessTeammateAgent(threading.Thread):
@@ -502,7 +508,13 @@ class InProcessTeammateAgent(threading.Thread):
         )
         last_idle_hook_emit_ts = 0.0
         while not self.stop_event.is_set():
-            messages = self.context.mailbox.pull(self.context.profile.name)
+            if self.claim_tasks:
+                messages = self.context.mailbox.pull(self.context.profile.name)
+            else:
+                messages = self.context.mailbox.pull_matching(
+                    self.context.profile.name,
+                    lambda message: message.subject in AUTO_REPLY_SUBJECTS,
+                )
             for message in messages:
                 if self.context.session_registry is not None:
                     self.context.session_state = self.context.session_registry.record_message_seen(

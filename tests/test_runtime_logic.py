@@ -136,6 +136,11 @@ class RuntimeLogicTests(unittest.TestCase):
                 logger=logger,
                 storage_dir=mailbox_dir,
             )
+            secondary_recipient_mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+            )
 
             sender_mailbox.send(
                 sender="lead",
@@ -156,12 +161,42 @@ class RuntimeLogicTests(unittest.TestCase):
                 "reviewer_gamma",
                 lambda message: message.subject == "peer_challenge_round1_request",
             )
-            remaining = recipient_mailbox.pull("reviewer_gamma")
+            remaining = secondary_recipient_mailbox.pull("reviewer_gamma")
 
             self.assertEqual(len(matched), 1)
             self.assertEqual(matched[0].task_id, "peer_challenge")
             self.assertEqual(len(remaining), 1)
             self.assertEqual(remaining[0].subject, "lead_verdict")
+
+    def test_file_backed_mailbox_transport_view_shares_storage_without_duplicate_delivery(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            mailbox_dir = output_dir / "mailbox"
+            root_mailbox = runtime.Mailbox(
+                participants=["lead", "analyst_alpha"],
+                logger=logger,
+                storage_dir=mailbox_dir,
+                clear_storage=True,
+            )
+            transport_mailbox = root_mailbox.transport_view()
+
+            self.assertIsNot(root_mailbox, transport_mailbox)
+            self.assertEqual(root_mailbox.storage_dir, transport_mailbox.storage_dir)
+
+            root_mailbox.send(
+                sender="lead",
+                recipient="analyst_alpha",
+                subject="assignment",
+                body="inspect headings",
+                task_id="heading_audit",
+            )
+            first_pull = transport_mailbox.pull("analyst_alpha")
+            second_pull = root_mailbox.pull("analyst_alpha")
+
+            self.assertEqual(len(first_pull), 1)
+            self.assertEqual(first_pull[0].subject, "assignment")
+            self.assertEqual(second_pull, [])
 
     def test_taskboard_claim_respects_allowed_agent_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3283,6 +3318,73 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(started[-1].get("transport"), "subprocess")
             self.assertEqual(stopped[-1].get("transport"), "subprocess")
 
+    def test_non_claiming_mailbox_helper_leaves_non_request_messages_for_task_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma", "analyst_alpha"],
+                logger=logger,
+            )
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="host")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                session_state=session_state,
+                session_registry=registry,
+            )
+            mailbox.send(
+                sender="analyst_alpha",
+                recipient="reviewer_gamma",
+                subject="evidence_reply",
+                body="leave this for the requester",
+                task_id="evidence_pack",
+            )
+            mailbox.send(
+                sender="lead",
+                recipient="reviewer_gamma",
+                subject="peer_challenge_round1_request",
+                body="identify one weak assumption",
+                task_id="peer_challenge",
+            )
+            stop_event = threading.Event()
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=stop_event,
+                claim_tasks=False,
+                handlers={},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+
+            agent.run()
+
+            reviewer_mail = mailbox.pull("reviewer_gamma")
+            lead_mail = mailbox.pull("lead")
+
+            self.assertEqual(len(reviewer_mail), 1)
+            self.assertEqual(reviewer_mail[0].subject, "evidence_reply")
+            self.assertTrue(
+                any(message.subject == "peer_challenge_round1_reply" for message in lead_mail),
+            )
+
     def test_mailbox_reviewer_tasks_remain_in_process_in_subprocess_mode(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -3828,7 +3930,12 @@ class RuntimeLogicTests(unittest.TestCase):
                 ],
                 logger=logger,
             )
-            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=output_dir / "_mailbox",
+                clear_storage=True,
+            )
             shared_state = runtime.SharedState()
             shared_state.set("lead_name", "lead")
             shared_state.set(
@@ -3881,6 +3988,7 @@ class RuntimeLogicTests(unittest.TestCase):
             registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
             reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
             registry.ensure_profile(profile=reviewer, transport="host", status="ready")
+            observed: dict = {}
             lead_context = runtime.AgentContext(
                 profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
                 target_dir=output_dir,
@@ -3898,6 +4006,8 @@ class RuntimeLogicTests(unittest.TestCase):
             )
 
             def _handler(context, task):
+                observed["shared_mailbox_object"] = context.mailbox is lead_context.mailbox
+                observed["worker_mailbox_storage_dir"] = str(context.mailbox.storage_dir)
                 context.shared_state.set("host_result", {"task_id": task.task_id, "transport": "host"})
                 return {"ok": True, "transport": "host"}
 
@@ -3911,6 +4021,11 @@ class RuntimeLogicTests(unittest.TestCase):
             task_snapshot = board.snapshot()["tasks"][0]
             self.assertEqual(task_snapshot["status"], "completed")
             self.assertEqual(shared_state.get("host_result", {}).get("transport"), "host")
+            self.assertFalse(observed["shared_mailbox_object"])
+            self.assertEqual(
+                pathlib.Path(observed["worker_mailbox_storage_dir"]).resolve(),
+                (output_dir / "_mailbox").resolve(),
+            )
             session = registry.session_for("reviewer_gamma")
             self.assertEqual(session.get("transport"), "host")
             self.assertTrue(session.get("workspace_isolation_active"))

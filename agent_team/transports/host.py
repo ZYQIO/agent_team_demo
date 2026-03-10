@@ -143,7 +143,7 @@ def run_host_teammate_task_once(
             provider=lead_context.provider,
             runtime_config=lead_context.runtime_config,
             board=lead_context.board,
-            mailbox=lead_context.mailbox,
+            mailbox=lead_context.mailbox.transport_view(),
             file_locks=lead_context.file_locks,
             shared_state=lead_context.shared_state,
             logger=lead_context.logger,
