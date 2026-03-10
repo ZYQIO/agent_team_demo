@@ -94,6 +94,7 @@ from agent_team.runtime.engine import (
 )
 from agent_team.transports.inprocess import (
     SESSION_TASK_ASSIGNMENT_SUBJECT,
+    SESSION_TASK_RESULT_SUBJECT,
     InProcessTeammateAgent,
 )
 import agent_team.transports.host as host_transport
@@ -258,6 +259,10 @@ def run_host_teammate_task_once(
         teammate_profiles=teammate_profiles,
         handlers=handlers,
     )
+
+
+def apply_host_session_result_messages(lead_context: AgentContext) -> int:
+    return host_transport.apply_host_session_result_messages(lead_context=lead_context)
 
 
 def run_tmux_analyst_task_once(

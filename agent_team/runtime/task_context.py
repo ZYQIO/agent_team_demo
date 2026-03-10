@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from ..core import SharedState, Task
@@ -113,26 +114,39 @@ class ScopedSharedState:
     _underlying: SharedState
     _visible_keys: Set[str]
     _written_keys: Set[str] = dataclasses.field(default_factory=set)
+    _buffered_updates: Dict[str, Any] = dataclasses.field(default_factory=dict)
+    _write_through: bool = True
 
     def get(self, key: str, default: Any = None) -> Any:
         normalized = str(key)
+        if normalized in self._buffered_updates:
+            return self._buffered_updates.get(normalized, default)
         if normalized in self._visible_keys or normalized in self._written_keys:
             return self._underlying.get(normalized, default)
         return default
 
     def set(self, key: str, value: Any) -> None:
         normalized = str(key)
-        self._underlying.set(normalized, value)
+        if self._write_through:
+            self._underlying.set(normalized, value)
+        else:
+            self._buffered_updates[normalized] = value
         self._written_keys.add(normalized)
 
     def snapshot(self) -> Dict[str, Any]:
         underlying_snapshot = self._underlying.snapshot()
         allowed_keys = self._visible_keys | self._written_keys
-        return {
+        visible_snapshot = {
             key: value
             for key, value in underlying_snapshot.items()
             if key in allowed_keys
         }
+        if self._buffered_updates:
+            visible_snapshot.update(self._buffered_updates)
+        return json.loads(json.dumps(visible_snapshot, ensure_ascii=False))
+
+    def buffered_updates(self) -> Dict[str, Any]:
+        return json.loads(json.dumps(self._buffered_updates, ensure_ascii=False))
 
 
 def build_task_context_snapshot(

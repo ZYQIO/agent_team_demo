@@ -15,6 +15,7 @@ from . import tmux as tmux_transport
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
 SESSION_TASK_ASSIGNMENT_SUBJECT = "session_task_assignment"
+SESSION_TASK_RESULT_SUBJECT = "session_task_result"
 AUTO_REPLY_SUBJECTS = {
     "peer_challenge_round1_request",
     "peer_challenge_round2_request",
@@ -145,6 +146,52 @@ class InProcessTeammateAgent(threading.Thread):
             self._run_task(task)
         finally:
             self._finish_assigned_task(task.task_id)
+
+    def _uses_host_session_result_contract(self, task: Task, task_transport: str) -> bool:
+        return (
+            (not self.claim_tasks)
+            and task_transport == "host"
+            and task.task_type in MAILBOX_REVIEWER_TASK_TYPES
+        )
+
+    def _publish_assigned_task_result(
+        self,
+        task: Task,
+        success: bool,
+        result: Any = None,
+        error: str = "",
+        state_updates: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        normalized_state_updates = state_updates if isinstance(state_updates, dict) else {}
+        normalized_result = result if isinstance(result, dict) else {"raw_result": result}
+        payload = {
+            "contract": "session_task_result",
+            "contract_version": 1,
+            "transport": "host",
+            "execution_mode": "session_thread",
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "worker": self.context.profile.name,
+            "success": bool(success),
+            "result": normalized_result if success else {},
+            "error": "" if success else str(error or "unknown worker error"),
+            "state_updates": normalized_state_updates if success else {},
+        }
+        self.context.mailbox.send(
+            sender=self.context.profile.name,
+            recipient=self._get_lead_name_fn(self.context),
+            subject=SESSION_TASK_RESULT_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=task.task_id,
+        )
+        self.context.logger.log(
+            "assigned_task_result_published",
+            agent=self.context.profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            success=bool(success),
+            state_update_keys=sorted(normalized_state_updates.keys()) if success else [],
+        )
 
     def _refresh_session_state(self) -> None:
         if self.context.session_registry is None:
@@ -350,8 +397,16 @@ class InProcessTeammateAgent(threading.Thread):
             return
         original_shared_state = self.context.shared_state
         task_context = build_task_context_snapshot(self.context, task)
-        scoped_shared_state = ScopedSharedState(_underlying=original_shared_state, _visible_keys=set(task_context.get("visible_shared_state_keys", [])))
         task_transport = self._task_transport(task)
+        uses_host_session_result_contract = self._uses_host_session_result_contract(
+            task=task,
+            task_transport=task_transport,
+        )
+        scoped_shared_state = ScopedSharedState(
+            _underlying=original_shared_state,
+            _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
+            _write_through=not uses_host_session_result_contract,
+        )
         if self.context.session_registry is not None:
             self.context.session_state = self.context.session_registry.bind_task(agent_name=self.context.profile.name, task=task, transport=task_transport, task_context=task_context)
         self.context.task_context = task_context
@@ -361,14 +416,29 @@ class InProcessTeammateAgent(threading.Thread):
             result = self._run_subprocess_worker_task(task=task, task_context=task_context, original_shared_state=original_shared_state) if task_transport == "subprocess" else handler(self.context, task)
             if self.context.session_registry is not None:
                 self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=True, status="ready")
-            self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
-            self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_completed", body=f"{task.task_id} done", task_id=task.task_id)
+            if uses_host_session_result_contract:
+                self._publish_assigned_task_result(
+                    task=task,
+                    success=True,
+                    result=result,
+                    state_updates=scoped_shared_state.buffered_updates(),
+                )
+            else:
+                self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
+                self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_completed", body=f"{task.task_id} done", task_id=task.task_id)
         except Exception as exc:  # pragma: no cover - defensive path
             error = f"{type(exc).__name__}: {exc}"
             if self.context.session_registry is not None:
                 self.context.session_state = self.context.session_registry.record_task_result(agent_name=self.context.profile.name, task=task, transport=task_transport, success=False, status="error")
-            self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
-            self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_failed", body=error, task_id=task.task_id)
+            if uses_host_session_result_contract:
+                self._publish_assigned_task_result(
+                    task=task,
+                    success=False,
+                    error=error,
+                )
+            else:
+                self.context.board.fail(task_id=task.task_id, owner=self.context.profile.name, error=error)
+                self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_failed", body=error, task_id=task.task_id)
             self.context.logger.log("task_exception", task_id=task.task_id, agent=self.context.profile.name, traceback=self._traceback_module.format_exc())
         finally:
             self.context.shared_state = original_shared_state

@@ -7,7 +7,7 @@ from typing import Any, Dict, Mapping, Sequence
 
 from ..core import AgentProfile
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
-from .inprocess import SESSION_TASK_ASSIGNMENT_SUBJECT
+from .inprocess import SESSION_TASK_ASSIGNMENT_SUBJECT, SESSION_TASK_RESULT_SUBJECT
 from . import tmux as tmux_transport
 
 
@@ -92,13 +92,140 @@ def _record_host_boundary(
     )
 
 
+def _host_completion_identity(lead_context: Any, worker_name: str) -> Dict[str, Any]:
+    return _host_transport_identity(
+        lead_context=lead_context,
+        profile=AgentProfile(name=str(worker_name), skills=set(), agent_type="general"),
+    )
+
+
+def apply_host_session_result_messages(lead_context: Any) -> int:
+    result_messages = lead_context.mailbox.pull_matching(
+        lead_context.profile.name,
+        lambda message: message.subject == SESSION_TASK_RESULT_SUBJECT,
+    )
+    applied = 0
+    for message in result_messages:
+        try:
+            payload = json.loads(message.body)
+        except json.JSONDecodeError:
+            lead_context.logger.log(
+                "host_worker_result_invalid",
+                task_id=message.task_id,
+                worker=message.sender,
+                error="invalid_json",
+            )
+            continue
+        if not isinstance(payload, dict):
+            lead_context.logger.log(
+                "host_worker_result_invalid",
+                task_id=message.task_id,
+                worker=message.sender,
+                error="invalid_payload",
+            )
+            continue
+        worker = str(payload.get("worker", "") or message.sender or "")
+        task_id = str(payload.get("task_id", "") or message.task_id or "")
+        task_type = str(payload.get("task_type", "") or "")
+        if not worker or not task_id:
+            lead_context.logger.log(
+                "host_worker_result_invalid",
+                task_id=task_id or message.task_id,
+                worker=worker or message.sender,
+                error="missing_worker_or_task_id",
+            )
+            continue
+        success = bool(payload.get("success", False))
+        result = payload.get("result", {})
+        if not isinstance(result, dict):
+            result = {"raw_result": result}
+        state_updates = payload.get("state_updates", {})
+        if not isinstance(state_updates, dict):
+            state_updates = {}
+        error = str(payload.get("error", "") or "")
+        transport_identity = _host_completion_identity(
+            lead_context=lead_context,
+            worker_name=worker,
+        )
+        lead_context.logger.log(
+            "host_worker_result_received",
+            worker=worker,
+            task_id=task_id,
+            task_type=task_type,
+            success=success,
+            state_update_keys=sorted(state_updates.keys()) if success else [],
+            completion_subject=SESSION_TASK_RESULT_SUBJECT,
+        )
+        try:
+            if success:
+                for key, value in state_updates.items():
+                    lead_context.shared_state.set(str(key), value)
+                lead_context.board.complete(task_id=task_id, owner=worker, result=result)
+                lead_context.mailbox.send(
+                    sender=worker,
+                    recipient=lead_context.profile.name,
+                    subject="task_completed",
+                    body=f"{task_id} done",
+                    task_id=task_id,
+                )
+                lead_context.logger.log(
+                    "host_worker_task_completed",
+                    worker=worker,
+                    task_id=task_id,
+                    task_type=task_type,
+                    host_kind=str(transport_identity.get("host_kind", "") or ""),
+                    host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                    transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+                    execution_mode="session_thread",
+                    completion_contract="mailbox_message",
+                    completion_subject=SESSION_TASK_RESULT_SUBJECT,
+                    state_update_keys=sorted(state_updates.keys()),
+                )
+            else:
+                resolved_error = error or "unknown worker error"
+                lead_context.board.fail(task_id=task_id, owner=worker, error=resolved_error)
+                lead_context.mailbox.send(
+                    sender=worker,
+                    recipient=lead_context.profile.name,
+                    subject="task_failed",
+                    body=resolved_error,
+                    task_id=task_id,
+                )
+                lead_context.logger.log(
+                    "host_worker_task_failed",
+                    worker=worker,
+                    task_id=task_id,
+                    task_type=task_type,
+                    error=resolved_error,
+                    host_kind=str(transport_identity.get("host_kind", "") or ""),
+                    host_session_transport=str(transport_identity.get("session_transport", "") or ""),
+                    transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+                    execution_mode="session_thread",
+                    completion_contract="mailbox_message",
+                    completion_subject=SESSION_TASK_RESULT_SUBJECT,
+                )
+        except Exception as exc:
+            lead_context.logger.log(
+                "host_worker_result_apply_failed",
+                worker=worker,
+                task_id=task_id,
+                task_type=task_type,
+                success=success,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            continue
+        applied += 1
+    return applied
+
+
 def run_host_teammate_task_once(
     lead_context: Any,
     teammate_profiles: Sequence[AgentProfile],
     handlers: Mapping[str, Any],
 ) -> bool:
+    ran_any = bool(apply_host_session_result_messages(lead_context=lead_context))
     if not teammate_profiles:
-        return False
+        return ran_any
     rr_index = int(lead_context.shared_state.get("_host_rr_index", 0))
     rr_index = rr_index % len(teammate_profiles)
     ordered_profiles = list(teammate_profiles[rr_index:]) + list(teammate_profiles[:rr_index])
@@ -333,4 +460,4 @@ def run_host_teammate_task_once(
             if lock_paths:
                 lead_context.file_locks.release(profile.name, lock_paths)
         return True
-    return False
+    return ran_any
