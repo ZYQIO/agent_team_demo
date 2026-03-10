@@ -13,6 +13,23 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host llm_synthesis session-worker contract
+- Goal: move the first non-mailbox, non-locking host reviewer task off the lead-inline executor without weakening task-context boundaries
+- Changes:
+  - extended task-context snapshots with scoped `visible_task_results` so assigned host session workers can read the minimum task-result view needed for reviewer synthesis work without a full parent-runtime board object
+  - expanded the host assigned-task contract from mailbox reviewer/request-reply flows to include reviewer `llm_synthesis`
+  - taught host session-worker boards to hydrate those scoped task-result views before running handlers
+  - extended regression coverage for `llm_synthesis` task-context shaping and for host-mode CLI runs proving `llm_synthesis` now dispatches and completes through `execution_mode=session_thread` with `session_worker_backend=external_process`
+- Validation:
+  - targeted task-context logic regression passed
+  - targeted host CLI/end-to-end regression passed
+  - full suite: `104/104` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_llm_session`
+  - verifier passed for that smoke output
+  - smoke event review confirmed reviewer `llm_synthesis` now uses `session_task_assignment` / `session_task_result` plus `execution_mode=session_thread` and `session_worker_backend=external_process`, while `recommendation_pack` still remains inline
+- Commit: `ca30bf1`
+- Next implication: the next host externalization candidates are planning/report tasks, which now need explicit file-lock and broader task-result contracts rather than another allowlist-only change
+
 ### 2026-03-10 - External host session-worker boundary
 - Goal: replace in-runtime host session threads for mailbox-driven reviewer/request-reply flows with a real external process boundary
 - Changes:
