@@ -16,6 +16,11 @@ Direction review (2026-03-10):
 - they did not drift into artifact-only work
 - the next priority remains mailbox-driven reviewer boundaries, and true external host sessions stay behind that design because both tracks need a believable mailbox transport story
 
+Direction review (2026-03-10, mailbox contract checkpoint):
+- the latest three mailbox-boundary rounds still improved execution semantics rather than adding reporting-only layers
+- the priority order does not need to change
+- the mailbox review scope is now narrower: assignment and result contracts exist, so the next transport step is pushing that contract across a real external host/session boundary
+
 Official parity check (2026-03-10, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
 - the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
@@ -74,11 +79,12 @@ Current findings:
 - runtime runs now use a file-backed mailbox backend under the output directory, so `send` / `pull` / `pull_matching` semantics no longer depend on one in-memory mailbox instance
 - file-backed mailbox pulls now atomically claim message files, and runtime worker/helper contexts consume transport-local mailbox views instead of only the lead mailbox object
 - in host mode, mailbox-driven reviewer tasks now dispatch through an explicit `session_task_assignment` mailbox message onto the long-lived teammate session thread instead of executing lead-inline
-- the remaining gap is no longer assignment-side contract definition; it is that result publication, shared-state mutation, and task completion still happen against shared in-runtime objects instead of a true external request/reply boundary
+- in host mode, mailbox-driven reviewer task results now return through an explicit `session_task_result` mailbox message, and lead-side result application now owns shared-state updates plus task completion/failure instead of the worker mutating the workflow state directly
+- the remaining gap is no longer mailbox contract shape; it is that both sides of the contract still run inside one parent runtime, and session lifecycle/ledger state is still shared in-process rather than crossing a true external host/session boundary
 
 Acceptance criteria:
 - decide whether these tasks stay in-process, move onto an IPC-backed mailbox transport, or wait for true host-native sessions
-- document the mailbox contract required for external execution
+- document the mailbox contract required for external execution and keep both assignment and result paths explicit
 - keep regression coverage that prevents accidental subprocess offload before that contract exists
 
 ### 4. Expand host transport toward true external teammate sessions

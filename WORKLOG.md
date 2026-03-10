@@ -13,6 +13,23 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-10 - Host reviewer mailbox result contract
+- Goal: externalize host reviewer mailbox task results so shared-state updates and task completion/failure are applied by the lead side instead of worker threads mutating runtime state directly
+- Changes:
+  - added buffered task-scoped shared-state writes so host session-thread mailbox tasks can stage state updates without mutating the shared runtime state in-place
+  - added explicit `session_task_result` mailbox messages for host mailbox reviewer tasks and applied them on the lead side to drive shared-state updates plus `board.complete` / `board.fail`
+  - kept legacy `task_completed` / `task_failed` mail events as lead-side synthesized notifications after result application so downstream lead mailbox behavior stays compatible
+  - extended unit and end-to-end coverage for deferred state application, session-thread completion events, and failure-path result application
+  - performed the scheduled direction review after the recent mailbox-boundary iterations and confirmed the project is still aligned with the execution-isolation target rather than drifting into artifacts
+- Validation:
+  - targeted host logic regressions passed
+  - full suite: `102/102` tests passed
+  - real CLI host smoke passed: `.codex_tmp\\smoke_output_host_result_contract`
+  - verifier passed for that smoke output
+  - smoke event review confirmed `peer_challenge` / `evidence_pack` emit `session_task_result`, `host_worker_result_received`, and `host_worker_task_completed` with `completion_contract=mailbox_message`
+- Commit: `51a3e34`
+- Next implication: the next transport step is no longer defining mailbox contract shape; it is pushing the existing assignment/result contract across a true external host-backed session boundary
+
 ### 2026-03-10 - Host reviewer mailbox assignment contract
 - Goal: replace transport-private host reviewer task assignment with an explicit mailbox contract that can later cross a real process or host boundary
 - Changes:

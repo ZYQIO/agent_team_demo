@@ -19,7 +19,7 @@ This folder now contains two layers:
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
-  - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host-mode mailbox reviewer tasks dispatched through an explicit `session_task_assignment` mailbox contract onto long-lived session threads)
+  - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host-mode mailbox reviewer tasks now using explicit `session_task_assignment` plus `session_task_result` mailbox contracts across long-lived session threads and lead-side completion/state application)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
   - event logs + final report artifacts

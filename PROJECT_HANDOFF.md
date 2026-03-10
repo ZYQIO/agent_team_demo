@@ -20,13 +20,13 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 ## Current Snapshot
 
 - Date: 2026-03-10
-- Latest runtime checkpoint commit: `be756fd`
+- Latest runtime checkpoint commit: `51a3e34`
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
   - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
   - transport-local mailbox views for runtime worker/helper sessions with atomic file claims during pull
-  - host-mode mailbox reviewer tasks now dispatch via explicit `session_task_assignment` mailbox messages onto long-lived teammate session threads instead of running lead-inline
+  - host-mode mailbox reviewer tasks now dispatch via explicit `session_task_assignment` mailbox messages onto long-lived teammate session threads and return via explicit `session_task_result` mailbox messages for lead-side state/task application
   - dynamic task insertion
   - progress artifacts and session ledgers
   - task-scoped context boundaries
@@ -39,15 +39,15 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
   - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
-  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now reach the reviewer's long-lived host session thread through explicit `session_task_assignment` mailbox messages
+  - mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) now reach the reviewer's long-lived host session thread through explicit `session_task_assignment` mailbox messages and return through explicit `session_task_result` mailbox messages
   - host execution is still in-process runtime emulation rather than true external host-backed sessions
 
 ## Main Remaining Gaps
 
 1. Mailbox-driven reviewer tasks still depend on the parent runtime mailbox.
-   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, transport-local mailbox views, and a host-mode mailbox assignment contract, but result publication and state mutation still do not cross a real external request/reply boundary.
+   `peer_challenge` and `evidence_pack` rely on live request/reply loops against long-lived teammate sessions; the runtime now has a file-backed mailbox backend, transport-local mailbox views, and explicit host-mode assignment/result contracts, but both ends still execute inside one parent runtime instead of crossing a real external request/reply boundary.
 2. Host teammate mode is still not true external host-backed execution.
-   The transport path is real, host/helper sessions consume transport-local mailbox views, and mailbox reviewer tasks run from mailbox assignment messages on long-lived session threads, but all of that still happens inside the parent runtime instead of true external host-backed sessions.
+   The transport path is real, host/helper sessions consume transport-local mailbox views, and mailbox reviewer tasks now use explicit mailbox assignment/result contracts on long-lived session threads, but all of that still happens inside the parent runtime instead of true external host-backed sessions.
 3. Lead-facing team interaction and plan approval are still missing as runtime behavior.
    Host metadata models `plan_approval`, but there is no approval gate for teammate task-list mutations and no live team-message surface beyond logs/artifacts.
 4. Replay is still checkpoint-based rather than true event-level state replay.
@@ -78,11 +78,11 @@ python -m unittest discover -s tests -p 'test_*.py' -q
 ```
 
 ```powershell
-python agent_team_runtime.py --target . --output .codex_tmp\smoke --provider heuristic --teammate-mode subprocess --peer-wait-seconds 1 --evidence-wait-seconds 1
+python agent_team_runtime.py --target . --output .codex_tmp\smoke_output_host_result_contract --provider heuristic --host-kind claude-code --teammate-mode host --peer-wait-seconds 1 --evidence-wait-seconds 1
 ```
 
 ```powershell
-python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke
+python skills\agent-team-runtime\scripts\verify_run.py --output .codex_tmp\smoke_output_host_result_contract
 ```
 
 If `python` resolves to a Windows Store alias on a new machine, use `py -3` or the concrete interpreter path instead.
