@@ -41,6 +41,7 @@ from .persistence import (
     seed_branch_events_from_source,
     write_artifacts,
     write_checkpoint,
+    write_live_lead_interaction_artifacts,
 )
 from .lead_interaction import (
     PLAN_APPROVAL_STATUS_APPLIED,
@@ -202,6 +203,14 @@ def apply_lead_commands(
         **consumed,
         **resolution,
     }
+
+
+def refresh_live_lead_interaction(lead_context: AgentContext) -> Dict[str, Any]:
+    return write_live_lead_interaction_artifacts(
+        output_dir=lead_context.output_dir,
+        shared_state=lead_context.shared_state,
+        logger=lead_context.logger,
+    )
 
 
 def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
@@ -753,6 +762,7 @@ def run_team(
         runtime_script=runtime_script_path,
         session_registry=session_registry,
     )
+    refresh_live_lead_interaction(lead_context=lead_context)
     if runtime_config.teammate_mode == "tmux" and recover_tmux_analyst_sessions_fn is not None:
         try:
             recover_tmux_analyst_sessions_fn(
@@ -867,6 +877,7 @@ def run_team(
                 or approval_resolution.get("applied_task_ids")
                 or approval_resolution.get("rejected_task_ids")
             )
+            refresh_live_lead_interaction(lead_context=lead_context)
             ran_tmux_task = False
             ran_host_task = False
             if runtime_config.teammate_mode in {"tmux", "subprocess"}:
@@ -932,6 +943,7 @@ def run_team(
                 or approval_resolution.get("applied_task_ids")
                 or approval_resolution.get("rejected_task_ids")
             )
+            refresh_live_lead_interaction(lead_context=lead_context)
             pending_plan_approvals = list_plan_approval_requests(
                 shared_state=lead_context.shared_state,
                 status=PLAN_APPROVAL_STATUS_PENDING,
@@ -956,6 +968,7 @@ def run_team(
                         or live_command_resolution.get("rejected_task_ids")
                     ):
                         ran_lead_task = True
+                    refresh_live_lead_interaction(lead_context=lead_context)
                     pending_plan_approvals = list_plan_approval_requests(
                         shared_state=lead_context.shared_state,
                         status=PLAN_APPROVAL_STATUS_PENDING,
@@ -968,6 +981,7 @@ def run_team(
                 interrupted_reason = (
                     "pending_plan_approval: " + ",".join(pending_task_ids[:5])
                 )
+                refresh_live_lead_interaction(lead_context=lead_context)
                 logger.log(
                     "run_paused_for_plan_approval",
                     pending_task_ids=pending_task_ids,
@@ -1003,6 +1017,7 @@ def run_team(
                 interrupted_reason = "run_timeout: no active tasks for prolonged rounds"
                 logger.log("run_timeout", reason=interrupted_reason)
                 break
+            refresh_live_lead_interaction(lead_context=lead_context)
             write_checkpoint(
                 checkpoint_path=checkpoint_path,
                 goal=goal,

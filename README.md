@@ -18,6 +18,7 @@ This folder now contains two layers:
   - team progress artifacts and lead-facing progress summary
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
+  - a terminal `lead_console.py` helper for in-run status inspection and approve/reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -116,6 +117,23 @@ python3 agent_team_demo/agent_team_runtime.py \
   --lead-command-wait-seconds 30
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/send_lead_command.py \
+  --output agent_team_demo/output \
+  --approve-plan dynamic_planning
+```
+
+Use the live terminal console instead of writing commands manually:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --target . \
+  --output agent_team_demo/output \
+  --teammate-plan-required \
+  --lead-command-wait-seconds 30
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
+  --output agent_team_demo/output
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --output agent_team_demo/output \
   --approve-plan dynamic_planning
 ```

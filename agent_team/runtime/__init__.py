@@ -53,6 +53,7 @@ from .persistence import (
     write_checkpoint,
     write_event_replay_report,
     write_history_replay_report,
+    write_live_lead_interaction_artifacts,
     write_lead_interaction_report,
     write_team_progress_report,
 )
@@ -134,6 +135,7 @@ __all__ = [
     "write_checkpoint",
     "write_event_replay_report",
     "write_history_replay_report",
+    "write_live_lead_interaction_artifacts",
     "write_lead_interaction_report",
     "write_team_progress_report",
 ]

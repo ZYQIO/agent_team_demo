@@ -1123,6 +1123,34 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
     }
 
 
+def write_live_lead_interaction_artifacts(
+    output_dir: pathlib.Path,
+    shared_state: SharedState,
+    logger: EventLogger,
+) -> Dict[str, Any]:
+    snapshot = build_lead_interaction_snapshot(
+        shared_state=shared_state,
+        logger=logger,
+    )
+    interaction_path = pathlib.Path(output_dir) / LEAD_INTERACTION_FILENAME
+    interaction_path.parent.mkdir(parents=True, exist_ok=True)
+    interaction_path.write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    interaction_report_path = pathlib.Path(output_dir) / LEAD_INTERACTION_REPORT_FILENAME
+    report_summary = write_lead_interaction_report(
+        report_path=interaction_report_path,
+        snapshot=snapshot,
+    )
+    return {
+        "snapshot": snapshot,
+        "lead_interaction_path": str(interaction_path),
+        "lead_interaction_report_path": str(interaction_report_path),
+        **report_summary,
+    }
+
+
 def append_lead_interaction_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
     if not report_path.exists():
         return False
@@ -1509,19 +1537,22 @@ def write_artifacts(
         report_path=output_dir / "final_report.md",
         snapshot=team_progress_snapshot,
     )
-    lead_interaction_snapshot = build_lead_interaction_snapshot(
+    lead_interaction_written = write_live_lead_interaction_artifacts(
+        output_dir=output_dir,
         shared_state=shared_state,
         logger=logger,
     )
-    lead_interaction_path = output_dir / LEAD_INTERACTION_FILENAME
-    lead_interaction_path.write_text(
-        json.dumps(lead_interaction_snapshot, ensure_ascii=False, indent=2),
-        encoding="utf-8",
+    lead_interaction_snapshot = dict(lead_interaction_written.get("snapshot", {}))
+    lead_interaction_path = pathlib.Path(
+        str(lead_interaction_written.get("lead_interaction_path", output_dir / LEAD_INTERACTION_FILENAME))
     )
-    lead_interaction_report_path = output_dir / LEAD_INTERACTION_REPORT_FILENAME
-    write_lead_interaction_report(
-        report_path=lead_interaction_report_path,
-        snapshot=lead_interaction_snapshot,
+    lead_interaction_report_path = pathlib.Path(
+        str(
+            lead_interaction_written.get(
+                "lead_interaction_report_path",
+                output_dir / LEAD_INTERACTION_REPORT_FILENAME,
+            )
+        )
     )
     append_lead_interaction_to_final_report(
         report_path=output_dir / "final_report.md",

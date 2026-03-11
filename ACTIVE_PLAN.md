@@ -40,7 +40,12 @@ Direction review (2026-03-10, analyst checkpoint):
 Official parity check (2026-03-11, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
 - the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
-- the clearest under-modeled official features are richer lead-facing teammate interaction and stronger host-native teammate sessions; file-backed live plan approval now exists, but it is still not a first-class in-run UI
+- the clearest under-modeled official features are richer lead-facing teammate interaction and stronger host-native teammate sessions; file-backed live plan approval plus a terminal lead console now exist, but they are still not a first-class embedded in-run UI
+
+Direction review (2026-03-11, lead console checkpoint):
+- the last three parity-focused rounds improved official Agent Teams behavior rather than transport-only depth
+- they did not drift into artifact-only work; the latest slice added a real in-run control loop through live snapshots plus a terminal lead console
+- the priority order still holds: the remaining gaps are true host-backed teammate sessions and a richer embedded lead control surface, not more reporting
 
 ## Priority Order
 
@@ -121,17 +126,24 @@ Acceptance criteria:
 - the remaining backend swap does not hide whether a task ran through `external_process` versus a future true host-backed session
 
 ### 5. Add lead-facing team interaction and plan approval
-Status: Pending
+Status: In Progress
 
 Why:
 - current Claude Code Agent Teams docs emphasize centralized team messages, asking teammates for plans, and approval before teammate task-list changes
 - the runtime models host `plan_approval` capability metadata, but not the runtime behavior
 - this is closer to official parity than deeper replay work
 
+Recent completed outcomes:
+- teammate-generated task mutations can now queue as pending approvals instead of mutating the board immediately when policy `teammate_plan_required` is enabled
+- lead can now resolve pending approvals through resume-time CLI controls or live file-backed commands while the run waits
+- runtime now refreshes `lead_interaction.json` + `lead_interaction.md` during the run instead of only writing them at shutdown
+- added a terminal `lead_console.py` helper so lead can inspect pending approvals and recent team messages, then send approve/reject commands without editing files by hand
+
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts
 - teammate plan proposals can be reviewed before task-list mutations are applied
 - task mutation policies align with host capability metadata instead of staying descriptive only
+- remaining gap: upgrade the current live snapshot + terminal helper flow into a richer embedded in-run control surface
 
 ### 6. Add true event-level replay
 Status: Pending

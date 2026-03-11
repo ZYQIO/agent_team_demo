@@ -467,7 +467,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             events_path = output_dir / "events.jsonl"
             command_path = output_dir / runtime.LEAD_COMMANDS_FILENAME
+            lead_interaction_path = output_dir / runtime.LEAD_INTERACTION_FILENAME
+            lead_console_path = MODULE_DIR / "skills" / "agent-team-runtime" / "scripts" / "lead_console.py"
             saw_request = False
+            saw_live_snapshot = False
             deadline = time.time() + 30
             try:
                 while time.time() < deadline:
@@ -475,19 +478,64 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         text = events_path.read_text(encoding="utf-8")
                         if "plan_approval_requested" in text:
                             saw_request = True
-                            break
+                    if lead_interaction_path.exists():
+                        try:
+                            interaction = json.loads(lead_interaction_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            interaction = {}
+                        if interaction.get("pending_plan_approval_count") == 1:
+                            saw_live_snapshot = True
+                    if saw_request and saw_live_snapshot:
+                        break
                     if process.poll() is not None:
                         break
                     time.sleep(0.1)
                 self.assertTrue(saw_request, msg="runtime never emitted plan_approval_requested")
-                with command_path.open("a", encoding="utf-8") as fh:
-                    fh.write(
-                        json.dumps(
-                            {"command": "approve_plan", "task_id": "dynamic_planning"},
-                            ensure_ascii=False,
-                        )
-                        + "\n"
-                    )
+                self.assertTrue(
+                    saw_live_snapshot,
+                    msg="runtime never wrote a live lead interaction snapshot with pending approvals",
+                )
+                status = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    status.returncode,
+                    0,
+                    msg=f"stdout:\n{status.stdout}\n\nstderr:\n{status.stderr}",
+                )
+                self.assertIn("Pending approvals: 1", status.stdout)
+                self.assertIn("dynamic_planning", status.stdout)
+                command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                        "--approve-plan",
+                        "dynamic_planning",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    command.returncode,
+                    0,
+                    msg=f"stdout:\n{command.stdout}\n\nstderr:\n{command.stderr}",
+                )
+                self.assertIn("wrote commands", command.stdout)
                 stdout, stderr = process.communicate(timeout=90)
             finally:
                 if process.poll() is None:

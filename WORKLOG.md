@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-11 - Live lead console checkpoint
+- Goal: turn file-backed live plan approval into a usable in-run lead control surface instead of a raw JSONL editing workflow
+- Changes:
+  - added live `lead_interaction.json` / `lead_interaction.md` refresh during runtime loops so lead-visible messages and pending approvals are available before shutdown
+  - added `skills/agent-team-runtime/scripts/lead_console.py` for terminal inspection of pending approvals, recent team messages, and recent lead commands plus approve/reject command submission
+  - updated the end-to-end live approval path so tests drive the runtime through the terminal lead console rather than writing `lead_commands.jsonl` directly
+  - direction review: the last three parity-focused rounds did not drift into artifact-only work; the remaining lead gap is now a richer embedded in-run UI rather than total absence of runtime interaction
+- Validation:
+  - `python -m py_compile agent_team_runtime.py agent_team\\runtime\\engine.py agent_team\\runtime\\persistence.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic tests passed for live lead interaction artifact writing and command consumption
+  - targeted end-to-end test passed for live pending-plan approval through `lead_console.py`
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-facing parity step is not another artifact layer; it is upgrading the current live snapshot + terminal helper flow into a richer embedded control surface while host-native teammate sessions remain the other major gap
+
 ### 2026-03-10 - Host analyst session-worker contract
 - Goal: move built-in workflow analyst task paths off the host lead-inline executor without weakening the explicit lead-applied result contract
 - Changes:

@@ -649,6 +649,74 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(interaction.get("command_cursor"), 2)
             self.assertEqual(len(interaction.get("recent_commands", [])), 2)
 
+    def test_write_live_lead_interaction_artifacts_persists_current_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set(
+                "plan_approval_controls",
+                {
+                    "approve_all_pending": False,
+                    "approve_task_ids": [],
+                    "reject_task_ids": [],
+                    "lead_command_wait_seconds": 15.0,
+                },
+            )
+
+            runtime.ensure_lead_command_channel(
+                output_dir=output_dir,
+                shared_state=shared_state,
+            )
+            runtime.queue_plan_approval_request(
+                shared_state=shared_state,
+                logger=logger,
+                requested_by="reviewer_gamma",
+                task_id="dynamic_planning",
+                task_type="dynamic_planning",
+                transport="in-process",
+                result={"enabled": True},
+                state_updates={"dynamic_plan": {"enabled": True}},
+                task_mutations={
+                    "insert_tasks": [
+                        {
+                            "task_id": "heading_structure_followup",
+                            "title": "Run heading structure follow-up audit",
+                            "task_type": "heading_structure_followup",
+                            "required_skills": ["analysis"],
+                            "dependencies": ["dynamic_planning"],
+                            "payload": {"top_n": 8},
+                            "locked_paths": [],
+                            "allowed_agent_types": ["analyst"],
+                        }
+                    ]
+                },
+            )
+            logger.log(
+                "mail_sent",
+                sender="lead",
+                recipient="reviewer_gamma",
+                subject="plan_review_requested",
+                task_id="dynamic_planning",
+            )
+
+            written = runtime.write_live_lead_interaction_artifacts(
+                output_dir=output_dir,
+                shared_state=shared_state,
+                logger=logger,
+            )
+
+            self.assertTrue((output_dir / runtime.LEAD_INTERACTION_FILENAME).exists())
+            self.assertTrue((output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).exists())
+            snapshot = written.get("snapshot", {})
+            self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
+            self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
+            self.assertEqual(snapshot.get("recent_team_message_count"), 1)
+            report_text = (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).read_text(encoding="utf-8")
+            self.assertIn("## Pending Approvals", report_text)
+            self.assertIn("dynamic_planning", report_text)
+
     def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
