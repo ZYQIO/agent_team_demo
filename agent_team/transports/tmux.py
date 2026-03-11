@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Collection, Dict, List, Optional, Sequence, Tuple
 
 from ..config import RuntimeConfig
-from ..core import AgentProfile, EventLogger, utc_now
+from ..core import AgentProfile, EventLogger, Message, Task, utc_now
 from ..runtime.task_context import build_task_context_snapshot
 
 
@@ -43,6 +43,12 @@ SUBPROCESS_REVIEWER_TASK_TYPES = {
     "recommendation_pack",
     "repo_recommendation_pack",
 }
+TMUX_REVIEWER_EXTERNAL_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | SUBPROCESS_REVIEWER_TASK_TYPES
+TMUX_LEAD_EXTERNAL_TASK_TYPES = {
+    "lead_adjudication",
+    "lead_re_adjudication",
+}
+TMUX_HANDLER_BACKED_TASK_TYPES = MAILBOX_REVIEWER_TASK_TYPES | TMUX_LEAD_EXTERNAL_TASK_TYPES
 TMUX_WORKER_DIAGNOSTICS_FILENAME = "tmux_worker_diagnostics.jsonl"
 TMUX_WORKER_OUTPUT_PREVIEW_LIMIT = 240
 TMUX_SESSION_POLL_INTERVAL_SEC = 0.1
@@ -51,6 +57,167 @@ TMUX_SESSION_LEASES_KEY = "tmux_session_leases"
 TMUX_SESSION_WORKSPACE_DIRNAME = "_tmux_session_workspaces"
 TMUX_SESSION_TARGET_SNAPSHOT_DIRNAME = "target_snapshot"
 TMUX_SESSION_TARGET_METADATA_FILENAME = "target_snapshot.json"
+
+
+class _WorkerNullLogger:
+    def log(self, _event: str, **_fields: Any) -> None:
+        return
+
+
+class _WorkerEventBridge:
+    def __init__(self, path: pathlib.Path) -> None:
+        self._path = path
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+
+    def log(self, event: str, **fields: Any) -> None:
+        record = {
+            "event": str(event),
+            "fields": dict(fields),
+        }
+        with self._path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+class _WorkerMailboxNull:
+    def send(
+        self,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        task_id: Optional[str] = None,
+    ) -> None:
+        del sender, recipient, subject, body, task_id
+
+    def broadcast(self, sender: str, subject: str, body: str) -> None:
+        del sender, subject, body
+
+    def pull(self, recipient: str) -> List[Message]:
+        del recipient
+        return []
+
+    def pull_matching(
+        self,
+        recipient: str,
+        matcher: Callable[[Message], bool],
+    ) -> List[Message]:
+        del recipient, matcher
+        return []
+
+
+class _WorkerMailboxBridge:
+    def __init__(
+        self,
+        *,
+        requests_dir: pathlib.Path,
+        responses_dir: pathlib.Path,
+        poll_interval_sec: float = 0.05,
+        timeout_sec: float = 30.0,
+    ) -> None:
+        self._requests_dir = requests_dir
+        self._responses_dir = responses_dir
+        self._poll_interval_sec = poll_interval_sec
+        self._timeout_sec = timeout_sec
+        self._local_queues: Dict[str, List[Message]] = {}
+        self._requests_dir.mkdir(parents=True, exist_ok=True)
+        self._responses_dir.mkdir(parents=True, exist_ok=True)
+
+    def _request(self, op: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        request_id = uuid.uuid4().hex
+        request_path = self._requests_dir / f"{request_id}.json"
+        response_path = self._responses_dir / f"{request_id}.json"
+        request_path.write_text(
+            json.dumps({"request_id": request_id, "op": op, "payload": payload}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        deadline = time.time() + self._timeout_sec
+        while time.time() < deadline:
+            if response_path.exists():
+                response = json.loads(response_path.read_text(encoding="utf-8"))
+                response_path.unlink(missing_ok=True)
+                if not isinstance(response, dict):
+                    raise RuntimeError(f"mailbox bridge invalid response for op={op}")
+                if not response.get("ok", False):
+                    raise RuntimeError(str(response.get("error", f"mailbox bridge {op} failed")))
+                payload = response.get("payload", {})
+                if isinstance(payload, dict):
+                    return payload
+                return {"value": payload}
+            time.sleep(self._poll_interval_sec)
+        raise TimeoutError(f"mailbox bridge timeout for op={op}")
+
+    def send(
+        self,
+        sender: str,
+        recipient: str,
+        subject: str,
+        body: str,
+        task_id: Optional[str] = None,
+    ) -> None:
+        self._request(
+            "send",
+            {
+                "sender": sender,
+                "recipient": recipient,
+                "subject": subject,
+                "body": body,
+                "task_id": task_id,
+            },
+        )
+
+    def broadcast(self, sender: str, subject: str, body: str) -> None:
+        self._request(
+            "broadcast",
+            {
+                "sender": sender,
+                "subject": subject,
+                "body": body,
+            },
+        )
+
+    def _pull_remote(self, recipient: str) -> List[Message]:
+        payload = self._request("pull", {"recipient": recipient})
+        messages = payload.get("messages", [])
+        if not isinstance(messages, list):
+            return []
+        result: List[Message] = []
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            result.append(
+                Message(
+                    message_id=str(item.get("message_id", "")),
+                    sent_at=str(item.get("sent_at", "")),
+                    sender=str(item.get("sender", "")),
+                    recipient=str(item.get("recipient", "")),
+                    subject=str(item.get("subject", "")),
+                    body=str(item.get("body", "")),
+                    task_id=item.get("task_id"),
+                )
+            )
+        return result
+
+    def pull(self, recipient: str) -> List[Message]:
+        queued = list(self._local_queues.pop(recipient, []))
+        queued.extend(self._pull_remote(recipient))
+        return queued
+
+    def pull_matching(
+        self,
+        recipient: str,
+        matcher: Callable[[Message], bool],
+    ) -> List[Message]:
+        queue = list(self._local_queues.pop(recipient, []))
+        queue.extend(self._pull_remote(recipient))
+        matched: List[Message] = []
+        rest: List[Message] = []
+        for message in queue:
+            if matcher(message):
+                matched.append(message)
+            else:
+                rest.append(message)
+        self._local_queues[recipient] = rest
+        return matched
 
 
 def preferred_tmux_session_name(worker_name: str) -> str:
@@ -1306,13 +1473,26 @@ class _WorkerBoardSnapshot:
 
 class _WorkerSharedStateView:
     def __init__(self, shared_state: Dict[str, Any]) -> None:
-        self._shared_state = dict(shared_state) if isinstance(shared_state, dict) else {}
+        baseline = shared_state if isinstance(shared_state, dict) else {}
+        self._original = json.loads(json.dumps(baseline, ensure_ascii=False))
+        self._shared_state = json.loads(json.dumps(baseline, ensure_ascii=False))
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._shared_state.get(key, default)
 
     def set(self, key: str, value: Any) -> None:
         self._shared_state[str(key)] = value
+
+    def snapshot(self) -> Dict[str, Any]:
+        return json.loads(json.dumps(self._shared_state, ensure_ascii=False))
+
+    def changed_values(self) -> Dict[str, Any]:
+        changes: Dict[str, Any] = {}
+        keys = set(self._original.keys()) | set(self._shared_state.keys())
+        for key in keys:
+            if self._original.get(key) != self._shared_state.get(key):
+                changes[str(key)] = self._shared_state.get(key)
+        return changes
 
 
 def _build_worker_reporting_context(
@@ -1364,6 +1544,95 @@ def _resolve_worker_workflow_pack(shared_state: Dict[str, Any]) -> str:
     if shared_state.get("repository_inventory") or shared_state.get("repository_large_files"):
         return "repo-audit"
     return "markdown-audit"
+
+
+def _build_handler_worker_context(
+    payload: Dict[str, Any],
+    shared_state: Dict[str, Any],
+    board_snapshot: Dict[str, Any],
+) -> Any:
+    runtime_payload = payload.get("runtime_config", {})
+    if not isinstance(runtime_payload, dict):
+        runtime_payload = {}
+    runtime_config = RuntimeConfig(
+        **{
+            key: value
+            for key, value in runtime_payload.items()
+            if key in RuntimeConfig.__annotations__
+        }
+    )
+    mailbox_bridge_payload = payload.get("mailbox_bridge", {})
+    if not isinstance(mailbox_bridge_payload, dict):
+        mailbox_bridge_payload = {}
+    event_bridge_path = str(payload.get("event_bridge_path", "") or "")
+    profile_payload = payload.get("profile", {})
+    if not isinstance(profile_payload, dict):
+        profile_payload = {}
+    logger: Any = _WorkerNullLogger()
+    if event_bridge_path:
+        logger = _WorkerEventBridge(path=pathlib.Path(event_bridge_path))
+    mailbox: Any = _WorkerMailboxNull()
+    requests_dir = str(mailbox_bridge_payload.get("requests_dir", "") or "")
+    responses_dir = str(mailbox_bridge_payload.get("responses_dir", "") or "")
+    if requests_dir and responses_dir:
+        mailbox = _WorkerMailboxBridge(
+            requests_dir=pathlib.Path(requests_dir),
+            responses_dir=pathlib.Path(responses_dir),
+        )
+    return SimpleNamespace(
+        profile=AgentProfile(
+            name=str(profile_payload.get("name", "worker") or "worker"),
+            skills={str(skill) for skill in profile_payload.get("skills", [])},
+            agent_type=str(profile_payload.get("agent_type", "general") or "general"),
+        ),
+        target_dir=pathlib.Path(str(payload.get("target_dir", ".") or ".")).resolve(),
+        output_dir=pathlib.Path(str(payload.get("output_dir", ".") or ".")).resolve(),
+        goal=str(payload.get("goal", "") or ""),
+        runtime_config=runtime_config,
+        board=_WorkerBoardSnapshot(board_snapshot),
+        shared_state=_WorkerSharedStateView(shared_state),
+        mailbox=mailbox,
+        logger=logger,
+    )
+
+
+def _run_handler_backed_worker(
+    payload: Dict[str, Any],
+    task_type: str,
+    shared_state: Dict[str, Any],
+    board_snapshot: Dict[str, Any],
+) -> Dict[str, Any]:
+    from ..workflows import build_workflow_handlers
+
+    context = _build_handler_worker_context(
+        payload=payload,
+        shared_state=shared_state,
+        board_snapshot=board_snapshot,
+    )
+    workflow_pack = _resolve_worker_workflow_pack(shared_state=shared_state)
+    handler = build_workflow_handlers(workflow_pack).get(task_type)
+    if handler is None:
+        raise ValueError(f"unsupported handler-backed tmux worker task type: {task_type}")
+    task_payload = payload.get("task_payload", {})
+    if not isinstance(task_payload, dict):
+        task_payload = {}
+    task = Task(
+        task_id=str(payload.get("task_id", task_type) or task_type),
+        title=str(payload.get("task_title", task_type) or task_type),
+        task_type=task_type,
+        required_skills={str(skill) for skill in payload.get("task_required_skills", [])},
+        dependencies=[str(dep) for dep in payload.get("task_dependencies", [])],
+        payload=task_payload,
+        locked_paths=[str(path) for path in payload.get("task_locked_paths", [])],
+        allowed_agent_types={str(name) for name in payload.get("task_allowed_agent_types", [])},
+    )
+    result = handler(context, task)
+    if not isinstance(result, dict):
+        result = {"raw_result": result}
+    return {
+        "result": result,
+        "state_updates": context.shared_state.changed_values(),
+    }
 
 
 def _worker_recommendation_pack(
@@ -1533,6 +1802,14 @@ def run_tmux_worker_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(model_config, dict):
         model_config = {}
     goal = str(payload.get("goal", "") or "")
+
+    if task_type in TMUX_HANDLER_BACKED_TASK_TYPES:
+        return _run_handler_backed_worker(
+            payload=payload,
+            task_type=task_type,
+            shared_state=shared_state,
+            board_snapshot=board_snapshot,
+        )
 
     if task_type == "discover_markdown":
         target_dir = pathlib.Path(str(payload.get("target_dir", "."))).resolve()
@@ -2407,6 +2684,210 @@ def run_tmux_worker_task(
             payload_file.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _serve_mailbox_bridge(
+    context: Any,
+    requests_dir: pathlib.Path,
+    responses_dir: pathlib.Path,
+    stop_event: Any,
+    poll_interval_sec: float = 0.05,
+) -> None:
+    requests_dir.mkdir(parents=True, exist_ok=True)
+    responses_dir.mkdir(parents=True, exist_ok=True)
+    while not stop_event.is_set() or any(requests_dir.glob("*.json")):
+        request_paths = sorted(requests_dir.glob("*.json"))
+        if not request_paths:
+            time.sleep(poll_interval_sec)
+            continue
+        for request_path in request_paths:
+            try:
+                payload = json.loads(request_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(payload, dict):
+                request_path.unlink(missing_ok=True)
+                continue
+            request_id = str(payload.get("request_id", "") or "")
+            op = str(payload.get("op", "") or "")
+            request_payload = payload.get("payload", {})
+            if not request_id or not isinstance(request_payload, dict):
+                request_path.unlink(missing_ok=True)
+                continue
+            response_path = responses_dir / f"{request_id}.json"
+            response: Dict[str, Any] = {"ok": True, "payload": {}}
+            try:
+                if op == "send":
+                    context.mailbox.send(
+                        sender=str(request_payload.get("sender", "") or ""),
+                        recipient=str(request_payload.get("recipient", "") or ""),
+                        subject=str(request_payload.get("subject", "") or ""),
+                        body=str(request_payload.get("body", "") or ""),
+                        task_id=request_payload.get("task_id"),
+                    )
+                elif op == "broadcast":
+                    context.mailbox.broadcast(
+                        sender=str(request_payload.get("sender", "") or ""),
+                        subject=str(request_payload.get("subject", "") or ""),
+                        body=str(request_payload.get("body", "") or ""),
+                    )
+                elif op == "pull":
+                    messages = context.mailbox.pull(str(request_payload.get("recipient", "") or ""))
+                    response["payload"] = {
+                        "messages": [message.to_dict() for message in messages],
+                    }
+                else:
+                    raise ValueError(f"unsupported mailbox bridge op: {op}")
+                context.logger.log(
+                    "tmux_mailbox_bridge_request_served",
+                    worker=str(context.profile.name or ""),
+                    op=op,
+                )
+            except Exception as exc:
+                response = {
+                    "ok": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
+            response_path.write_text(json.dumps(response, ensure_ascii=False), encoding="utf-8")
+            request_path.unlink(missing_ok=True)
+
+
+def _replay_worker_bridge_events(context: Any, event_bridge_path: pathlib.Path) -> None:
+    if not event_bridge_path.exists():
+        return
+    try:
+        with event_bridge_path.open("r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                event = str(payload.get("event", "") or "")
+                fields = payload.get("fields", {})
+                if not event or not isinstance(fields, dict):
+                    continue
+                context.logger.log(event, **fields)
+    finally:
+        event_bridge_path.unlink(missing_ok=True)
+
+
+def run_external_tmux_task(
+    context: Any,
+    task: Task,
+    runtime_script: pathlib.Path,
+    *,
+    task_context: Optional[Dict[str, Any]] = None,
+    record_boundary: bool = True,
+    retain_session_for_reuse: bool = False,
+    allow_existing_session_reuse: bool = False,
+    timeout_sec: Optional[int] = None,
+    run_worker_task_fn: Callable[..., Dict[str, Any]] = run_tmux_worker_task,
+) -> Dict[str, Any]:
+    active_task_context = task_context if isinstance(task_context, dict) and task_context else build_task_context_snapshot(
+        context=context,
+        task=task,
+    )
+    visible_shared_state = active_task_context.get("visible_shared_state", {})
+    if not isinstance(visible_shared_state, dict):
+        visible_shared_state = {}
+    payload: Dict[str, Any] = {
+        "task_id": task.task_id,
+        "task_title": task.title,
+        "task_type": task.task_type,
+        "task_payload": dict(task.payload),
+        "task_required_skills": sorted(task.required_skills),
+        "task_dependencies": list(task.dependencies),
+        "task_locked_paths": list(task.locked_paths),
+        "task_allowed_agent_types": sorted(task.allowed_agent_types),
+        "profile": context.profile.to_dict(),
+        "target_dir": str(context.target_dir),
+        "output_dir": str(context.output_dir),
+        "goal": str(context.goal),
+        "task_context": active_task_context,
+        "shared_state": visible_shared_state,
+        "board_snapshot": context.board.snapshot(),
+        "runtime_config": context.runtime_config.to_dict(),
+    }
+    agent_team_config = context.shared_state.get("agent_team_config", {})
+    if isinstance(agent_team_config, dict):
+        model_config = agent_team_config.get("model", {})
+        if isinstance(model_config, dict) and model_config:
+            payload["model_config"] = dict(model_config)
+    session_state = getattr(context, "session_state", {})
+    if isinstance(session_state, dict) and session_state:
+        payload["session_state"] = dict(session_state)
+
+    bridge_stop_event = None
+    bridge_thread = None
+    event_bridge_path = (
+        pathlib.Path(context.output_dir)
+        / "_tmux_worker_events"
+        / f"{context.profile.name}_{task.task_id}_{uuid.uuid4().hex}.jsonl"
+    )
+    payload["event_bridge_path"] = str(event_bridge_path.resolve())
+    if task.task_type in TMUX_HANDLER_BACKED_TASK_TYPES:
+        import threading
+
+        bridge_root = (
+            pathlib.Path(context.output_dir)
+            / "_tmux_worker_mailbox"
+            / f"{context.profile.name}_{task.task_id}_{uuid.uuid4().hex}"
+        )
+        requests_dir = bridge_root / "requests"
+        responses_dir = bridge_root / "responses"
+        payload["mailbox_bridge"] = {
+            "requests_dir": str(requests_dir.resolve()),
+            "responses_dir": str(responses_dir.resolve()),
+        }
+        bridge_stop_event = threading.Event()
+        bridge_thread = threading.Thread(
+            target=_serve_mailbox_bridge,
+            kwargs={
+                "context": context,
+                "requests_dir": requests_dir,
+                "responses_dir": responses_dir,
+                "stop_event": bridge_stop_event,
+            },
+            daemon=True,
+        )
+        bridge_thread.start()
+
+    execution = run_worker_task_fn(
+        runtime_script=runtime_script,
+        output_dir=pathlib.Path(context.output_dir),
+        runtime_config=context.runtime_config,
+        payload=payload,
+        worker_name=context.profile.name,
+        logger=context.logger,
+        timeout_sec=timeout_sec if timeout_sec is not None else int(context.runtime_config.tmux_worker_timeout_sec),
+        retain_session_for_reuse=retain_session_for_reuse,
+        allow_existing_session_reuse=allow_existing_session_reuse,
+    )
+    if bridge_stop_event is not None:
+        bridge_stop_event.set()
+    if bridge_thread is not None:
+        bridge_thread.join(timeout=2.0)
+    _replay_worker_bridge_events(context=context, event_bridge_path=event_bridge_path)
+
+    diagnostics = execution.get("diagnostics", {})
+    if record_boundary and context.session_registry is not None and isinstance(diagnostics, dict):
+        record_worker_boundary_from_diagnostics(
+            lead_context=context,
+            worker_name=context.profile.name,
+            transport=str(execution.get("transport", "") or "tmux"),
+            execution_diagnostics=diagnostics,
+            retained_for_reuse=bool(diagnostics.get("tmux_session_retained_for_reuse", False)),
+            reuse_authorized=bool(diagnostics.get("tmux_preferred_session_reuse_authorized", False)),
+            transport_reuse_count=int(
+                diagnostics.get("tmux_transport_reuse_count", diagnostics.get("tmux_reuse_count", 0)) or 0
+            ),
+        )
+    return execution
 
 
 def run_tmux_analyst_task_once(

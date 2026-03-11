@@ -16,6 +16,7 @@ This folder now contains two layers:
   - task assignment constraints with `allowed_agent_types` (Task(agent_type)-style gating)
   - compatibility hook events: `TeammateIdle` and `TaskCompleted`
   - team progress artifacts and lead-facing progress summary
+  - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -87,6 +88,21 @@ python3 agent_team_demo/agent_team_runtime.py \
   --config agent_team_demo/examples/agent-team.config.json \
   --target . \
   --output agent_team_demo/output
+```
+
+Require lead approval before teammate plan mutations are applied:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --target . \
+  --output agent_team_demo/output \
+  --teammate-plan-required
+
+python3 agent_team_demo/agent_team_runtime.py \
+  --target . \
+  --output agent_team_demo/output \
+  --resume-from agent_team_demo/output/run_checkpoint.json \
+  --approve-plan dynamic_planning
 ```
 
 Host/workflow metadata can also be overridden directly:

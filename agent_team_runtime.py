@@ -51,6 +51,11 @@ from agent_team.runtime import (
     CHECKPOINT_VERSION,
     CONTEXT_BOUNDARY_FILENAME,
     HOST_ENFORCEMENT_FILENAME,
+    LEAD_INTERACTION_FILENAME,
+    LEAD_INTERACTION_REPORT_FILENAME,
+    PLAN_APPROVAL_STATUS_APPLIED,
+    PLAN_APPROVAL_STATUS_PENDING,
+    PLAN_APPROVAL_STATUS_REJECTED,
     SESSION_BOUNDARY_FILENAME,
     ScopedSharedState,
     TEAMMATE_SESSIONS_FILENAME,
@@ -59,6 +64,7 @@ from agent_team.runtime import (
     TeammateSessionRegistry,
     build_context_boundary_summary,
     build_host_enforcement_snapshot,
+    build_lead_interaction_snapshot,
     build_session_boundary_snapshot,
     build_targeted_evidence_question,
     build_teammate_sessions_snapshot,
@@ -70,7 +76,10 @@ from agent_team.runtime import (
     default_history_replay_report_path,
     default_rewind_branch_output_dir,
     derive_evidence_focus_areas,
+    get_lead_interaction_state,
     load_checkpoint,
+    list_plan_approval_requests,
+    queue_plan_approval_request,
     replay_task_states_from_events,
     resolve_checkpoint_by_event_index,
     resolve_checkpoint_by_history_index,
@@ -84,6 +93,7 @@ from agent_team.runtime import (
 from agent_team.runtime.engine import (
     AgentContext,
     TaskHandler,
+    apply_requested_plan_approvals,
     build_profiles,
     get_lead_name,
     get_team_member_names,
@@ -290,6 +300,44 @@ def run_tmux_analyst_task_once(
     )
 
 
+def run_external_lead_task(
+    lead_context: AgentContext,
+    task: Task,
+) -> Optional[Dict[str, Any]]:
+    runtime_script = getattr(lead_context, "runtime_script", None)
+    if lead_context.runtime_config.teammate_mode != "tmux":
+        return None
+    if runtime_script is None:
+        return None
+    if task.task_type not in tmux_transport.TMUX_LEAD_EXTERNAL_TASK_TYPES:
+        return None
+    task_context = build_task_context_snapshot(lead_context, task)
+    execution = tmux_transport.run_external_tmux_task(
+        context=lead_context,
+        task=task,
+        runtime_script=pathlib.Path(runtime_script).resolve(),
+        task_context=task_context,
+        record_boundary=False,
+        timeout_sec=int(lead_context.runtime_config.tmux_worker_timeout_sec),
+    )
+    if not execution.get("ok"):
+        return {
+            "ok": False,
+            "error": str(execution.get("error", "unknown worker error")),
+            "transport": str(execution.get("transport", "") or "tmux"),
+        }
+    payload = execution.get("payload", {})
+    if not isinstance(payload, dict):
+        payload = {}
+    return {
+        "ok": True,
+        "result": payload.get("result", {}),
+        "state_updates": payload.get("state_updates", {}),
+        "task_mutations": payload.get("task_mutations", {}),
+        "transport": str(execution.get("transport", "") or "tmux"),
+    }
+
+
 def build_tasks(
     output_dir: pathlib.Path,
     runtime_config: RuntimeConfig,
@@ -309,6 +357,7 @@ def run_lead_task_once(lead_context: AgentContext, task_id: str) -> bool:
         lead_context=lead_context,
         task_id=task_id,
         handlers=HANDLERS,
+        external_task_runner=run_external_lead_task,
         traceback_module=traceback,
     )
 
@@ -333,6 +382,9 @@ def run_team(
     rewind_source_checkpoint: Optional[pathlib.Path] = None,
     branch_run_id: str = "",
     agent_team_config: Optional[AgentTeamConfig] = None,
+    approve_plan_task_ids: Optional[Sequence[str]] = None,
+    reject_plan_task_ids: Optional[Sequence[str]] = None,
+    approve_all_pending_plans: bool = False,
 ) -> int:
     return run_team_impl(
         goal=goal,
@@ -354,7 +406,11 @@ def run_team(
         rewind_source_checkpoint=rewind_source_checkpoint,
         branch_run_id=branch_run_id,
         agent_team_config=agent_team_config,
+        approve_plan_task_ids=approve_plan_task_ids,
+        reject_plan_task_ids=reject_plan_task_ids,
+        approve_all_pending_plans=approve_all_pending_plans,
         teammate_agent_factory=TeammateAgent,
+        external_lead_task_runner=run_external_lead_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
         run_host_teammate_task_once_fn=run_host_teammate_task_once,
         recover_tmux_analyst_sessions_fn=recover_tmux_analyst_sessions,
@@ -432,6 +488,35 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=0,
         help="Stop early after this many completed tasks to simulate an interrupted run (0 disables).",
+    )
+    parser.add_argument(
+        "--teammate-plan-required",
+        dest="teammate_plan_required",
+        action="store_true",
+        help="Require explicit lead approval before teammate-generated task mutations are applied.",
+    )
+    parser.add_argument(
+        "--no-teammate-plan-required",
+        dest="teammate_plan_required",
+        action="store_false",
+        help="Allow teammate-generated task mutations to apply immediately.",
+    )
+    parser.add_argument(
+        "--approve-plan",
+        action="append",
+        default=[],
+        help="Approve a pending teammate plan by task id. Can be specified multiple times.",
+    )
+    parser.add_argument(
+        "--reject-plan",
+        action="append",
+        default=[],
+        help="Reject a pending teammate plan by task id. Can be specified multiple times.",
+    )
+    parser.add_argument(
+        "--approve-all-pending-plans",
+        action="store_true",
+        help="Automatically approve all pending teammate plan requests during this run.",
     )
     parser.add_argument(
         "--history-replay-report",
@@ -590,6 +675,7 @@ def parse_args() -> argparse.Namespace:
         enable_dynamic_tasks=True,
         teammate_provider_replies=False,
         tmux_fallback_on_error=True,
+        teammate_plan_required=False,
     )
     parser.add_argument(
         "--adjudication-accept-threshold",
@@ -808,6 +894,7 @@ def build_agent_team_config_from_args(
     args: argparse.Namespace,
     runtime_config: RuntimeConfig,
 ) -> AgentTeamConfig:
+    policy_override_requested = bool(getattr(args, "teammate_plan_required", False))
     if args.config:
         config_path = pathlib.Path(args.config).resolve()
         loaded = load_agent_team_config(config_path)
@@ -852,6 +939,12 @@ def build_agent_team_config_from_args(
                 effective_model,
                 timeout_sec=int(args.provider_timeout_sec),
             )
+        effective_policies = loaded.policies
+        if policy_override_requested:
+            effective_policies = dataclasses.replace(
+                effective_policies,
+                teammate_plan_required=True,
+            )
 
         return AgentTeamConfig(
             runtime=effective_runtime,
@@ -859,11 +952,11 @@ def build_agent_team_config_from_args(
             model=effective_model,
             team=loaded.team,
             workflow=effective_workflow,
-            policies=loaded.policies,
+            policies=effective_policies,
             source_path=loaded.source_path,
         )
 
-    return build_agent_team_config(
+    built = build_agent_team_config(
         runtime_config=runtime_config,
         provider_name=str(args.provider),
         model=str(args.model),
@@ -875,6 +968,12 @@ def build_agent_team_config_from_args(
         workflow_preset=str(args.workflow_preset or "default"),
         host_kind=str(args.host_kind or "generic-cli"),
     )
+    if policy_override_requested:
+        built = dataclasses.replace(
+            built,
+            policies=dataclasses.replace(built.policies, teammate_plan_required=True),
+        )
+    return built
 
 
 if __name__ == "__main__":
@@ -885,6 +984,14 @@ if __name__ == "__main__":
         raise SystemExit(run_host_session_worker_entrypoint(pathlib.Path(args.host_session_worker_file).resolve()))
     try:
         runtime_config = build_runtime_config_from_args(args)
+        approve_plan_task_ids = [str(task_id) for task_id in args.approve_plan if str(task_id)]
+        reject_plan_task_ids = [str(task_id) for task_id in args.reject_plan if str(task_id)]
+        conflicting_plan_ids = sorted(set(approve_plan_task_ids) & set(reject_plan_task_ids))
+        if conflicting_plan_ids:
+            raise ValueError(
+                "--approve-plan and --reject-plan overlap for task ids: "
+                + ", ".join(conflicting_plan_ids)
+            )
         output_dir_path = pathlib.Path(args.output).resolve()
         if args.history_replay_report and args.event_replay_report:
             raise ValueError("--history-replay-report and --event-replay-report are mutually exclusive")
@@ -1005,6 +1112,9 @@ if __name__ == "__main__":
             rewind_source_checkpoint=rewind_source_checkpoint,
             branch_run_id=branch_run_id,
             agent_team_config=agent_team_config,
+            approve_plan_task_ids=approve_plan_task_ids,
+            reject_plan_task_ids=reject_plan_task_ids,
+            approve_all_pending_plans=bool(args.approve_all_pending_plans),
         )
     except Exception as exc:
         print(f"[lead] startup_error: {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -19,6 +19,10 @@ from ..core import (
     utc_now,
 )
 from ..models import ProviderMetadata
+from .lead_interaction import (
+    LEAD_INTERACTION_STATE_KEY,
+    PLAN_APPROVAL_STATUS_PENDING,
+)
 from .session_state import (
     SESSION_BOUNDARY_FILENAME,
     TEAMMATE_SESSIONS_FILENAME,
@@ -32,6 +36,8 @@ CHECKPOINT_FILENAME = "run_checkpoint.json"
 CHECKPOINT_HISTORY_DIRNAME = "_checkpoint_history"
 CONTEXT_BOUNDARY_FILENAME = "context_boundaries.json"
 HOST_ENFORCEMENT_FILENAME = "host_enforcement.json"
+LEAD_INTERACTION_FILENAME = "lead_interaction.json"
+LEAD_INTERACTION_REPORT_FILENAME = "lead_interaction.md"
 TEAM_PROGRESS_FILENAME = "team_progress.json"
 TEAM_PROGRESS_REPORT_FILENAME = "team_progress.md"
 
@@ -956,6 +962,166 @@ def append_team_progress_to_final_report(report_path: pathlib.Path, snapshot: Di
     return True
 
 
+def build_lead_interaction_snapshot(
+    shared_state: SharedState,
+    logger: EventLogger,
+    recent_message_limit: int = 24,
+) -> Dict[str, Any]:
+    state_snapshot = shared_state.snapshot()
+    lead_name = str(state_snapshot.get("lead_name", "lead") or "lead")
+    raw_interaction = state_snapshot.get(LEAD_INTERACTION_STATE_KEY, {})
+    if not isinstance(raw_interaction, dict):
+        raw_interaction = {}
+    raw_requests = raw_interaction.get("plan_approval_requests", {})
+    if not isinstance(raw_requests, dict):
+        raw_requests = {}
+    requests = [
+        dict(item)
+        for item in raw_requests.values()
+        if isinstance(item, dict)
+    ]
+    requests.sort(key=lambda item: (str(item.get("requested_at", "") or ""), str(item.get("task_id", "") or "")))
+    pending_requests = [
+        item for item in requests if str(item.get("status", "") or "") == PLAN_APPROVAL_STATUS_PENDING
+    ]
+
+    recent_team_messages: List[Dict[str, Any]] = []
+    if logger.path.exists():
+        with logger.path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("event", "") or "") != "mail_sent":
+                    continue
+                sender = str(payload.get("sender", "") or "")
+                recipient = str(payload.get("recipient", "") or "")
+                if lead_name not in {sender, recipient}:
+                    continue
+                recent_team_messages.append(
+                    {
+                        "ts": str(payload.get("ts", "") or ""),
+                        "event_index": int(payload.get("event_index", 0) or 0),
+                        "sender": sender,
+                        "recipient": recipient,
+                        "subject": str(payload.get("subject", "") or ""),
+                        "task_id": str(payload.get("task_id", "") or ""),
+                    }
+                )
+    if recent_message_limit > 0:
+        recent_team_messages = recent_team_messages[-recent_message_limit:]
+
+    controls = state_snapshot.get("plan_approval_controls", {})
+    if not isinstance(controls, dict):
+        controls = {}
+    return {
+        "generated_at": utc_now(),
+        "lead_name": lead_name,
+        "plan_approval_request_count": len(requests),
+        "pending_plan_approval_count": len(pending_requests),
+        "plan_approval_requests": requests,
+        "pending_plan_approval_task_ids": [
+            str(item.get("task_id", "") or "")
+            for item in pending_requests
+            if str(item.get("task_id", "") or "")
+        ],
+        "recent_team_messages": recent_team_messages,
+        "recent_team_message_count": len(recent_team_messages),
+        "controls": controls,
+    }
+
+
+def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    lines: List[str] = []
+    lines.append("# Lead Interaction")
+    lines.append("")
+    lines.append(f"- Generated at: {snapshot.get('generated_at', utc_now())}")
+    lines.append(f"- Lead: {snapshot.get('lead_name', 'lead')}")
+    lines.append(f"- Plan approval requests: {snapshot.get('plan_approval_request_count', 0)}")
+    lines.append(f"- Pending approvals: {snapshot.get('pending_plan_approval_count', 0)}")
+    controls = snapshot.get("controls", {})
+    if isinstance(controls, dict):
+        lines.append(
+            "- Controls: "
+            f"approve_all_pending={controls.get('approve_all_pending', False)} "
+            f"approve_task_ids={','.join(controls.get('approve_task_ids', [])) or 'none'} "
+            f"reject_task_ids={','.join(controls.get('reject_task_ids', [])) or 'none'}"
+        )
+    lines.append("")
+    lines.append("## Pending Approvals")
+    lines.append("")
+    pending = [
+        item
+        for item in snapshot.get("plan_approval_requests", [])
+        if isinstance(item, dict) and str(item.get("status", "") or "") == PLAN_APPROVAL_STATUS_PENDING
+    ]
+    if not pending:
+        lines.append("- none")
+    for item in pending:
+        lines.append(
+            f"- {item.get('task_id', '')} ({item.get('task_type', '')}) "
+            f"requested_by={item.get('requested_by', '')} "
+            f"transport={item.get('transport', '')} "
+            f"proposed_tasks={','.join(item.get('proposed_task_ids', [])) or 'none'} "
+            f"proposed_dependencies={','.join(item.get('proposed_dependency_ids', [])) or 'none'}"
+        )
+    lines.append("")
+    lines.append("## Recent Team Messages")
+    lines.append("")
+    recent_messages = snapshot.get("recent_team_messages", [])
+    if not isinstance(recent_messages, list) or not recent_messages:
+        lines.append("- none")
+    else:
+        for item in recent_messages:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
+                f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
+            )
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text("\n".join(lines), encoding="utf-8")
+    return {
+        "report_path": str(report_path),
+        "pending_plan_approval_count": int(snapshot.get("pending_plan_approval_count", 0) or 0),
+    }
+
+
+def append_lead_interaction_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
+    if not report_path.exists():
+        return False
+    existing = report_path.read_text(encoding="utf-8")
+    if "## Lead Interaction" in existing:
+        return False
+    lines: List[str] = []
+    lines.append("")
+    lines.append("## Lead Interaction")
+    lines.append("")
+    lines.append(
+        f"- Pending plan approvals: {snapshot.get('pending_plan_approval_count', 0)} "
+        f"of {snapshot.get('plan_approval_request_count', 0)} requests"
+    )
+    pending_task_ids = snapshot.get("pending_plan_approval_task_ids", [])
+    if isinstance(pending_task_ids, list) and pending_task_ids:
+        lines.append("- Pending approval task ids: " + ", ".join(str(item) for item in pending_task_ids))
+    recent_messages = snapshot.get("recent_team_messages", [])
+    if isinstance(recent_messages, list) and recent_messages:
+        latest = recent_messages[-1]
+        if isinstance(latest, dict):
+            lines.append(
+                f"- Latest lead-visible message: {latest.get('sender', '')} -> {latest.get('recipient', '')} "
+                f"{latest.get('subject', '')} task_id={latest.get('task_id', '') or 'n/a'}"
+            )
+    report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
+    return True
+
+
 def append_teammate_sessions_to_final_report(report_path: pathlib.Path, snapshot: Dict[str, Any]) -> bool:
     if not report_path.exists():
         return False
@@ -1122,6 +1288,72 @@ def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapsho
     return True
 
 
+def build_teammate_transport_summary(
+    output_dir: pathlib.Path,
+    runtime_config: RuntimeConfig,
+) -> Dict[str, Any]:
+    diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
+    requested_mode = str(runtime_config.teammate_mode or "in-process")
+    payloads: List[Dict[str, Any]] = []
+    if diagnostics_path.exists():
+        with diagnostics_path.open("r", encoding="utf-8") as fh:
+            for raw_line in fh:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(payload, dict):
+                    payloads.append(payload)
+    workers = sorted(
+        {
+            str(payload.get("worker", "") or "")
+            for payload in payloads
+            if str(payload.get("worker", "") or "")
+        }
+    )
+    task_types = sorted(
+        {
+            str(payload.get("task_type", "") or "")
+            for payload in payloads
+            if str(payload.get("task_type", "") or "")
+        }
+    )
+    transports_seen = sorted(
+        {
+            str(payload.get("transport_used", payload.get("transport_requested", "")) or "")
+            for payload in payloads
+            if str(payload.get("transport_used", payload.get("transport_requested", "")) or "")
+        }
+    )
+    fallback_reasons = sorted(
+        {
+            str(payload.get("fallback_reason", "") or "")
+            for payload in payloads
+            if payload.get("fallback_used") and str(payload.get("fallback_reason", "") or "")
+        }
+    )
+    fallback_used = any(bool(payload.get("fallback_used", False)) for payload in payloads)
+    degraded = requested_mode == "tmux" and fallback_used and any(
+        "subprocess" in transport for transport in transports_seen
+    )
+    effective_mode = "tmux_degraded_subprocess" if degraded else requested_mode
+    return {
+        "requested_mode": requested_mode,
+        "effective_mode": effective_mode,
+        "degraded": degraded,
+        "worker_task_count": len(payloads),
+        "workers": workers,
+        "task_types": task_types,
+        "transports_seen": transports_seen,
+        "fallback_used": fallback_used,
+        "fallback_reasons": fallback_reasons,
+        "diagnostics_path": str(diagnostics_path) if diagnostics_path.exists() else "",
+    }
+
+
 def write_artifacts(
     output_dir: pathlib.Path,
     board: TaskBoard,
@@ -1242,6 +1474,24 @@ def write_artifacts(
         report_path=output_dir / "final_report.md",
         snapshot=team_progress_snapshot,
     )
+    lead_interaction_snapshot = build_lead_interaction_snapshot(
+        shared_state=shared_state,
+        logger=logger,
+    )
+    lead_interaction_path = output_dir / LEAD_INTERACTION_FILENAME
+    lead_interaction_path.write_text(
+        json.dumps(lead_interaction_snapshot, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    lead_interaction_report_path = output_dir / LEAD_INTERACTION_REPORT_FILENAME
+    write_lead_interaction_report(
+        report_path=lead_interaction_report_path,
+        snapshot=lead_interaction_snapshot,
+    )
+    append_lead_interaction_to_final_report(
+        report_path=output_dir / "final_report.md",
+        snapshot=lead_interaction_snapshot,
+    )
     teammate_sessions_snapshot = build_teammate_sessions_snapshot(shared_state=shared_state)
     teammate_sessions_path = output_dir / TEAMMATE_SESSIONS_FILENAME
     teammate_sessions_path.write_text(
@@ -1279,6 +1529,10 @@ def write_artifacts(
         json.dumps(context_boundary_summary, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    teammate_transport_summary = build_teammate_transport_summary(
+        output_dir=output_dir,
+        runtime_config=runtime_config,
+    )
 
     summary_path = output_dir / "run_summary.json"
     summary = {
@@ -1290,6 +1544,8 @@ def write_artifacts(
         "final_report_path": str(output_dir / "final_report.md"),
         "context_boundary_path": str(context_boundary_path),
         "host_enforcement_path": str(host_enforcement_path),
+        "lead_interaction_path": str(lead_interaction_path),
+        "lead_interaction_report_path": str(lead_interaction_report_path),
         "session_boundary_path": str(session_boundary_path),
         "teammate_sessions_path": str(teammate_sessions_path),
         "team_progress_path": str(team_progress_path),
@@ -1303,6 +1559,12 @@ def write_artifacts(
         "mailbox_storage_dir": str(mailbox.storage_dir) if mailbox.storage_dir else "",
         "provider": provider_meta.to_dict(),
         "runtime_config": runtime_config.to_dict(),
+        "teammate_mode_requested": str(runtime_config.teammate_mode or ""),
+        "teammate_mode_effective": teammate_transport_summary.get("effective_mode", ""),
+        "teammate_transport_degraded": bool(teammate_transport_summary.get("degraded", False)),
+        "teammate_transport_summary": teammate_transport_summary,
+        "pending_plan_approval_count": int(lead_interaction_snapshot.get("pending_plan_approval_count", 0) or 0),
+        "pending_plan_approval_task_ids": list(lead_interaction_snapshot.get("pending_plan_approval_task_ids", [])),
         "host": state_snapshot.get("host", {}),
         "team": state_snapshot.get("team", {}),
         "workflow": state_snapshot.get("workflow", {}),

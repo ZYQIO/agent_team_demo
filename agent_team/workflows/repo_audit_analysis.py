@@ -106,6 +106,11 @@ def handle_repo_dynamic_planning(context: Any, _task: Task) -> Dict[str, Any]:
     inventory = context.shared_state.get("repository_inventory", [])
     extension_summary = context.shared_state.get("repository_extension_summary", {})
     large_files = context.shared_state.get("repository_large_files", [])
+    policies = context.shared_state.get("policies", {})
+    teammate_plan_required = (
+        isinstance(policies, dict)
+        and bool(policies.get("teammate_plan_required", False))
+    )
 
     if not context.runtime_config.enable_dynamic_tasks:
         result = {
@@ -147,6 +152,31 @@ def handle_repo_dynamic_planning(context: Any, _task: Task) -> Dict[str, Any]:
                 allowed_agent_types={"analyst"},
             )
         )
+
+    candidate_task_ids = [task.task_id for task in candidate_tasks]
+    task_mutations = {
+        "insert_tasks": [task.to_dict() for task in candidate_tasks],
+        "add_dependencies": [
+            {"task_id": "peer_challenge", "dependency_id": inserted_id}
+            for inserted_id in candidate_task_ids
+        ],
+    }
+
+    if teammate_plan_required:
+        result = {
+            "enabled": True,
+            "approval_required": True,
+            "inserted_tasks": list(candidate_task_ids),
+            "peer_challenge_dependencies_added": list(candidate_task_ids),
+            "unique_directories": len(unique_directories),
+            "unique_extensions": int(extension_summary.get("unique_extensions", 0)),
+            "oversized_files": len(large_files),
+        }
+        return {
+            "result": result,
+            "state_updates": {"repo_dynamic_plan": dict(result)},
+            "task_mutations": task_mutations,
+        }
 
     inserted_tasks = context.board.add_tasks(tasks=candidate_tasks, inserted_by=context.profile.name)
     peer_gate_dependencies: List[str] = []

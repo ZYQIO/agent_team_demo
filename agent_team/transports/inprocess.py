@@ -17,11 +17,14 @@ from ..core import (
 )
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT, apply_session_telemetry_event
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
+from ..runtime.lead_interaction import plan_approval_required, queue_plan_approval_request
+from ..runtime.task_mutations import apply_task_mutation_payload
 from . import tmux as tmux_transport
 
 
 SUBPROCESS_REVIEWER_TASK_TYPES = set(tmux_transport.SUBPROCESS_REVIEWER_TASK_TYPES)
 MAILBOX_REVIEWER_TASK_TYPES = set(tmux_transport.MAILBOX_REVIEWER_TASK_TYPES)
+TMUX_REVIEWER_TASK_TYPES = set(tmux_transport.TMUX_REVIEWER_EXTERNAL_TASK_TYPES)
 HOST_SESSION_ASSIGNED_TASK_TYPES = (
     MAILBOX_REVIEWER_TASK_TYPES
     | SUBPROCESS_REVIEWER_TASK_TYPES
@@ -563,6 +566,13 @@ class InProcessTeammateAgent(threading.Thread):
     def _task_transport(self, task: Task) -> str:
         if self.context.runtime_config.teammate_mode == "host":
             return "host"
+        if (
+            self.context.runtime_config.teammate_mode == "tmux"
+            and self.context.profile.agent_type == "reviewer"
+            and task.task_type in TMUX_REVIEWER_TASK_TYPES
+            and getattr(self.context, "runtime_script", None) is not None
+        ):
+            return "tmux"
         if task.task_type in MAILBOX_REVIEWER_TASK_TYPES:
             return "in-process"
         if (
@@ -574,41 +584,67 @@ class InProcessTeammateAgent(threading.Thread):
             return "subprocess"
         return "in-process"
 
-    def _apply_worker_task_mutations(self, task: Task, result: Any, state_updates: Any, task_mutations: Any, original_shared_state: Any) -> Dict[str, Any]:
-        normalized_state_updates = state_updates if isinstance(state_updates, dict) else {}
-        normalized_mutations = task_mutations if isinstance(task_mutations, dict) else {}
-        normalized_result = result if isinstance(result, dict) else {"raw_result": result}
-        inserted_task_ids: List[str] = []
-        added_dependency_ids: List[str] = []
-        raw_insert_tasks = normalized_mutations.get("insert_tasks", [])
-        if isinstance(raw_insert_tasks, list):
-            tasks_to_insert = [task_from_dict(item) for item in raw_insert_tasks if isinstance(item, dict)]
-            if tasks_to_insert:
-                inserted_task_ids = self.context.board.add_tasks(tasks=tasks_to_insert, inserted_by=self.context.profile.name)
-        raw_dependencies = normalized_mutations.get("add_dependencies", [])
-        if isinstance(raw_dependencies, list):
-            for item in raw_dependencies:
-                if not isinstance(item, dict):
-                    continue
-                task_id = str(item.get("task_id", "") or "")
-                dependency_id = str(item.get("dependency_id", "") or "")
-                if not task_id or not dependency_id:
-                    continue
-                if self.context.board.add_dependency(task_id=task_id, dependency_id=dependency_id, updated_by=self.context.profile.name):
-                    added_dependency_ids.append(dependency_id)
-        state_update_key = "dynamic_plan" if task.task_type == "dynamic_planning" else "repo_dynamic_plan" if task.task_type == "repo_dynamic_planning" else ""
-        if state_update_key and isinstance(normalized_result, dict):
-            normalized_result["inserted_tasks"] = inserted_task_ids
-            normalized_result["peer_challenge_dependencies_added"] = added_dependency_ids
-            state_value = normalized_state_updates.get(state_update_key)
-            if isinstance(state_value, dict):
-                state_value["inserted_tasks"] = list(inserted_task_ids)
-                state_value["peer_challenge_dependencies_added"] = list(added_dependency_ids)
-        for key, value in normalized_state_updates.items():
-            original_shared_state.set(str(key), value)
+    def _normalize_task_outcome(self, raw_outcome: Any) -> Dict[str, Any]:
+        if isinstance(raw_outcome, dict) and (
+            "result" in raw_outcome
+            or "state_updates" in raw_outcome
+            or "task_mutations" in raw_outcome
+        ):
+            result = raw_outcome.get("result", {})
+            state_updates = raw_outcome.get("state_updates", {})
+            task_mutations = raw_outcome.get("task_mutations", {})
+        else:
+            result = raw_outcome
+            state_updates = {}
+            task_mutations = {}
+        return {
+            "result": result if isinstance(result, dict) else {"raw_result": result},
+            "state_updates": state_updates if isinstance(state_updates, dict) else {},
+            "task_mutations": task_mutations if isinstance(task_mutations, dict) else {},
+        }
+
+    def _queue_plan_approval(
+        self,
+        task: Task,
+        task_transport: str,
+        task_outcome: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        request = queue_plan_approval_request(
+            shared_state=self.context.shared_state if isinstance(self.context.shared_state, SharedState) else self.context.shared_state._underlying,
+            logger=self.context.logger,
+            requested_by=self.context.profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            transport=task_transport,
+            result=task_outcome.get("result", {}),
+            state_updates=task_outcome.get("state_updates", {}),
+            task_mutations=task_outcome.get("task_mutations", {}),
+        )
+        self.context.mailbox.send(
+            sender=self.context.profile.name,
+            recipient=self._get_lead_name_fn(self.context),
+            subject="plan_approval_requested",
+            body=json.dumps(
+                {
+                    "task_id": task.task_id,
+                    "task_type": task.task_type,
+                    "requested_by": self.context.profile.name,
+                    "transport": task_transport,
+                    "proposed_task_ids": list(request.get("proposed_task_ids", [])),
+                    "proposed_dependency_ids": list(request.get("proposed_dependency_ids", [])),
+                },
+                ensure_ascii=False,
+            ),
+            task_id=task.task_id,
+        )
+        normalized_result = dict(task_outcome.get("result", {}))
+        normalized_result["approval_required"] = True
+        normalized_result["mutations_applied"] = False
+        normalized_result["proposed_task_ids"] = list(request.get("proposed_task_ids", []))
+        normalized_result["proposed_dependency_ids"] = list(request.get("proposed_dependency_ids", []))
         return normalized_result
 
-    def _run_subprocess_worker_task(self, task: Task, task_context: Dict[str, Any], original_shared_state: Any) -> Dict[str, Any]:
+    def _run_subprocess_worker_task(self, task: Task, task_context: Dict[str, Any]) -> Dict[str, Any]:
         runtime_script = getattr(self.context, "runtime_script", None)
         if runtime_script is None:
             raise RuntimeError("runtime_script unavailable for subprocess worker task")
@@ -654,9 +690,57 @@ class InProcessTeammateAgent(threading.Thread):
         worker_payload = execution.get("payload", {})
         if not isinstance(worker_payload, dict):
             worker_payload = {}
-        result = self._apply_worker_task_mutations(task=task, result=worker_payload.get("result", {}), state_updates=worker_payload.get("state_updates", {}), task_mutations=worker_payload.get("task_mutations", {}), original_shared_state=original_shared_state)
         self.context.logger.log("subprocess_worker_task_completed", worker=self.context.profile.name, task_id=task.task_id, task_type=task.task_type, transport=transport_used)
-        return result
+        return self._normalize_task_outcome(worker_payload)
+
+    def _run_tmux_external_worker_task(
+        self,
+        task: Task,
+        task_context: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        runtime_script = getattr(self.context, "runtime_script", None)
+        if runtime_script is None:
+            raise RuntimeError("runtime_script unavailable for tmux worker task")
+        self.context.logger.log(
+            "tmux_worker_task_dispatched",
+            worker=self.context.profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            execution_mode="reviewer_thread",
+        )
+        execution = tmux_transport.run_external_tmux_task(
+            context=self.context,
+            task=task,
+            runtime_script=pathlib.Path(runtime_script).resolve(),
+            task_context=task_context,
+            record_boundary=self.context.session_registry is not None,
+            timeout_sec=int(self.context.runtime_config.tmux_worker_timeout_sec),
+        )
+        transport_used = str(execution.get("transport", "") or "tmux")
+        if not execution.get("ok"):
+            error = str(execution.get("error", "unknown worker error"))
+            self.context.logger.log(
+                "tmux_worker_task_failed",
+                worker=self.context.profile.name,
+                task_id=task.task_id,
+                task_type=task.task_type,
+                transport=transport_used,
+                error=error,
+                execution_mode="reviewer_thread",
+            )
+            raise RuntimeError(error)
+        worker_payload = execution.get("payload", {})
+        if not isinstance(worker_payload, dict):
+            worker_payload = {}
+        self.context.logger.log(
+            "tmux_worker_task_completed",
+            worker=self.context.profile.name,
+            task_id=task.task_id,
+            task_type=task.task_type,
+            transport=transport_used,
+            execution_mode="reviewer_thread",
+        )
+        return self._normalize_task_outcome(worker_payload)
 
     def _run_host_assigned_worker_payload_task(self, task: Task, task_context: Dict[str, Any]) -> Dict[str, Any]:
         board_task_ids = task_context.get("board_task_ids", [])
@@ -740,17 +824,34 @@ class InProcessTeammateAgent(threading.Thread):
                 host_assigned_payload = self._run_host_assigned_worker_payload_task(task=task, task_context=task_context)
                 result = host_assigned_payload.get("result", {})
             else:
-                result = self._run_subprocess_worker_task(task=task, task_context=task_context, original_shared_state=original_shared_state) if task_transport == "subprocess" else handler(self.context, task)
+                if task_transport == "subprocess":
+                    task_outcome = self._run_subprocess_worker_task(
+                        task=task,
+                        task_context=task_context,
+                    )
+                elif task_transport == "tmux":
+                    task_outcome = self._run_tmux_external_worker_task(
+                        task=task,
+                        task_context=task_context,
+                    )
+                else:
+                    task_outcome = self._normalize_task_outcome(handler(self.context, task))
+            if task_transport not in {"subprocess", "tmux"} and task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES and uses_host_session_result_contract:
+                task_outcome = self._normalize_task_outcome(host_assigned_payload)
+            if task_transport in {"subprocess", "tmux"}:
+                result = dict(task_outcome.get("result", {}))
+            else:
+                result = dict(task_outcome.get("result", {}))
             if self.context.session_registry is not None or self._uses_host_session_telemetry_contract():
                 self._record_session_task_result(task=task, transport=task_transport, success=True, status="ready")
             if uses_host_session_result_contract:
                 result_state_updates = (
-                    host_assigned_payload.get("state_updates", {})
+                    task_outcome.get("state_updates", {})
                     if task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES
                     else scoped_shared_state.buffered_updates()
                 )
                 result_task_mutations = (
-                    host_assigned_payload.get("task_mutations", {})
+                    task_outcome.get("task_mutations", {})
                     if task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES
                     else {}
                 )
@@ -762,6 +863,27 @@ class InProcessTeammateAgent(threading.Thread):
                     task_mutations=result_task_mutations,
                 )
             else:
+                if plan_approval_required(
+                    shared_state=original_shared_state,
+                    requested_by=self.context.profile.name,
+                    task_mutations=task_outcome.get("task_mutations", {}),
+                ):
+                    result = self._queue_plan_approval(
+                        task=task,
+                        task_transport=task_transport,
+                        task_outcome=task_outcome,
+                    )
+                else:
+                    applied = apply_task_mutation_payload(
+                        board=self.context.board,
+                        shared_state=original_shared_state,
+                        task_type=task.task_type,
+                        updated_by=self.context.profile.name,
+                        result=task_outcome.get("result", {}),
+                        state_updates=task_outcome.get("state_updates", {}),
+                        task_mutations=task_outcome.get("task_mutations", {}),
+                    )
+                    result = applied.get("result", result)
                 self.context.board.complete(task_id=task.task_id, owner=self.context.profile.name, result=result)
                 self.context.mailbox.send(sender=self.context.profile.name, recipient=self._get_lead_name_fn(self.context), subject="task_completed", body=f"{task.task_id} done", task_id=task.task_id)
         except Exception as exc:  # pragma: no cover - defensive path

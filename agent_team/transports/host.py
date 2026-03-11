@@ -11,8 +11,10 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 from ..config import ModelConfig, RuntimeConfig
 from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState, task_from_dict
 from ..models import build_provider
+from ..runtime.lead_interaction import plan_approval_required, queue_plan_approval_request
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
+from ..runtime.task_mutations import apply_task_mutation_payload
 from . import tmux as tmux_transport
 from .inprocess import (
     HOST_SESSION_ASSIGNED_TASK_TYPES,
@@ -351,53 +353,16 @@ def _apply_host_task_mutations(
     state_updates: Any,
     task_mutations: Any,
 ) -> Dict[str, Any]:
-    normalized_state_updates = state_updates if isinstance(state_updates, dict) else {}
-    normalized_mutations = task_mutations if isinstance(task_mutations, dict) else {}
-    normalized_result = result if isinstance(result, dict) else {"raw_result": result}
-    inserted_task_ids = []
-    added_dependency_ids = []
-
-    raw_insert_tasks = normalized_mutations.get("insert_tasks", [])
-    if isinstance(raw_insert_tasks, list):
-        tasks_to_insert = [task_from_dict(item) for item in raw_insert_tasks if isinstance(item, dict)]
-        if tasks_to_insert:
-            inserted_task_ids = lead_context.board.add_tasks(tasks=tasks_to_insert, inserted_by=worker)
-
-    raw_dependencies = normalized_mutations.get("add_dependencies", [])
-    if isinstance(raw_dependencies, list):
-        for item in raw_dependencies:
-            if not isinstance(item, dict):
-                continue
-            dependency_task_id = str(item.get("task_id", "") or "")
-            dependency_id = str(item.get("dependency_id", "") or "")
-            if not dependency_task_id or not dependency_id:
-                continue
-            if lead_context.board.add_dependency(
-                task_id=dependency_task_id,
-                dependency_id=dependency_id,
-                updated_by=worker,
-            ):
-                added_dependency_ids.append(dependency_id)
-
-    state_update_key = (
-        "dynamic_plan"
-        if task_type == "dynamic_planning"
-        else "repo_dynamic_plan"
-        if task_type == "repo_dynamic_planning"
-        else ""
+    applied = apply_task_mutation_payload(
+        board=lead_context.board,
+        shared_state=lead_context.shared_state,
+        task_type=task_type,
+        updated_by=worker,
+        result=result,
+        state_updates=state_updates,
+        task_mutations=task_mutations,
     )
-    if state_update_key and isinstance(normalized_result, dict):
-        normalized_result["inserted_tasks"] = inserted_task_ids
-        normalized_result["peer_challenge_dependencies_added"] = added_dependency_ids
-        state_value = normalized_state_updates.get(state_update_key)
-        if isinstance(state_value, dict):
-            state_value["inserted_tasks"] = list(inserted_task_ids)
-            state_value["peer_challenge_dependencies_added"] = list(added_dependency_ids)
-
-    for key, value in normalized_state_updates.items():
-        lead_context.shared_state.set(str(key), value)
-
-    return normalized_result
+    return dict(applied.get("result", {}))
 
 
 def _build_host_worker_payload(
@@ -734,14 +699,53 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
     )
     try:
         if success:
-            normalized_result = _apply_host_task_mutations(
-                lead_context=lead_context,
-                worker=worker,
-                task_type=task_type,
-                result=result,
-                state_updates=state_updates,
+            if plan_approval_required(
+                shared_state=lead_context.shared_state,
+                requested_by=worker,
                 task_mutations=task_mutations,
-            )
+            ):
+                request = queue_plan_approval_request(
+                    shared_state=lead_context.shared_state,
+                    logger=lead_context.logger,
+                    requested_by=worker,
+                    task_id=task_id,
+                    task_type=task_type,
+                    transport="host",
+                    result=result,
+                    state_updates=state_updates,
+                    task_mutations=task_mutations,
+                )
+                normalized_result = dict(result)
+                normalized_result["approval_required"] = True
+                normalized_result["mutations_applied"] = False
+                normalized_result["proposed_task_ids"] = list(request.get("proposed_task_ids", []))
+                normalized_result["proposed_dependency_ids"] = list(request.get("proposed_dependency_ids", []))
+                lead_context.mailbox.send(
+                    sender=worker,
+                    recipient=lead_context.profile.name,
+                    subject="plan_approval_requested",
+                    body=json.dumps(
+                        {
+                            "task_id": task_id,
+                            "task_type": task_type,
+                            "requested_by": worker,
+                            "transport": "host",
+                            "proposed_task_ids": list(request.get("proposed_task_ids", [])),
+                            "proposed_dependency_ids": list(request.get("proposed_dependency_ids", [])),
+                        },
+                        ensure_ascii=False,
+                    ),
+                    task_id=task_id,
+                )
+            else:
+                normalized_result = _apply_host_task_mutations(
+                    lead_context=lead_context,
+                    worker=worker,
+                    task_type=task_type,
+                    result=result,
+                    state_updates=state_updates,
+                    task_mutations=task_mutations,
+                )
             lead_context.board.complete(task_id=task_id, owner=worker, result=normalized_result)
             lead_context.mailbox.send(
                 sender=worker,
@@ -764,6 +768,7 @@ def apply_host_session_result_message(lead_context: Any, message: Any) -> bool:
                 state_update_keys=sorted(state_updates.keys()),
                 insert_task_count=len(task_mutations.get("insert_tasks", [])),
                 add_dependency_count=len(task_mutations.get("add_dependencies", [])),
+                approval_required=bool(normalized_result.get("approval_required", False)),
                 session_worker_backend=session_worker_backend,
             )
         else:

@@ -23,6 +23,7 @@ from ..core import (
     SharedState,
     Task,
     TaskBoard,
+    task_from_dict,
 )
 from ..host import HOST_RUNTIME_ENFORCEMENT_KEY, build_host_adapter
 from ..models import LLMProvider, build_provider
@@ -41,10 +42,18 @@ from .persistence import (
     write_artifacts,
     write_checkpoint,
 )
+from .lead_interaction import (
+    PLAN_APPROVAL_STATUS_APPLIED,
+    PLAN_APPROVAL_STATUS_PENDING,
+    PLAN_APPROVAL_STATUS_REJECTED,
+    list_plan_approval_requests,
+    update_plan_approval_request,
+)
 from .session_state import (
     TeammateSessionRegistry,
     teammate_transport_for_profile,
 )
+from .task_mutations import apply_task_mutation_payload
 
 
 @dataclasses.dataclass
@@ -69,10 +78,106 @@ class AgentContext:
 TaskHandler = Callable[[AgentContext, Task], Dict[str, Any]]
 TaskHandlers = Mapping[str, TaskHandler]
 TeammateFactory = Callable[..., threading.Thread]
+ExternalTaskRunner = Callable[[AgentContext, Task], Optional[Dict[str, Any]]]
 TmuxRunner = Callable[[AgentContext, Sequence[AgentProfile], pathlib.Path, int], bool]
 HostRunner = Callable[[AgentContext, Sequence[AgentProfile], TaskHandlers], bool]
 TmuxCleanupRunner = Callable[[AgentContext, Sequence[AgentProfile]], Any]
 TmuxRecoveryRunner = Callable[[AgentContext, Sequence[AgentProfile], Optional[pathlib.Path]], Any]
+
+
+def _normalize_lead_task_outcome(raw_outcome: Any) -> Dict[str, Any]:
+    if isinstance(raw_outcome, dict) and (
+        "result" in raw_outcome
+        or "state_updates" in raw_outcome
+        or "task_mutations" in raw_outcome
+    ):
+        result = raw_outcome.get("result", {})
+        state_updates = raw_outcome.get("state_updates", {})
+        task_mutations = raw_outcome.get("task_mutations", {})
+    else:
+        result = raw_outcome
+        state_updates = {}
+        task_mutations = {}
+    return {
+        "result": result if isinstance(result, dict) else {"raw_result": result},
+        "state_updates": state_updates if isinstance(state_updates, dict) else {},
+        "task_mutations": task_mutations if isinstance(task_mutations, dict) else {},
+    }
+
+
+def apply_requested_plan_approvals(
+    lead_context: AgentContext,
+    approve_task_ids: Sequence[str] | None = None,
+    reject_task_ids: Sequence[str] | None = None,
+    approve_all_pending: bool = False,
+    decision_source: str = "runtime",
+) -> Dict[str, Any]:
+    approved = {str(task_id) for task_id in (approve_task_ids or []) if str(task_id)}
+    rejected = {str(task_id) for task_id in (reject_task_ids or []) if str(task_id)}
+    pending = list_plan_approval_requests(
+        shared_state=lead_context.shared_state,
+        status=PLAN_APPROVAL_STATUS_PENDING,
+    )
+    applied_task_ids: List[str] = []
+    rejected_task_ids: List[str] = []
+    remaining_task_ids: List[str] = []
+
+    for request in pending:
+        task_id = str(request.get("task_id", "") or "")
+        if not task_id:
+            continue
+        if task_id in rejected:
+            update_plan_approval_request(
+                shared_state=lead_context.shared_state,
+                task_id=task_id,
+                status=PLAN_APPROVAL_STATUS_REJECTED,
+                decision_source=decision_source,
+            )
+            lead_context.logger.log(
+                "plan_approval_rejected",
+                task_id=task_id,
+                task_type=str(request.get("task_type", "") or ""),
+                requested_by=str(request.get("requested_by", "") or ""),
+                decision_source=decision_source,
+            )
+            rejected_task_ids.append(task_id)
+            continue
+        if approve_all_pending or task_id in approved:
+            applied = apply_task_mutation_payload(
+                board=lead_context.board,
+                shared_state=lead_context.shared_state,
+                task_type=str(request.get("task_type", "") or ""),
+                updated_by=str(request.get("requested_by", "") or lead_context.profile.name),
+                result=request.get("result", {}),
+                state_updates=request.get("state_updates", {}),
+                task_mutations=request.get("task_mutations", {}),
+            )
+            update_plan_approval_request(
+                shared_state=lead_context.shared_state,
+                task_id=task_id,
+                status=PLAN_APPROVAL_STATUS_APPLIED,
+                decision_source=decision_source,
+                applied_task_ids=list(applied.get("inserted_task_ids", [])),
+                applied_dependency_ids=list(applied.get("added_dependency_ids", [])),
+            )
+            lead_context.logger.log(
+                "plan_approval_applied",
+                task_id=task_id,
+                task_type=str(request.get("task_type", "") or ""),
+                requested_by=str(request.get("requested_by", "") or ""),
+                decision_source=decision_source,
+                insert_task_count=len(applied.get("inserted_task_ids", [])),
+                add_dependency_count=len(applied.get("added_dependency_ids", [])),
+            )
+            applied_task_ids.append(task_id)
+            continue
+        remaining_task_ids.append(task_id)
+
+    return {
+        "applied_task_ids": applied_task_ids,
+        "rejected_task_ids": rejected_task_ids,
+        "pending_task_ids": remaining_task_ids,
+    }
 
 
 def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
@@ -156,6 +261,7 @@ def run_lead_task_once(
     lead_context: AgentContext,
     task_id: str,
     handlers: TaskHandlers,
+    external_task_runner: Optional[ExternalTaskRunner] = None,
     traceback_module: Any = traceback,
 ) -> bool:
     task = lead_context.board.claim_specific(
@@ -193,7 +299,50 @@ def run_lead_task_once(
         )
         return True
     try:
-        result = handler(lead_context, task)
+        delegated = None
+        if external_task_runner is not None:
+            delegated = external_task_runner(lead_context, task)
+        if delegated is not None:
+            if not delegated.get("ok", False):
+                error = str(delegated.get("error", "external task failed"))
+                lead_context.board.fail(task_id=task.task_id, owner=lead_context.profile.name, error=error)
+                lead_context.mailbox.send(
+                    sender=lead_context.profile.name,
+                    recipient=lead_context.profile.name,
+                    subject="task_failed",
+                    body=error,
+                    task_id=task.task_id,
+                )
+                return True
+            delegated_outcome = _normalize_lead_task_outcome(
+                {
+                    "result": delegated.get("result", {}),
+                    "state_updates": delegated.get("state_updates", {}),
+                    "task_mutations": delegated.get("task_mutations", delegated.get("board_mutations", {})),
+                }
+            )
+            applied = apply_task_mutation_payload(
+                board=lead_context.board,
+                shared_state=lead_context.shared_state,
+                task_type=task.task_type,
+                updated_by=lead_context.profile.name,
+                result=delegated_outcome.get("result", {}),
+                state_updates=delegated_outcome.get("state_updates", {}),
+                task_mutations=delegated_outcome.get("task_mutations", {}),
+            )
+            result = applied.get("result", {})
+        else:
+            handler_outcome = _normalize_lead_task_outcome(handler(lead_context, task))
+            applied = apply_task_mutation_payload(
+                board=lead_context.board,
+                shared_state=lead_context.shared_state,
+                task_type=task.task_type,
+                updated_by=lead_context.profile.name,
+                result=handler_outcome.get("result", {}),
+                state_updates=handler_outcome.get("state_updates", {}),
+                task_mutations=handler_outcome.get("task_mutations", {}),
+            )
+            result = applied.get("result", {})
         lead_context.board.complete(task_id=task.task_id, owner=lead_context.profile.name, result=result)
         lead_context.mailbox.send(
             sender=lead_context.profile.name,
@@ -225,6 +374,7 @@ def run_lead_tasks_once(
     lead_context: AgentContext,
     lead_task_order: Sequence[str],
     handlers: TaskHandlers,
+    external_task_runner: Optional[ExternalTaskRunner] = None,
     traceback_module: Any = traceback,
 ) -> bool:
     ran_any = False
@@ -233,6 +383,7 @@ def run_lead_tasks_once(
             lead_context=lead_context,
             task_id=str(task_id),
             handlers=handlers,
+            external_task_runner=external_task_runner,
             traceback_module=traceback_module,
         ):
             ran_any = True
@@ -260,11 +411,15 @@ def run_team(
     branch_run_id: str = "",
     agent_team_config: Optional[AgentTeamConfig] = None,
     teammate_agent_factory: Optional[TeammateFactory] = None,
+    external_lead_task_runner: Optional[ExternalTaskRunner] = None,
     run_tmux_analyst_task_once_fn: Optional[TmuxRunner] = None,
     run_host_teammate_task_once_fn: Optional[HostRunner] = None,
     recover_tmux_analyst_sessions_fn: Optional[TmuxRecoveryRunner] = None,
     cleanup_tmux_analyst_sessions_fn: Optional[TmuxCleanupRunner] = None,
     runtime_script: Optional[pathlib.Path] = None,
+    approve_plan_task_ids: Optional[Sequence[str]] = None,
+    reject_plan_task_ids: Optional[Sequence[str]] = None,
+    approve_all_pending_plans: bool = False,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / CHECKPOINT_FILENAME
@@ -497,6 +652,14 @@ def run_team(
     shared_state.set("policies", effective_agent_team_config.policies.to_dict())
     shared_state.set("team_profiles", [profile.to_dict() for profile in profiles])
     shared_state.set("runtime_config", runtime_config.to_dict())
+    shared_state.set(
+        "plan_approval_controls",
+        {
+            "approve_all_pending": bool(approve_all_pending_plans),
+            "approve_task_ids": [str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
+            "reject_task_ids": [str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
+        },
+    )
     shared_state.set("run_resume_from", str(resume_from) if resume_from else "")
     shared_state.set(
         "run_rewind_history_index",
@@ -662,6 +825,17 @@ def run_team(
     max_completed_tasks = max(0, int(max_completed_tasks))
     try:
         while True:
+            approval_resolution = apply_requested_plan_approvals(
+                lead_context=lead_context,
+                approve_task_ids=approve_plan_task_ids,
+                reject_task_ids=reject_plan_task_ids,
+                approve_all_pending=approve_all_pending_plans,
+                decision_source="cli",
+            )
+            ran_approval_action = bool(
+                approval_resolution.get("applied_task_ids")
+                or approval_resolution.get("rejected_task_ids")
+            )
             ran_tmux_task = False
             ran_host_task = False
             if runtime_config.teammate_mode in {"tmux", "subprocess"}:
@@ -683,8 +857,9 @@ def run_team(
                 lead_context=lead_context,
                 lead_task_order=lead_task_order,
                 handlers=workflow_handlers,
+                external_task_runner=external_lead_task_runner,
             )
-            ran_lead_task = ran_lead_task or ran_tmux_task or ran_host_task
+            ran_lead_task = ran_lead_task or ran_tmux_task or ran_host_task or ran_approval_action
             messages = mailbox.pull(lead_context.profile.name)
             for message in messages:
                 logger.log(
@@ -712,6 +887,35 @@ def run_team(
                         subject="halt_notice",
                         body=f"Task failed: {message.task_id}. Continuing to completion checks.",
                     )
+            approval_resolution = apply_requested_plan_approvals(
+                lead_context=lead_context,
+                approve_task_ids=approve_plan_task_ids,
+                reject_task_ids=reject_plan_task_ids,
+                approve_all_pending=approve_all_pending_plans,
+                decision_source="cli",
+            )
+            ran_lead_task = ran_lead_task or bool(
+                approval_resolution.get("applied_task_ids")
+                or approval_resolution.get("rejected_task_ids")
+            )
+            pending_plan_approvals = list_plan_approval_requests(
+                shared_state=lead_context.shared_state,
+                status=PLAN_APPROVAL_STATUS_PENDING,
+            )
+            if pending_plan_approvals:
+                pending_task_ids = [str(item.get("task_id", "") or "") for item in pending_plan_approvals if str(item.get("task_id", "") or "")]
+                interrupted_reason = (
+                    "pending_plan_approval: " + ",".join(pending_task_ids[:5])
+                )
+                logger.log(
+                    "run_paused_for_plan_approval",
+                    pending_task_ids=pending_task_ids,
+                    pending_count=len(pending_task_ids),
+                    approve_all_pending=bool(approve_all_pending_plans),
+                    approved_task_ids=[str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
+                    rejected_task_ids=[str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
+                )
+                break
             if board.all_terminal():
                 break
             if max_completed_tasks > 0:

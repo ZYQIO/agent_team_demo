@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,8 @@ class RuntimeEndToEndTests(unittest.TestCase):
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
                 output_dir / runtime.HOST_ENFORCEMENT_FILENAME,
+                output_dir / runtime.LEAD_INTERACTION_FILENAME,
+                output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME,
                 output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
@@ -113,6 +116,14 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(
                 pathlib.Path(str(summary.get("host_enforcement_path", ""))).resolve(),
                 (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(str(summary.get("lead_interaction_path", ""))).resolve(),
+                (output_dir / runtime.LEAD_INTERACTION_FILENAME).resolve(),
+            )
+            self.assertEqual(
+                pathlib.Path(str(summary.get("lead_interaction_report_path", ""))).resolve(),
+                (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).resolve(),
             )
             self.assertEqual(
                 pathlib.Path(str(summary.get("session_boundary_path", ""))).resolve(),
@@ -185,6 +196,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
 
             report_text = (output_dir / "final_report.md").read_text(encoding="utf-8")
             self.assertIn("## Host Enforcement", report_text)
+            self.assertIn("## Lead Interaction", report_text)
             self.assertIn("## Session Boundaries", report_text)
             self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Team Progress", report_text)
@@ -236,6 +248,8 @@ class RuntimeEndToEndTests(unittest.TestCase):
             expected_artifacts = [
                 output_dir / runtime.CONTEXT_BOUNDARY_FILENAME,
                 output_dir / runtime.HOST_ENFORCEMENT_FILENAME,
+                output_dir / runtime.LEAD_INTERACTION_FILENAME,
+                output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME,
                 output_dir / runtime.SESSION_BOUNDARY_FILENAME,
                 output_dir / "events.jsonl",
                 output_dir / "task_board.json",
@@ -309,6 +323,113 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("## Dynamic Tasking", report_text)
             self.assertIn("## Evidence Pack", report_text)
             self.assertIn("## Lead Adjudication", report_text)
+
+    def test_cli_plan_approval_pause_and_resume_apply_pending_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "no_heading.md").write_text("plain line\nanother line\n", encoding="utf-8")
+            long_lines = "\n".join([f"# Section {index}" for index in range(1, 220)])
+            (target_dir / "long_doc.md").write_text(long_lines + "\n", encoding="utf-8")
+
+            pause_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--teammate-plan-required",
+            ]
+            paused = subprocess.run(
+                pause_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=90,
+            )
+            self.assertEqual(
+                paused.returncode,
+                0,
+                msg=f"stdout:\n{paused.stdout}\n\nstderr:\n{paused.stderr}",
+            )
+
+            paused_summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertIn("pending_plan_approval", str(paused_summary.get("interrupted_reason", "")))
+            self.assertEqual(paused_summary.get("pending_plan_approval_count"), 1)
+            self.assertEqual(paused_summary.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
+            paused_board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+            paused_task_ids = {item["task_id"] for item in paused_board["tasks"]}
+            self.assertIn("dynamic_planning", paused_task_ids)
+            self.assertNotIn("heading_structure_followup", paused_task_ids)
+            lead_interaction = json.loads(
+                (output_dir / runtime.LEAD_INTERACTION_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(lead_interaction.get("pending_plan_approval_count"), 1)
+            self.assertEqual(lead_interaction.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
+
+            resume_cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--resume-from",
+                str(output_dir / runtime.CHECKPOINT_FILENAME),
+                "--approve-plan",
+                "dynamic_planning",
+            ]
+            resumed = subprocess.run(
+                resume_cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+                timeout=90,
+            )
+            self.assertEqual(
+                resumed.returncode,
+                0,
+                msg=f"stdout:\n{resumed.stdout}\n\nstderr:\n{resumed.stderr}",
+            )
+
+            resumed_summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(resumed_summary.get("interrupted_reason"), "")
+            self.assertEqual(resumed_summary.get("pending_plan_approval_count"), 0)
+            resumed_board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+            resumed_states = {item["task_id"]: item["status"] for item in resumed_board["tasks"]}
+            self.assertIn("heading_structure_followup", resumed_states)
+            self.assertIn("length_risk_followup", resumed_states)
+            self.assertTrue(all(state == "completed" for state in resumed_states.values()))
+            resumed_interaction = json.loads(
+                (output_dir / runtime.LEAD_INTERACTION_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(resumed_interaction.get("pending_plan_approval_count"), 0)
+            applied = {
+                item.get("task_id"): item
+                for item in resumed_interaction.get("plan_approval_requests", [])
+                if isinstance(item, dict)
+            }
+            self.assertEqual(
+                applied.get("dynamic_planning", {}).get("status"),
+                runtime.PLAN_APPROVAL_STATUS_APPLIED,
+            )
 
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -427,7 +548,24 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertTrue(diagnostics_path.exists())
             diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
             self.assertGreaterEqual(len(diagnostics_lines), 1)
-            first_record = json.loads(diagnostics_lines[0])
+            diagnostics_payloads = [json.loads(line) for line in diagnostics_lines if line.strip()]
+            first_record = diagnostics_payloads[0]
+            self.assertIn("reviewer_gamma", {item.get("worker") for item in diagnostics_payloads})
+            self.assertIn("lead", {item.get("worker") for item in diagnostics_payloads})
+            reviewer_task_types = {
+                item.get("task_type")
+                for item in diagnostics_payloads
+                if item.get("worker") == "reviewer_gamma"
+            }
+            lead_task_types = {
+                item.get("task_type")
+                for item in diagnostics_payloads
+                if item.get("worker") == "lead"
+            }
+            self.assertIn("peer_challenge", reviewer_task_types)
+            self.assertIn("evidence_pack", reviewer_task_types)
+            self.assertIn("lead_adjudication", lead_task_types)
+            self.assertIn("lead_re_adjudication", lead_task_types)
             self.assertIn(first_record.get("result"), {"success", "execution_failed", "invalid_json"})
             self.assertIn("transport_used", first_record)
             self.assertIn("tmux_timed_out", first_record)
@@ -523,6 +661,23 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 pathlib.Path(summary.get("tmux_session_leases_path", "")).resolve(),
                 leases_path.resolve(),
             )
+            transport_summary = summary.get("teammate_transport_summary", {})
+            self.assertEqual(
+                pathlib.Path(transport_summary.get("diagnostics_path", "")).resolve(),
+                diagnostics_path.resolve(),
+            )
+            self.assertIn("lead", transport_summary.get("workers", []))
+            self.assertIn("reviewer_gamma", transport_summary.get("workers", []))
+            self.assertIn("lead_adjudication", transport_summary.get("task_types", []))
+            self.assertIn("peer_challenge", transport_summary.get("task_types", []))
+            if shutil.which("tmux") is None:
+                self.assertTrue(summary.get("teammate_transport_degraded"))
+                self.assertEqual(summary.get("teammate_mode_effective"), "tmux_degraded_subprocess")
+                self.assertTrue(transport_summary.get("fallback_used"))
+                self.assertIn("subprocess", transport_summary.get("transports_seen", []))
+                self.assertIn("tmux binary not found", transport_summary.get("fallback_reasons", []))
+            else:
+                self.assertEqual(summary.get("teammate_mode_effective"), "tmux")
 
             verify_cmd = [
                 sys.executable,

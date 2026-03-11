@@ -55,6 +55,11 @@ def handle_length_audit(context: Any, task: Task) -> Dict[str, Any]:
 def handle_dynamic_planning(context: Any, _task: Task) -> Dict[str, Any]:
     heading_issues = context.shared_state.get("heading_issues", [])
     length_issues = context.shared_state.get("length_issues", [])
+    policies = context.shared_state.get("policies", {})
+    teammate_plan_required = (
+        isinstance(policies, dict)
+        and bool(policies.get("teammate_plan_required", False))
+    )
 
     if not context.runtime_config.enable_dynamic_tasks:
         result = {
@@ -93,6 +98,30 @@ def handle_dynamic_planning(context: Any, _task: Task) -> Dict[str, Any]:
                 allowed_agent_types={"analyst"},
             )
         )
+
+    candidate_task_ids = [task.task_id for task in candidate_tasks]
+    task_mutations = {
+        "insert_tasks": [task.to_dict() for task in candidate_tasks],
+        "add_dependencies": [
+            {"task_id": "peer_challenge", "dependency_id": inserted_id}
+            for inserted_id in candidate_task_ids
+        ],
+    }
+
+    if teammate_plan_required:
+        result = {
+            "enabled": True,
+            "approval_required": True,
+            "inserted_tasks": list(candidate_task_ids),
+            "peer_challenge_dependencies_added": list(candidate_task_ids),
+            "heading_issue_count": len(heading_issues),
+            "length_issue_count": len(length_issues),
+        }
+        return {
+            "result": result,
+            "state_updates": {"dynamic_plan": dict(result)},
+            "task_mutations": task_mutations,
+        }
 
     inserted_tasks = context.board.add_tasks(tasks=candidate_tasks, inserted_by=context.profile.name)
     peer_gate_dependencies: List[str] = []

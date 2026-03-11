@@ -17,6 +17,8 @@ REQUIRED_FILES = [
     "shared_state.json",
     "file_locks.json",
     "host_enforcement.json",
+    "lead_interaction.json",
+    "lead_interaction.md",
     "session_boundaries.json",
     "teammate_sessions.json",
     "team_progress.json",
@@ -119,6 +121,7 @@ def main() -> int:
         "## Evidence Pack",
         "## Lead Adjudication",
         "## Team Progress",
+        "## Lead Interaction",
         "## Teammate Sessions",
         "## Host Enforcement",
         "## Session Boundaries",
@@ -131,6 +134,13 @@ def main() -> int:
     runtime_config = summary.get("runtime_config", {})
     host = summary.get("host", {})
     workflow = summary.get("workflow", {})
+    if "teammate_mode_effective" not in summary:
+        return fail("Missing teammate_mode_effective in run_summary.json")
+    if "teammate_transport_degraded" not in summary:
+        return fail("Missing teammate_transport_degraded in run_summary.json")
+    teammate_transport_summary = summary.get("teammate_transport_summary", {})
+    if not isinstance(teammate_transport_summary, dict):
+        return fail("teammate_transport_summary must be an object in run_summary.json")
     raw_context_boundary_path = str(summary.get("context_boundary_path", "") or "")
     if not raw_context_boundary_path:
         return fail("Missing context boundary path in run_summary.json: context_boundary_path")
@@ -160,6 +170,26 @@ def main() -> int:
             "host_enforcement.json is missing required keys: "
             f"{sorted(required_host_enforcement_keys - set(host_enforcement.keys()))}"
         )
+    raw_lead_interaction_path = str(summary.get("lead_interaction_path", "") or "")
+    if not raw_lead_interaction_path:
+        return fail("Missing lead interaction path in run_summary.json: lead_interaction_path")
+    lead_interaction_path = pathlib.Path(raw_lead_interaction_path).resolve()
+    if not lead_interaction_path.exists():
+        return fail(f"Referenced lead interaction artifact does not exist: {lead_interaction_path}")
+    raw_lead_interaction_report_path = str(summary.get("lead_interaction_report_path", "") or "")
+    if not raw_lead_interaction_report_path:
+        return fail("Missing lead interaction report path in run_summary.json: lead_interaction_report_path")
+    lead_interaction_report_path = pathlib.Path(raw_lead_interaction_report_path).resolve()
+    if not lead_interaction_report_path.exists():
+        return fail(
+            f"Referenced lead interaction report artifact does not exist: {lead_interaction_report_path}"
+        )
+    lead_interaction = load_json(output_dir / "lead_interaction.json")
+    if "pending_plan_approval_count" not in lead_interaction:
+        return fail("lead_interaction.json must contain pending_plan_approval_count")
+    lead_interaction_report = (output_dir / "lead_interaction.md").read_text(encoding="utf-8")
+    if "## Pending Approvals" not in lead_interaction_report:
+        return fail("lead_interaction.md is missing the Pending Approvals section")
     raw_session_boundary_path = str(summary.get("session_boundary_path", "") or "")
     if not raw_session_boundary_path:
         return fail("Missing session boundary path in run_summary.json: session_boundary_path")
@@ -201,6 +231,9 @@ def main() -> int:
         return fail("team_progress.md is missing the Agent Summary section")
 
     if runtime_config.get("teammate_mode") == "tmux":
+        diagnostics_summary_path = str(teammate_transport_summary.get("diagnostics_path", "") or "")
+        if not diagnostics_summary_path:
+            return fail("tmux runs must record teammate_transport_summary.diagnostics_path")
         scoped_tmux_boundaries = [
             item
             for item in session_boundaries.get("sessions", [])
@@ -221,6 +254,10 @@ def main() -> int:
         diagnostics_path = output_dir / "tmux_worker_diagnostics.jsonl"
         if not diagnostics_path.exists():
             return fail("Missing tmux worker diagnostics artifact")
+        if pathlib.Path(diagnostics_summary_path).resolve() != diagnostics_path.resolve():
+            return fail(
+                "teammate_transport_summary.diagnostics_path does not match tmux_worker_diagnostics.jsonl"
+            )
         diagnostics_lines = diagnostics_path.read_text(encoding="utf-8").splitlines()
         if not diagnostics_lines:
             return fail("tmux_worker_diagnostics.jsonl is empty")

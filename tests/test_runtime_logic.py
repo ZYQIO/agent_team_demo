@@ -339,6 +339,77 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("heading_structure_followup", peer["dependencies"])
             self.assertIn("length_risk_followup", peer["dependencies"])
 
+    def test_dynamic_planning_returns_plan_proposal_when_approval_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Peer challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma", "analyst_alpha", "analyst_beta"],
+                logger=logger,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("heading_issues", [{"path": "a.md"}])
+            shared_state.set("length_issues", [{"path": "b.md"}])
+            shared_state.set("policies", {"teammate_plan_required": True})
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(enable_dynamic_tasks=True),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            result = runtime.handle_dynamic_planning(
+                context=context,
+                _task=runtime.Task(
+                    task_id="dynamic_planning",
+                    title="plan",
+                    task_type="dynamic_planning",
+                    required_skills={"review"},
+                    dependencies=[],
+                    payload={},
+                    locked_paths=[],
+                    allowed_agent_types={"reviewer"},
+                ),
+            )
+            self.assertIn("task_mutations", result)
+            self.assertEqual(
+                set(item.get("task_id") for item in result["task_mutations"]["insert_tasks"]),
+                {"heading_structure_followup", "length_risk_followup"},
+            )
+            snapshot = board.snapshot()
+            task_ids = {task["task_id"] for task in snapshot["tasks"]}
+            self.assertEqual(task_ids, {"peer_challenge"})
+
     def test_workflow_pack_declares_lead_task_order(self) -> None:
         self.assertEqual(
             build_workflow_lead_task_order("markdown-audit"),
@@ -438,6 +509,172 @@ class RuntimeLogicTests(unittest.TestCase):
 
             self.assertTrue(ran_any)
             self.assertEqual(call_order, ["lead_re_adjudication", "lead_adjudication"])
+
+    def test_apply_requested_plan_approvals_applies_pending_mutations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Peer challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ],
+                logger=logger,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            runtime.queue_plan_approval_request(
+                shared_state=shared_state,
+                logger=logger,
+                requested_by="reviewer_gamma",
+                task_id="dynamic_planning",
+                task_type="dynamic_planning",
+                transport="in-process",
+                result={
+                    "enabled": True,
+                    "inserted_tasks": ["heading_structure_followup"],
+                    "peer_challenge_dependencies_added": ["heading_structure_followup"],
+                },
+                state_updates={
+                    "dynamic_plan": {
+                        "enabled": True,
+                        "inserted_tasks": ["heading_structure_followup"],
+                        "peer_challenge_dependencies_added": ["heading_structure_followup"],
+                    }
+                },
+                task_mutations={
+                    "insert_tasks": [
+                        {
+                            "task_id": "heading_structure_followup",
+                            "title": "Run heading structure follow-up audit",
+                            "task_type": "heading_structure_followup",
+                            "required_skills": ["analysis"],
+                            "dependencies": ["dynamic_planning"],
+                            "payload": {"top_n": 8},
+                            "locked_paths": [],
+                            "allowed_agent_types": ["analyst"],
+                        }
+                    ],
+                    "add_dependencies": [
+                        {"task_id": "peer_challenge", "dependency_id": "heading_structure_followup"}
+                    ],
+                },
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="approve pending plan",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=runtime.Mailbox(participants=["lead"], logger=logger),
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+
+            resolution = runtime.apply_requested_plan_approvals(
+                lead_context=lead_context,
+                approve_task_ids=["dynamic_planning"],
+                decision_source="test",
+            )
+
+            self.assertEqual(resolution["applied_task_ids"], ["dynamic_planning"])
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertIn("heading_structure_followup", board_snapshot)
+            self.assertIn("heading_structure_followup", board_snapshot["peer_challenge"]["dependencies"])
+            self.assertEqual(
+                shared_state.get("dynamic_plan", {}).get("inserted_tasks"),
+                ["heading_structure_followup"],
+            )
+            interaction = runtime.get_lead_interaction_state(shared_state)
+            applied_request = interaction.get("plan_approval_requests", {}).get("dynamic_planning", {})
+            self.assertEqual(applied_request.get("status"), runtime.PLAN_APPROVAL_STATUS_APPLIED)
+
+    def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="lead_adjudication",
+                        title="Lead adjudicates",
+                        task_type="lead_adjudication",
+                        required_skills={"lead"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"lead"},
+                    )
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead"], logger=logger)
+            shared_state = runtime.SharedState()
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            handler_called = []
+
+            def handler(_context, _task):
+                handler_called.append(True)
+                return {"should_not": "run"}
+
+            ran_any = run_lead_tasks_once(
+                lead_context=context,
+                lead_task_order=["lead_adjudication"],
+                handlers={"lead_adjudication": handler},
+                external_task_runner=lambda _context, task: {
+                    "ok": True,
+                    "result": {"verdict": "accept", "score": 81},
+                    "state_updates": {"lead_adjudication": {"verdict": "accept", "score": 81}},
+                    "task_mutations": {},
+                    "task_id": task.task_id,
+                },
+            )
+
+            self.assertTrue(ran_any)
+            self.assertEqual(handler_called, [])
+            self.assertEqual(board.get_task_result("lead_adjudication"), {"verdict": "accept", "score": 81})
+            self.assertEqual(shared_state.get("lead_adjudication", {}).get("verdict"), "accept")
 
     def test_teammate_provider_reply_generation_with_heuristic(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -2422,6 +2659,192 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("Priority actions:", llm_synthesis.get("content", ""))
         self.assertEqual(result.get("result", {}).get("provider", {}).get("provider"), "heuristic")
 
+    def test_tmux_worker_payload_supports_lead_adjudication(self) -> None:
+        result = runtime.tmux_transport.run_tmux_worker_payload(
+            {
+                "task_id": "lead_adjudication",
+                "task_type": "lead_adjudication",
+                "task_payload": {},
+                "runtime_config": runtime.RuntimeConfig().to_dict(),
+                "goal": "test",
+                "target_dir": ".",
+                "output_dir": ".",
+                "profile": {"name": "lead", "skills": ["lead"], "agent_type": "lead"},
+                "task_context": {
+                    "visible_shared_state": {
+                        "team_profiles": [
+                            {"name": "analyst_alpha", "agent_type": "analyst"},
+                            {"name": "analyst_beta", "agent_type": "analyst"},
+                        ]
+                    }
+                },
+                "board_snapshot": {
+                    "tasks": [
+                        {
+                            "task_id": "peer_challenge",
+                            "result": {
+                                "targets": ["analyst_alpha", "analyst_beta"],
+                                "round1": {
+                                    "received_replies": {
+                                        "analyst_alpha": "x",
+                                        "analyst_beta": "y",
+                                    }
+                                },
+                                "round2": {
+                                    "received_replies": {
+                                        "analyst_alpha": "z" * 220,
+                                        "analyst_beta": "k" * 220,
+                                    }
+                                },
+                            },
+                        }
+                    ]
+                },
+            }
+        )
+
+        self.assertEqual(result["result"]["verdict"], "accept")
+        self.assertEqual(result["state_updates"]["lead_adjudication"]["verdict"], "accept")
+
+    def test_tmux_worker_payload_supports_lead_re_adjudication(self) -> None:
+        result = runtime.tmux_transport.run_tmux_worker_payload(
+            {
+                "task_id": "lead_re_adjudication",
+                "task_type": "lead_re_adjudication",
+                "task_payload": {},
+                "runtime_config": runtime.RuntimeConfig(re_adjudication_max_bonus=20).to_dict(),
+                "goal": "test",
+                "target_dir": ".",
+                "output_dir": ".",
+                "profile": {"name": "lead", "skills": ["lead"], "agent_type": "lead"},
+                "board_snapshot": {
+                    "tasks": [
+                        {
+                            "task_id": "lead_adjudication",
+                            "result": {
+                                "verdict": "challenge",
+                                "score": 70,
+                                "thresholds": {"accept": 75, "challenge": 50},
+                                "weights": {"completeness": 0.4},
+                                "targets": ["analyst_alpha", "analyst_beta"],
+                            },
+                        },
+                        {
+                            "task_id": "evidence_pack",
+                            "result": {
+                                "triggered": True,
+                                "targets": ["analyst_alpha", "analyst_beta"],
+                                "received_replies": {
+                                    "analyst_alpha": "x" * 240,
+                                    "analyst_beta": "y" * 240,
+                                },
+                            },
+                        },
+                    ]
+                },
+            }
+        )
+
+        self.assertTrue(result["result"]["re_adjudicated"])
+        self.assertGreaterEqual(result["result"]["final_score"], 75)
+        self.assertEqual(result["state_updates"]["lead_re_adjudication"]["verdict"], "accept")
+
+    def test_mailbox_bridge_proxy_round_trips_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            requests_dir = root / "requests"
+            responses_dir = root / "responses"
+            logger = runtime.EventLogger(output_dir=root / "out")
+            mailbox = runtime.Mailbox(
+                participants=["reviewer_gamma", "analyst_alpha"],
+                logger=logger,
+            )
+            context = type(
+                "Context",
+                (),
+                {
+                    "profile": runtime.AgentProfile(
+                        name="reviewer_gamma",
+                        skills={"review"},
+                        agent_type="reviewer",
+                    ),
+                    "mailbox": mailbox,
+                    "logger": logger,
+                },
+            )()
+            stop_event = threading.Event()
+            server = threading.Thread(
+                target=runtime.tmux_transport._serve_mailbox_bridge,
+                kwargs={
+                    "context": context,
+                    "requests_dir": requests_dir,
+                    "responses_dir": responses_dir,
+                    "stop_event": stop_event,
+                },
+                daemon=True,
+            )
+            server.start()
+            proxy = runtime.tmux_transport._WorkerMailboxBridge(
+                requests_dir=requests_dir,
+                responses_dir=responses_dir,
+            )
+
+            proxy.send(
+                sender="reviewer_gamma",
+                recipient="analyst_alpha",
+                subject="hello",
+                body="world",
+                task_id="peer_challenge",
+            )
+            pulled = mailbox.pull("analyst_alpha")
+            self.assertEqual(len(pulled), 1)
+            self.assertEqual(pulled[0].subject, "hello")
+
+            mailbox.send(
+                sender="analyst_alpha",
+                recipient="reviewer_gamma",
+                subject="peer_challenge_round1_reply",
+                body="reply body",
+                task_id="peer_challenge",
+            )
+            matched = proxy.pull_matching(
+                "reviewer_gamma",
+                lambda message: message.subject == "peer_challenge_round1_reply"
+                and message.task_id == "peer_challenge",
+            )
+            self.assertEqual(len(matched), 1)
+            self.assertEqual(matched[0].body, "reply body")
+
+            stop_event.set()
+            server.join(timeout=2.0)
+
+    def test_worker_event_bridge_replays_into_main_logger(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=root / "out")
+            context = type("Context", (), {"logger": logger})()
+            event_bridge_path = root / "worker_events.jsonl"
+            event_bridge_path.write_text(
+                json.dumps(
+                    {
+                        "event": "lead_adjudication_published",
+                        "fields": {"verdict": "accept", "score": 80},
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            runtime.tmux_transport._replay_worker_bridge_events(
+                context=context,
+                event_bridge_path=event_bridge_path,
+            )
+
+            self.assertFalse(event_bridge_path.exists())
+            events = (root / "out" / "events.jsonl").read_text(encoding="utf-8")
+            self.assertIn("lead_adjudication_published", events)
+
 
     def test_tmux_worker_fallback_to_subprocess_on_error(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3544,6 +3967,76 @@ class RuntimeLogicTests(unittest.TestCase):
                 set(runtime.MAILBOX_REVIEWER_TASK_TYPES) & set(runtime.SUBPROCESS_REVIEWER_TASK_TYPES)
             )
 
+    def test_reviewer_tasks_use_tmux_transport_in_tmux_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(tasks=[], logger=logger)
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review", "writer", "llm"}, agent_type="reviewer")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="tmux")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="tmux"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=threading.Event(),
+                claim_tasks=True,
+                handlers={},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+
+            self.assertEqual(
+                agent._task_transport(
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Peer challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ),
+                "tmux",
+            )
+            self.assertEqual(
+                agent._task_transport(
+                    runtime.Task(
+                        task_id="llm_synthesis",
+                        title="LLM synthesis",
+                        task_type="llm_synthesis",
+                        required_skills={"llm"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    )
+                ),
+                "tmux",
+            )
+
     def test_reviewer_dynamic_planning_can_run_in_subprocess_worker(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -3681,6 +4174,97 @@ class RuntimeLogicTests(unittest.TestCase):
             event_names = {item.get("event") for item in events}
             self.assertIn("subprocess_worker_task_dispatched", event_names)
             self.assertIn("subprocess_worker_task_completed", event_names)
+
+    def test_reviewer_dynamic_planning_queues_plan_approval_when_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="Plan follow-up work",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("heading_issues", [{"path": "a.md"}])
+            shared_state.set("length_issues", [{"path": "b.md"}])
+            shared_state.set("policies", {"teammate_plan_required": True})
+            provider = mock.Mock()
+            profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            session_state = registry.activate_for_run(profile=profile, transport="in-process")
+            context = runtime.AgentContext(
+                profile=profile,
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(enable_dynamic_tasks=True),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+                session_state=session_state,
+                session_registry=registry,
+            )
+            agent = runtime.InProcessTeammateAgent(
+                context=context,
+                stop_event=threading.Event(),
+                claim_tasks=True,
+                handlers={"dynamic_planning": runtime.handle_dynamic_planning},
+                get_lead_name_fn=runtime.get_lead_name,
+                profile_has_skill_fn=runtime.profile_has_skill,
+                traceback_module=runtime.traceback,
+            )
+            claimed = board.claim_specific(
+                task_id="dynamic_planning",
+                agent_name=profile.name,
+                agent_skills=profile.skills,
+                agent_type=profile.agent_type,
+            )
+            self.assertIsNotNone(claimed)
+
+            agent._run_task(claimed)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot().get("tasks", [])}
+            self.assertEqual(board_snapshot["dynamic_planning"]["status"], "completed")
+            self.assertNotIn("heading_structure_followup", board_snapshot)
+            self.assertTrue(board_snapshot["dynamic_planning"]["result"].get("approval_required"))
+            interaction = runtime.get_lead_interaction_state(shared_state)
+            pending_request = interaction.get("plan_approval_requests", {}).get("dynamic_planning", {})
+            self.assertEqual(pending_request.get("status"), runtime.PLAN_APPROVAL_STATUS_PENDING)
+            self.assertEqual(
+                set(pending_request.get("proposed_task_ids", [])),
+                {"heading_structure_followup", "length_risk_followup"},
+            )
+            lead_mail = mailbox.pull("lead")
+            self.assertTrue(
+                any(message.subject == "plan_approval_requested" for message in lead_mail),
+            )
 
     def test_reviewer_llm_synthesis_subprocess_passes_model_config_and_updates_shared_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -5273,6 +5857,208 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(completion_events[0].get("execution_mode"), "session_thread")
             self.assertEqual(completion_events[0].get("insert_task_count"), 2)
             self.assertEqual(completion_events[0].get("add_dependency_count"), 2)
+
+    def test_host_dynamic_planning_result_queues_plan_approval_when_required(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="Plan follow-up work",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="peer_challenge",
+                        title="Challenge",
+                        task_type="peer_challenge",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(
+                participants=["lead", "reviewer_gamma"],
+                logger=logger,
+                storage_dir=output_dir / "_mailbox",
+                clear_storage=True,
+            )
+            shared_state = runtime.SharedState()
+            shared_state.set("lead_name", "lead")
+            shared_state.set("heading_issues", [{"path": "a.md"}])
+            shared_state.set("length_issues", [{"path": "b.md", "line_count": 220}])
+            shared_state.set("policies", {"teammate_plan_required": True})
+            shared_state.set(
+                "host",
+                {
+                    "kind": "claude-code",
+                    "session_transport": "session",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "note": "",
+                },
+            )
+            shared_state.set(
+                "host_runtime_enforcement",
+                {
+                    "host_kind": "claude-code",
+                    "configured_session_transport": "session",
+                    "requested_teammate_mode": "host",
+                    "session_enforcement": "host_managed",
+                    "workspace_enforcement": "host_managed",
+                    "host_native_session_active": True,
+                    "host_native_workspace_active": True,
+                    "host_managed_context_requested": True,
+                    "host_managed_context_active": True,
+                    "effective_boundary_source": "host",
+                    "effective_boundary_strength": "strong",
+                    "capabilities": {
+                        "independent_sessions": True,
+                        "workspace_isolation": True,
+                    },
+                    "limits": [],
+                    "notes": ["host_transport_manages_session_boundaries"],
+                },
+            )
+            shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+            file_locks = runtime.FileLockRegistry(logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+
+            class _FakeHostWorker:
+                worker_backend = "external_process"
+
+                def __init__(self) -> None:
+                    self.assigned_task_id = "dynamic_planning"
+
+                def can_accept_assigned_task(self) -> bool:
+                    return not self.assigned_task_id
+
+                def reserve_assigned_task(self, task_id: str) -> bool:
+                    if self.assigned_task_id:
+                        return False
+                    self.assigned_task_id = str(task_id)
+                    return True
+
+                def release_assigned_task(self, task_id: str = "") -> None:
+                    if task_id and self.assigned_task_id and self.assigned_task_id != str(task_id):
+                        return
+                    self.assigned_task_id = ""
+
+            worker = _FakeHostWorker()
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="host dynamic planning approval test",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(teammate_mode="host"),
+                board=board,
+                mailbox=mailbox,
+                file_locks=file_locks,
+                shared_state=shared_state,
+                logger=logger,
+                runtime_script=pathlib.Path(runtime.__file__).resolve(),
+            )
+            setattr(lead_context, "_host_worker_threads", {"reviewer_gamma": worker})
+
+            claimed = board.claim_specific(
+                task_id="dynamic_planning",
+                agent_name="reviewer_gamma",
+                agent_skills={"review"},
+                agent_type="reviewer",
+            )
+            self.assertIsNotNone(claimed)
+
+            mailbox.send(
+                sender="reviewer_gamma",
+                recipient="lead",
+                subject=runtime.SESSION_TASK_RESULT_SUBJECT,
+                body=json.dumps(
+                    {
+                        "contract": "session_task_result",
+                        "contract_version": 1,
+                        "transport": "host",
+                        "execution_mode": "session_thread",
+                        "task_id": "dynamic_planning",
+                        "task_type": "dynamic_planning",
+                        "worker": "reviewer_gamma",
+                        "success": True,
+                        "result": {
+                            "enabled": True,
+                            "inserted_tasks": ["heading_structure_followup", "length_risk_followup"],
+                            "peer_challenge_dependencies_added": ["heading_structure_followup", "length_risk_followup"],
+                        },
+                        "error": "",
+                        "state_updates": {
+                            "dynamic_plan": {
+                                "enabled": True,
+                                "inserted_tasks": ["heading_structure_followup", "length_risk_followup"],
+                                "peer_challenge_dependencies_added": ["heading_structure_followup", "length_risk_followup"],
+                            }
+                        },
+                        "task_mutations": {
+                            "insert_tasks": [
+                                {
+                                    "task_id": "heading_structure_followup",
+                                    "title": "Run heading structure follow-up audit",
+                                    "task_type": "heading_structure_followup",
+                                    "required_skills": ["analysis"],
+                                    "dependencies": ["dynamic_planning"],
+                                    "payload": {"top_n": 8},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["analyst"],
+                                },
+                                {
+                                    "task_id": "length_risk_followup",
+                                    "title": "Run length risk follow-up audit",
+                                    "task_type": "length_risk_followup",
+                                    "required_skills": ["analysis"],
+                                    "dependencies": ["dynamic_planning"],
+                                    "payload": {"line_threshold": 180, "top_n": 8},
+                                    "locked_paths": [],
+                                    "allowed_agent_types": ["analyst"],
+                                },
+                            ],
+                            "add_dependencies": [
+                                {"task_id": "peer_challenge", "dependency_id": "heading_structure_followup"},
+                                {"task_id": "peer_challenge", "dependency_id": "length_risk_followup"},
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                task_id="dynamic_planning",
+            )
+            self.assertEqual(runtime.apply_host_session_result_messages(lead_context), 1)
+
+            board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
+            self.assertEqual(board_snapshot["dynamic_planning"]["status"], "completed")
+            self.assertNotIn("heading_structure_followup", board_snapshot)
+            self.assertTrue(board_snapshot["dynamic_planning"]["result"].get("approval_required"))
+            interaction = runtime.get_lead_interaction_state(shared_state)
+            pending_request = interaction.get("plan_approval_requests", {}).get("dynamic_planning", {})
+            self.assertEqual(pending_request.get("status"), runtime.PLAN_APPROVAL_STATUS_PENDING)
+            self.assertEqual(worker.assigned_task_id, "")
 
 
     def test_build_context_boundary_summary_rolls_up_prepared_contexts(self) -> None:
