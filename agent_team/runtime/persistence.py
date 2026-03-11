@@ -1060,7 +1060,8 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
             f"approve_all_pending={controls.get('approve_all_pending', False)} "
             f"approve_task_ids={','.join(controls.get('approve_task_ids', [])) or 'none'} "
             f"reject_task_ids={','.join(controls.get('reject_task_ids', [])) or 'none'} "
-            f"lead_command_wait_seconds={controls.get('lead_command_wait_seconds', 0)}"
+            f"lead_command_wait_seconds={controls.get('lead_command_wait_seconds', 0)} "
+            f"lead_interactive={controls.get('lead_interactive', False)}"
         )
     lines.append(
         f"- Command channel: path={snapshot.get('command_path', '') or 'n/a'} "
@@ -1095,10 +1096,10 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
         for item in recent_messages:
             if not isinstance(item, dict):
                 continue
-        lines.append(
-            f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
-            f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
-        )
+            lines.append(
+                f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
+                f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
+            )
     lines.append("")
     lines.append("## Recent Commands")
     lines.append("")
@@ -1110,7 +1111,8 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
             if not isinstance(item, dict):
                 continue
             lines.append(
-                f"- [{item.get('line_index', '')}] command={item.get('command', '') or 'invalid'} "
+                f"- [{item.get('line_index', '')}] source={item.get('source', 'unknown')} "
+                f"command={item.get('command', '') or 'invalid'} "
                 f"task_ids={','.join(item.get('task_ids', [])) or 'none'} "
                 f"valid={item.get('valid', False)} "
                 f"received_at={item.get('received_at', '') or 'n/a'}"

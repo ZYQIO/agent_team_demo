@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-11 - Embedded lead prompt checkpoint
+- Goal: move lead plan approval one step closer to an embedded in-run control surface instead of depending on a separate console or file edit workflow
+- Changes:
+  - added `--lead-interactive` so the runtime can prompt on stdin for `approve`, `reject`, `approve-all`, `show`, and `pause` commands while plan approval is pending
+  - added interactive command parsing and command-history recording so embedded approval actions appear in the same live lead interaction snapshot as file-backed commands
+  - extended the end-to-end approval path so a real CLI run can unblock pending teammate plans by writing an approval command to the runtime process stdin
+  - direction review: the lead-facing parity gap is no longer basic runtime control availability; it is now interaction richness and ergonomics compared with Claude Code
+- Validation:
+  - `python -m py_compile agent_team_runtime.py agent_team\\runtime\\engine.py agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\persistence.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic tests passed for interactive command parsing and interactive command-history recording
+  - targeted end-to-end test passed for embedded stdin approval with `--lead-interactive`
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-facing slice should improve the embedded interaction experience itself rather than adding yet another parallel command path
+
 ### 2026-03-11 - Live lead console checkpoint
 - Goal: turn file-backed live plan approval into a usable in-run lead control surface instead of a raw JSONL editing workflow
 - Changes:

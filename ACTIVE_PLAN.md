@@ -40,12 +40,17 @@ Direction review (2026-03-10, analyst checkpoint):
 Official parity check (2026-03-11, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
 - the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
-- the clearest under-modeled official features are richer lead-facing teammate interaction and stronger host-native teammate sessions; file-backed live plan approval plus a terminal lead console now exist, but they are still not a first-class embedded in-run UI
+- the clearest under-modeled official features are richer lead-facing teammate interaction and stronger host-native teammate sessions; file-backed live plan approval plus a terminal lead console and embedded stdin prompt now exist, but they are still not a first-class embedded in-run UI
 
 Direction review (2026-03-11, lead console checkpoint):
 - the last three parity-focused rounds improved official Agent Teams behavior rather than transport-only depth
 - they did not drift into artifact-only work; the latest slice added a real in-run control loop through live snapshots plus a terminal lead console
 - the priority order still holds: the remaining gaps are true host-backed teammate sessions and a richer embedded lead control surface, not more reporting
+
+Direction review (2026-03-11, embedded lead prompt checkpoint):
+- the latest parity slice still improved in-run behavior rather than adding another artifact layer
+- the runtime can now stay inside one process and prompt for approval decisions on stdin instead of forcing a separate console or manual file edits
+- the remaining lead-side gap is now interaction richness and ergonomics, not basic availability of in-run approval control
 
 ## Priority Order
 
@@ -138,12 +143,13 @@ Recent completed outcomes:
 - lead can now resolve pending approvals through resume-time CLI controls or live file-backed commands while the run waits
 - runtime now refreshes `lead_interaction.json` + `lead_interaction.md` during the run instead of only writing them at shutdown
 - added a terminal `lead_console.py` helper so lead can inspect pending approvals and recent team messages, then send approve/reject commands without editing files by hand
+- added `--lead-interactive` so the runtime itself can prompt on stdin for approve/reject/pause commands when pending teammate plans block progress
 
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts
 - teammate plan proposals can be reviewed before task-list mutations are applied
 - task mutation policies align with host capability metadata instead of staying descriptive only
-- remaining gap: upgrade the current live snapshot + terminal helper flow into a richer embedded in-run control surface
+- remaining gap: upgrade the current live snapshot + terminal/file-backed + embedded-stdin flow into a richer embedded in-run control surface
 
 ### 6. Add true event-level replay
 Status: Pending

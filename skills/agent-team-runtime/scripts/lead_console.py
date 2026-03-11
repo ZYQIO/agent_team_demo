@@ -165,7 +165,8 @@ def build_status_lines(
             if not isinstance(item, dict):
                 continue
             lines.append(
-                f"- [{item.get('line_index', '')}] {item.get('command', '') or 'invalid'} "
+                f"- [{item.get('line_index', '')}] source={item.get('source', 'unknown')} "
+                f"{item.get('command', '') or 'invalid'} "
                 f"task_ids={','.join(item.get('task_ids', [])) or 'none'} "
                 f"valid={item.get('valid', False)}"
             )

@@ -649,6 +649,58 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(interaction.get("command_cursor"), 2)
             self.assertEqual(len(interaction.get("recent_commands", [])), 2)
 
+    def test_parse_interactive_plan_command_supports_embedded_lead_prompt(self) -> None:
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("approve dynamic_planning"),
+            {
+                "action": "approve_plan",
+                "raw": "approve dynamic_planning",
+                "task_id": "dynamic_planning",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("reject repo_dynamic_planning"),
+            {
+                "action": "reject_plan",
+                "raw": "reject repo_dynamic_planning",
+                "task_id": "repo_dynamic_planning",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("approve-all"),
+            {
+                "action": "approve_all_pending_plans",
+                "raw": "approve-all",
+                "task_id": "",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("pause"),
+            {
+                "action": "pause",
+                "raw": "pause",
+                "task_id": "",
+            },
+        )
+
+    def test_record_lead_command_tracks_interactive_source(self) -> None:
+        shared_state = runtime.SharedState()
+
+        record = runtime.record_lead_command(
+            shared_state=shared_state,
+            command="approve_plan",
+            task_ids=["dynamic_planning"],
+            raw="approve dynamic_planning",
+            source="interactive",
+        )
+
+        self.assertEqual(record.get("source"), "interactive")
+        interaction = runtime.get_lead_interaction_state(shared_state)
+        recent = interaction.get("recent_commands", [])
+        self.assertEqual(len(recent), 1)
+        self.assertEqual(recent[0].get("command"), "approve_plan")
+        self.assertEqual(recent[0].get("source"), "interactive")
+
     def test_write_live_lead_interaction_artifacts_persists_current_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -700,6 +752,13 @@ class RuntimeLogicTests(unittest.TestCase):
                 subject="plan_review_requested",
                 task_id="dynamic_planning",
             )
+            logger.log(
+                "mail_sent",
+                sender="reviewer_gamma",
+                recipient="lead",
+                subject="plan_review_ack",
+                task_id="dynamic_planning",
+            )
 
             written = runtime.write_live_lead_interaction_artifacts(
                 output_dir=output_dir,
@@ -712,10 +771,12 @@ class RuntimeLogicTests(unittest.TestCase):
             snapshot = written.get("snapshot", {})
             self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
             self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
-            self.assertEqual(snapshot.get("recent_team_message_count"), 1)
+            self.assertEqual(snapshot.get("recent_team_message_count"), 2)
             report_text = (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).read_text(encoding="utf-8")
             self.assertIn("## Pending Approvals", report_text)
             self.assertIn("dynamic_planning", report_text)
+            self.assertIn("plan_review_requested", report_text)
+            self.assertIn("plan_review_ack", report_text)
 
     def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

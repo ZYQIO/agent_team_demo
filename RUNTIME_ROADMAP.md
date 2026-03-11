@@ -20,7 +20,7 @@ Official parity review (2026-03-11):
 - the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, file-backed live command intake, and a terminal lead console, so the remaining gap is richer embedded in-run interaction rather than total absence of approval flow
+- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, file-backed live command intake, a terminal lead console, and an embedded stdin approval prompt, so the remaining gap is richer embedded in-run interaction rather than total absence of approval flow
 
 ## 2. Target Architecture
 
@@ -429,7 +429,7 @@ Priority order for the next work:
 1. Replace the executable `host` session-worker subprocess backend with a true host-backed teammate session
    Goal: preserve the explicit mailbox/result/telemetry contracts while making host execution more authentic than the current `external_process` worker backend.
 2. Upgrade the current lead-facing interaction plus plan approval workflow into a richer embedded in-run control surface
-   Goal: build past live snapshots, file-backed commands, and the terminal lead console toward a closer Claude-style interaction model.
+   Goal: build past live snapshots, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a closer Claude-style interaction model.
 3. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 

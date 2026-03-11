@@ -50,6 +50,7 @@ from .lead_interaction import (
     consume_lead_commands,
     ensure_lead_command_channel,
     list_plan_approval_requests,
+    record_lead_command,
     update_plan_approval_request,
 )
 from .session_state import (
@@ -211,6 +212,186 @@ def refresh_live_lead_interaction(lead_context: AgentContext) -> Dict[str, Any]:
         shared_state=lead_context.shared_state,
         logger=lead_context.logger,
     )
+
+
+def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
+    text = str(raw_command or "").strip()
+    normalized = text.lower()
+    if not text or normalized in {"show", "status"}:
+        return {"action": "show", "raw": text, "task_id": ""}
+    if normalized in {"help", "?"}:
+        return {"action": "help", "raw": text, "task_id": ""}
+    if normalized in {"pause", "quit", "exit"}:
+        return {"action": "pause", "raw": text, "task_id": ""}
+    if normalized in {
+        "approve-all",
+        "approve_all",
+        "approve-all-pending",
+        "approve_all_pending",
+        "approve-all-pending-plans",
+        "approve_all_pending_plans",
+    }:
+        return {"action": "approve_all_pending_plans", "raw": text, "task_id": ""}
+    parts = text.split()
+    if len(parts) == 2:
+        verb = parts[0].strip().lower()
+        task_id = parts[1].strip()
+        if task_id and verb in {"approve", "approve-plan"}:
+            return {"action": "approve_plan", "raw": text, "task_id": task_id}
+        if task_id and verb in {"reject", "reject-plan"}:
+            return {"action": "reject_plan", "raw": text, "task_id": task_id}
+    return {"action": "invalid", "raw": text, "task_id": ""}
+
+
+def _print_interactive_plan_approval_status(
+    pending_plan_approvals: Sequence[Dict[str, Any]],
+) -> None:
+    print("[lead] interactive_pending_approvals:", flush=True)
+    for item in pending_plan_approvals:
+        if not isinstance(item, Mapping):
+            continue
+        print(
+            "[lead] "
+            f"- {item.get('task_id', '')} ({item.get('task_type', '')}) "
+            f"requested_by={item.get('requested_by', '')} "
+            f"proposed_tasks={','.join(item.get('proposed_task_ids', [])) or 'none'} "
+            f"proposed_dependencies={','.join(item.get('proposed_dependency_ids', [])) or 'none'}",
+            flush=True,
+        )
+    print(
+        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | pause",
+        flush=True,
+    )
+
+
+def run_interactive_plan_approval_prompt(
+    lead_context: AgentContext,
+) -> Dict[str, Any]:
+    pending_plan_approvals = list_plan_approval_requests(
+        shared_state=lead_context.shared_state,
+        status=PLAN_APPROVAL_STATUS_PENDING,
+    )
+    if not pending_plan_approvals:
+        return {
+            "applied_task_ids": [],
+            "rejected_task_ids": [],
+            "pending_task_ids": [],
+            "pause_requested": False,
+        }
+
+    lead_context.logger.log(
+        "run_waiting_for_plan_approval_interactive",
+        pending_task_ids=[
+            str(item.get("task_id", "") or "")
+            for item in pending_plan_approvals
+            if str(item.get("task_id", "") or "")
+        ],
+        pending_count=len(pending_plan_approvals),
+    )
+    while pending_plan_approvals:
+        refresh_live_lead_interaction(lead_context=lead_context)
+        _print_interactive_plan_approval_status(pending_plan_approvals=pending_plan_approvals)
+        try:
+            raw_command = input("lead-approval> ")
+        except EOFError:
+            lead_context.logger.log("lead_interactive_input_unavailable", reason="eof")
+            return {
+                "applied_task_ids": [],
+                "rejected_task_ids": [],
+                "pending_task_ids": [
+                    str(item.get("task_id", "") or "")
+                    for item in pending_plan_approvals
+                    if str(item.get("task_id", "") or "")
+                ],
+                "pause_requested": False,
+                "interactive_unavailable": True,
+            }
+        except KeyboardInterrupt:
+            print("", flush=True)
+            lead_context.logger.log("lead_interactive_pause_requested", reason="keyboard_interrupt")
+            return {
+                "applied_task_ids": [],
+                "rejected_task_ids": [],
+                "pending_task_ids": [
+                    str(item.get("task_id", "") or "")
+                    for item in pending_plan_approvals
+                    if str(item.get("task_id", "") or "")
+                ],
+                "pause_requested": True,
+            }
+
+        parsed = parse_interactive_plan_command(raw_command=raw_command)
+        action = str(parsed.get("action", "") or "")
+        task_id = str(parsed.get("task_id", "") or "")
+        task_ids = [task_id] if task_id else []
+        if str(raw_command or "").strip():
+            record_lead_command(
+                shared_state=lead_context.shared_state,
+                command=action,
+                task_ids=task_ids,
+                raw=str(raw_command or ""),
+                valid=action not in {"invalid"},
+                source="interactive",
+            )
+        lead_context.logger.log(
+            "lead_interactive_command_received",
+            action=action,
+            task_id=task_id,
+            raw_command=str(raw_command or ""),
+        )
+        if action == "show":
+            continue
+        if action == "help":
+            print(
+                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | pause",
+                flush=True,
+            )
+            continue
+        if action == "pause":
+            lead_context.logger.log("lead_interactive_pause_requested", reason="user_command")
+            return {
+                "applied_task_ids": [],
+                "rejected_task_ids": [],
+                "pending_task_ids": [
+                    str(item.get("task_id", "") or "")
+                    for item in pending_plan_approvals
+                    if str(item.get("task_id", "") or "")
+                ],
+                "pause_requested": True,
+            }
+        if action == "invalid":
+            print("[lead] invalid command. Type `help` for options.", flush=True)
+            continue
+
+        resolution = apply_requested_plan_approvals(
+            lead_context=lead_context,
+            approve_task_ids=task_ids if action == "approve_plan" else [],
+            reject_task_ids=task_ids if action == "reject_plan" else [],
+            approve_all_pending=action == "approve_all_pending_plans",
+            decision_source="interactive",
+        )
+        if not resolution.get("applied_task_ids") and not resolution.get("rejected_task_ids"):
+            if task_id:
+                print(f"[lead] no matching pending plan for {task_id}", flush=True)
+            else:
+                print("[lead] no pending plans matched that command", flush=True)
+        pending_plan_approvals = list_plan_approval_requests(
+            shared_state=lead_context.shared_state,
+            status=PLAN_APPROVAL_STATUS_PENDING,
+        )
+        if not pending_plan_approvals:
+            refresh_live_lead_interaction(lead_context=lead_context)
+            return {
+                **resolution,
+                "pending_task_ids": [],
+                "pause_requested": False,
+            }
+    return {
+        "applied_task_ids": [],
+        "rejected_task_ids": [],
+        "pending_task_ids": [],
+        "pause_requested": False,
+    }
 
 
 def get_team_profiles(context: AgentContext) -> List[Dict[str, Any]]:
@@ -454,6 +635,7 @@ def run_team(
     reject_plan_task_ids: Optional[Sequence[str]] = None,
     approve_all_pending_plans: bool = False,
     lead_command_wait_seconds: float = 0.0,
+    lead_interactive: bool = False,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / CHECKPOINT_FILENAME
@@ -693,6 +875,7 @@ def run_team(
             "approve_task_ids": [str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
             "reject_task_ids": [str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
             "lead_command_wait_seconds": float(lead_command_wait_seconds),
+            "lead_interactive": bool(lead_interactive),
         },
     )
     shared_state.set("run_resume_from", str(resume_from) if resume_from else "")
@@ -976,6 +1159,28 @@ def run_team(
                     if not pending_plan_approvals:
                         break
                     time.sleep(0.2)
+            if pending_plan_approvals and lead_interactive:
+                interactive_resolution = run_interactive_plan_approval_prompt(
+                    lead_context=lead_context,
+                )
+                if (
+                    interactive_resolution.get("applied_task_ids")
+                    or interactive_resolution.get("rejected_task_ids")
+                ):
+                    ran_lead_task = True
+                pending_plan_approvals = list_plan_approval_requests(
+                    shared_state=lead_context.shared_state,
+                    status=PLAN_APPROVAL_STATUS_PENDING,
+                )
+                if interactive_resolution.get("pause_requested"):
+                    pending_task_ids = [
+                        str(item.get("task_id", "") or "")
+                        for item in pending_plan_approvals
+                        if str(item.get("task_id", "") or "")
+                    ]
+                    interrupted_reason = (
+                        "pending_plan_approval: " + ",".join(pending_task_ids[:5])
+                    )
             if pending_plan_approvals:
                 pending_task_ids = [str(item.get("task_id", "") or "") for item in pending_plan_approvals if str(item.get("task_id", "") or "")]
                 interrupted_reason = (
@@ -990,6 +1195,7 @@ def run_team(
                     approved_task_ids=[str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
                     rejected_task_ids=[str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
                     lead_command_wait_seconds=float(lead_command_wait_seconds),
+                    lead_interactive=bool(lead_interactive),
                 )
                 break
             if board.all_terminal():

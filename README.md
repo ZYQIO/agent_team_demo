@@ -18,6 +18,7 @@ This folder now contains two layers:
   - team progress artifacts and lead-facing progress summary
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
+  - optional embedded `stdin` lead prompt via `--lead-interactive` while the run is waiting on teammate plan approval
   - a terminal `lead_console.py` helper for in-run status inspection and approve/reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
@@ -136,6 +137,22 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
 python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --output agent_team_demo/output \
   --approve-plan dynamic_planning
+```
+
+Use an embedded lead prompt inside the runtime process:
+
+```bash
+python3 agent_team_demo/agent_team_runtime.py \
+  --target . \
+  --output agent_team_demo/output \
+  --teammate-plan-required \
+  --lead-interactive
+```
+
+When a pending teammate plan appears, the runtime will prompt:
+
+```text
+lead-approval> approve dynamic_planning
 ```
 
 Host/workflow metadata can also be overridden directly:

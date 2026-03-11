@@ -69,6 +69,7 @@ from .lead_interaction import (
     list_plan_approval_requests,
     plan_approval_required,
     queue_plan_approval_request,
+    record_lead_command,
     set_lead_interaction_state,
     update_plan_approval_request,
 )
@@ -121,6 +122,7 @@ __all__ = [
     "load_events_for_replay",
     "plan_approval_required",
     "queue_plan_approval_request",
+    "record_lead_command",
     "replay_task_states_from_events",
     "resolve_checkpoint_by_event_index",
     "resolve_checkpoint_by_history_index",

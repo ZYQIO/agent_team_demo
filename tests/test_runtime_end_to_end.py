@@ -572,6 +572,105 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("length_risk_followup", states)
             self.assertTrue(all(state == "completed" for state in states.values()))
 
+    def test_cli_interactive_lead_prompt_applies_pending_plan_without_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "no_heading.md").write_text("plain line\nanother line\n", encoding="utf-8")
+            long_lines = "\n".join([f"# Section {index}" for index in range(1, 220)])
+            (target_dir / "long_doc.md").write_text(long_lines + "\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--teammate-plan-required",
+                "--lead-interactive",
+            ]
+            process = subprocess.Popen(
+                cmd,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            events_path = output_dir / "events.jsonl"
+            lead_interaction_path = output_dir / runtime.LEAD_INTERACTION_FILENAME
+            saw_request = False
+            saw_live_snapshot = False
+            deadline = time.time() + 30
+            stdout = ""
+            stderr = ""
+            try:
+                while time.time() < deadline:
+                    if events_path.exists():
+                        text = events_path.read_text(encoding="utf-8")
+                        if "plan_approval_requested" in text:
+                            saw_request = True
+                    if lead_interaction_path.exists():
+                        try:
+                            interaction = json.loads(lead_interaction_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            interaction = {}
+                        if interaction.get("pending_plan_approval_count") == 1:
+                            saw_live_snapshot = True
+                    if saw_request and saw_live_snapshot:
+                        break
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(saw_request, msg="runtime never emitted plan_approval_requested")
+                self.assertTrue(
+                    saw_live_snapshot,
+                    msg="runtime never wrote a live lead interaction snapshot with pending approvals",
+                )
+                self.assertIsNotNone(process.stdin, msg="interactive runtime stdin should be available")
+                process.stdin.write("approve dynamic_planning\n")
+                process.stdin.flush()
+                stdout, stderr = process.communicate(timeout=90)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=10)
+
+            self.assertEqual(
+                process.returncode,
+                0,
+                msg=f"stdout:\n{stdout}\n\nstderr:\n{stderr}",
+            )
+            self.assertIn("interactive_pending_approvals", stdout)
+            self.assertIn("lead-approval>", stdout)
+            summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.get("interrupted_reason"), "")
+            self.assertEqual(summary.get("pending_plan_approval_count"), 0)
+            lead_interaction = json.loads(
+                (output_dir / runtime.LEAD_INTERACTION_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertEqual(lead_interaction.get("pending_plan_approval_count"), 0)
+            self.assertTrue(
+                any(
+                    item.get("command") == "approve_plan" and item.get("source") == "interactive"
+                    for item in lead_interaction.get("recent_commands", [])
+                    if isinstance(item, dict)
+                )
+            )
+            board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+            states = {item["task_id"]: item["status"] for item in board["tasks"]}
+            self.assertIn("heading_structure_followup", states)
+            self.assertIn("length_risk_followup", states)
+            self.assertTrue(all(state == "completed" for state in states.values()))
+
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = pathlib.Path(tmp)

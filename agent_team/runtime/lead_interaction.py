@@ -72,6 +72,35 @@ def ensure_lead_command_channel(output_dir: pathlib.Path, shared_state: SharedSt
     return command_path
 
 
+def record_lead_command(
+    shared_state: SharedState,
+    *,
+    command: str,
+    task_ids: List[str] | None = None,
+    raw: str = "",
+    valid: bool = True,
+    source: str = "interactive",
+    line_index: int = -1,
+    recent_limit: int = 20,
+) -> Dict[str, Any]:
+    state = get_lead_interaction_state(shared_state)
+    recent_commands = list(state.get("recent_commands", []))
+    record = {
+        "line_index": int(line_index),
+        "received_at": utc_now(),
+        "raw": str(raw or ""),
+        "valid": bool(valid),
+        "command": str(command or ""),
+        "task_ids": [str(task_id) for task_id in (task_ids or []) if str(task_id)],
+        "source": str(source or "interactive"),
+    }
+    recent_commands.append(record)
+    state["recent_commands"] = recent_commands[-max(1, int(recent_limit)) :]
+    state["last_command_at"] = str(record["received_at"])
+    set_lead_interaction_state(shared_state=shared_state, state=state)
+    return record
+
+
 def consume_lead_commands(
     output_dir: pathlib.Path,
     shared_state: SharedState,
@@ -101,6 +130,7 @@ def consume_lead_commands(
             "valid": False,
             "command": "",
             "task_ids": [],
+            "source": "file",
         }
         try:
             payload = json.loads(line)

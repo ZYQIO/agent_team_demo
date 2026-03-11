@@ -83,6 +83,7 @@ from agent_team.runtime import (
     load_checkpoint,
     list_plan_approval_requests,
     queue_plan_approval_request,
+    record_lead_command,
     replay_task_states_from_events,
     resolve_checkpoint_by_event_index,
     resolve_checkpoint_by_history_index,
@@ -102,6 +103,7 @@ from agent_team.runtime.engine import (
     get_lead_name,
     get_team_member_names,
     get_team_profiles,
+    parse_interactive_plan_command,
     profile_has_skill,
     run_lead_task_once as run_lead_task_once_impl,
     run_team as run_team_impl,
@@ -390,6 +392,7 @@ def run_team(
     reject_plan_task_ids: Optional[Sequence[str]] = None,
     approve_all_pending_plans: bool = False,
     lead_command_wait_seconds: float = 0.0,
+    lead_interactive: bool = False,
 ) -> int:
     return run_team_impl(
         goal=goal,
@@ -415,6 +418,7 @@ def run_team(
         reject_plan_task_ids=reject_plan_task_ids,
         approve_all_pending_plans=approve_all_pending_plans,
         lead_command_wait_seconds=lead_command_wait_seconds,
+        lead_interactive=lead_interactive,
         teammate_agent_factory=TeammateAgent,
         external_lead_task_runner=run_external_lead_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
@@ -529,6 +533,11 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help="When plan approval is pending, keep the run alive for this many seconds to consume live lead commands from lead_commands.jsonl before pausing.",
+    )
+    parser.add_argument(
+        "--lead-interactive",
+        action="store_true",
+        help="When plan approval is pending, prompt on stdin for approve/reject commands before pausing.",
     )
     parser.add_argument(
         "--history-replay-report",
@@ -1130,6 +1139,7 @@ if __name__ == "__main__":
             reject_plan_task_ids=reject_plan_task_ids,
             approve_all_pending_plans=bool(args.approve_all_pending_plans),
             lead_command_wait_seconds=float(args.lead_command_wait_seconds),
+            lead_interactive=bool(args.lead_interactive),
         )
     except Exception as exc:
         print(f"[lead] startup_error: {type(exc).__name__}: {exc}", file=sys.stderr)
