@@ -1023,6 +1023,14 @@ def build_lead_interaction_snapshot(
     return {
         "generated_at": utc_now(),
         "lead_name": lead_name,
+        "command_path": str(raw_interaction.get("command_path", "") or ""),
+        "command_cursor": int(raw_interaction.get("command_cursor", 0) or 0),
+        "last_command_at": str(raw_interaction.get("last_command_at", "") or ""),
+        "recent_commands": [
+            dict(item)
+            for item in raw_interaction.get("recent_commands", [])
+            if isinstance(item, dict)
+        ],
         "plan_approval_request_count": len(requests),
         "pending_plan_approval_count": len(pending_requests),
         "plan_approval_requests": requests,
@@ -1051,8 +1059,14 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
             "- Controls: "
             f"approve_all_pending={controls.get('approve_all_pending', False)} "
             f"approve_task_ids={','.join(controls.get('approve_task_ids', [])) or 'none'} "
-            f"reject_task_ids={','.join(controls.get('reject_task_ids', [])) or 'none'}"
+            f"reject_task_ids={','.join(controls.get('reject_task_ids', [])) or 'none'} "
+            f"lead_command_wait_seconds={controls.get('lead_command_wait_seconds', 0)}"
         )
+    lines.append(
+        f"- Command channel: path={snapshot.get('command_path', '') or 'n/a'} "
+        f"cursor={snapshot.get('command_cursor', 0)} "
+        f"last_command_at={snapshot.get('last_command_at', '') or 'n/a'}"
+    )
     lines.append("")
     lines.append("## Pending Approvals")
     lines.append("")
@@ -1081,9 +1095,25 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
         for item in recent_messages:
             if not isinstance(item, dict):
                 continue
+        lines.append(
+            f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
+            f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
+        )
+    lines.append("")
+    lines.append("## Recent Commands")
+    lines.append("")
+    recent_commands = snapshot.get("recent_commands", [])
+    if not isinstance(recent_commands, list) or not recent_commands:
+        lines.append("- none")
+    else:
+        for item in recent_commands:
+            if not isinstance(item, dict):
+                continue
             lines.append(
-                f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
-                f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
+                f"- [{item.get('line_index', '')}] command={item.get('command', '') or 'invalid'} "
+                f"task_ids={','.join(item.get('task_ids', [])) or 'none'} "
+                f"valid={item.get('valid', False)} "
+                f"received_at={item.get('received_at', '') or 'n/a'}"
             )
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text("\n".join(lines), encoding="utf-8")
@@ -1118,6 +1148,11 @@ def append_lead_interaction_to_final_report(report_path: pathlib.Path, snapshot:
                 f"- Latest lead-visible message: {latest.get('sender', '')} -> {latest.get('recipient', '')} "
                 f"{latest.get('subject', '')} task_id={latest.get('task_id', '') or 'n/a'}"
             )
+    if snapshot.get("command_path", ""):
+        lines.append(
+            f"- Lead command channel: {snapshot.get('command_path', '')} "
+            f"(cursor={snapshot.get('command_cursor', 0)})"
+        )
     report_path.write_text(existing.rstrip() + "\n" + "\n".join(lines) + "\n", encoding="utf-8")
     return True
 
@@ -1546,6 +1581,7 @@ def write_artifacts(
         "host_enforcement_path": str(host_enforcement_path),
         "lead_interaction_path": str(lead_interaction_path),
         "lead_interaction_report_path": str(lead_interaction_report_path),
+        "lead_command_path": str(lead_interaction_snapshot.get("command_path", "") or ""),
         "session_boundary_path": str(session_boundary_path),
         "teammate_sessions_path": str(teammate_sessions_path),
         "team_progress_path": str(team_progress_path),

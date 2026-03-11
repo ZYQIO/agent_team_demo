@@ -51,6 +51,7 @@ from agent_team.runtime import (
     CHECKPOINT_VERSION,
     CONTEXT_BOUNDARY_FILENAME,
     HOST_ENFORCEMENT_FILENAME,
+    LEAD_COMMANDS_FILENAME,
     LEAD_INTERACTION_FILENAME,
     LEAD_INTERACTION_REPORT_FILENAME,
     PLAN_APPROVAL_STATUS_APPLIED,
@@ -70,12 +71,14 @@ from agent_team.runtime import (
     build_teammate_sessions_snapshot,
     build_team_progress_snapshot,
     build_task_context_snapshot,
+    consume_lead_commands,
     compute_adjudication,
     compute_evidence_bonus,
     default_event_rewind_branch_output_dir,
     default_history_replay_report_path,
     default_rewind_branch_output_dir,
     derive_evidence_focus_areas,
+    ensure_lead_command_channel,
     get_lead_interaction_state,
     load_checkpoint,
     list_plan_approval_requests,
@@ -385,6 +388,7 @@ def run_team(
     approve_plan_task_ids: Optional[Sequence[str]] = None,
     reject_plan_task_ids: Optional[Sequence[str]] = None,
     approve_all_pending_plans: bool = False,
+    lead_command_wait_seconds: float = 0.0,
 ) -> int:
     return run_team_impl(
         goal=goal,
@@ -409,6 +413,7 @@ def run_team(
         approve_plan_task_ids=approve_plan_task_ids,
         reject_plan_task_ids=reject_plan_task_ids,
         approve_all_pending_plans=approve_all_pending_plans,
+        lead_command_wait_seconds=lead_command_wait_seconds,
         teammate_agent_factory=TeammateAgent,
         external_lead_task_runner=run_external_lead_task,
         run_tmux_analyst_task_once_fn=run_tmux_analyst_task_once,
@@ -517,6 +522,12 @@ def parse_args() -> argparse.Namespace:
         "--approve-all-pending-plans",
         action="store_true",
         help="Automatically approve all pending teammate plan requests during this run.",
+    )
+    parser.add_argument(
+        "--lead-command-wait-seconds",
+        type=float,
+        default=0.0,
+        help="When plan approval is pending, keep the run alive for this many seconds to consume live lead commands from lead_commands.jsonl before pausing.",
     )
     parser.add_argument(
         "--history-replay-report",
@@ -762,6 +773,8 @@ def build_runtime_config_from_args(args: argparse.Namespace) -> RuntimeConfig:
         )
     if args.max_completed_tasks < 0:
         raise ValueError("--max-completed-tasks must be >= 0")
+    if args.lead_command_wait_seconds < 0:
+        raise ValueError("--lead-command-wait-seconds must be >= 0")
     if args.peer_wait_seconds <= 0:
         raise ValueError("--peer-wait-seconds must be > 0")
     if args.evidence_wait_seconds <= 0:
@@ -1115,6 +1128,7 @@ if __name__ == "__main__":
             approve_plan_task_ids=approve_plan_task_ids,
             reject_plan_task_ids=reject_plan_task_ids,
             approve_all_pending_plans=bool(args.approve_all_pending_plans),
+            lead_command_wait_seconds=float(args.lead_command_wait_seconds),
         )
     except Exception as exc:
         print(f"[lead] startup_error: {type(exc).__name__}: {exc}", file=sys.stderr)

@@ -20,7 +20,7 @@ Official parity review (2026-03-11):
 - the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slice now adds artifact-backed lead interaction plus resumable CLI plan approval, so the remaining gap is live in-run interaction rather than total absence of approval flow
+- latest runtime slice now adds artifact-backed lead interaction plus resumable CLI plan approval and file-backed live command intake, so the remaining gap is richer in-run interaction rather than total absence of approval flow
 
 ## 2. Target Architecture
 

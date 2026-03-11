@@ -609,6 +609,46 @@ class RuntimeLogicTests(unittest.TestCase):
             applied_request = interaction.get("plan_approval_requests", {}).get("dynamic_planning", {})
             self.assertEqual(applied_request.get("status"), runtime.PLAN_APPROVAL_STATUS_APPLIED)
 
+    def test_consume_lead_commands_reads_new_commands_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            shared_state = runtime.SharedState()
+
+            command_path = runtime.ensure_lead_command_channel(
+                output_dir=output_dir,
+                shared_state=shared_state,
+            )
+            command_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"command": "approve_plan", "task_id": "dynamic_planning"}, ensure_ascii=False),
+                        json.dumps({"command": "reject_plan", "task_ids": ["repo_dynamic_planning"]}, ensure_ascii=False),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            first = runtime.consume_lead_commands(
+                output_dir=output_dir,
+                shared_state=shared_state,
+                logger=logger,
+            )
+            second = runtime.consume_lead_commands(
+                output_dir=output_dir,
+                shared_state=shared_state,
+                logger=logger,
+            )
+
+            self.assertEqual(first["approve_task_ids"], ["dynamic_planning"])
+            self.assertEqual(first["reject_task_ids"], ["repo_dynamic_planning"])
+            self.assertEqual(first["consumed_count"], 2)
+            self.assertEqual(second["consumed_count"], 0)
+            interaction = runtime.get_lead_interaction_state(shared_state)
+            self.assertEqual(interaction.get("command_cursor"), 2)
+            self.assertEqual(len(interaction.get("recent_commands", [])), 2)
+
     def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)

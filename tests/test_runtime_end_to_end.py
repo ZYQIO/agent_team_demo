@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from typing import Any, Dict, Optional
 
@@ -430,6 +431,98 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 applied.get("dynamic_planning", {}).get("status"),
                 runtime.PLAN_APPROVAL_STATUS_APPLIED,
             )
+
+    def test_cli_live_lead_command_applies_pending_plan_without_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target_docs"
+            output_dir = root / "runtime_output"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "no_heading.md").write_text("plain line\nanother line\n", encoding="utf-8")
+            long_lines = "\n".join([f"# Section {index}" for index in range(1, 220)])
+            (target_dir / "long_doc.md").write_text(long_lines + "\n", encoding="utf-8")
+
+            cmd = [
+                sys.executable,
+                str(MODULE_DIR / "agent_team_runtime.py"),
+                "--target",
+                str(target_dir),
+                "--output",
+                str(output_dir),
+                "--provider",
+                "heuristic",
+                "--peer-wait-seconds",
+                "1",
+                "--evidence-wait-seconds",
+                "1",
+                "--teammate-plan-required",
+                "--lead-command-wait-seconds",
+                "10",
+            ]
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            events_path = output_dir / "events.jsonl"
+            command_path = output_dir / runtime.LEAD_COMMANDS_FILENAME
+            saw_request = False
+            deadline = time.time() + 30
+            try:
+                while time.time() < deadline:
+                    if events_path.exists():
+                        text = events_path.read_text(encoding="utf-8")
+                        if "plan_approval_requested" in text:
+                            saw_request = True
+                            break
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(saw_request, msg="runtime never emitted plan_approval_requested")
+                with command_path.open("a", encoding="utf-8") as fh:
+                    fh.write(
+                        json.dumps(
+                            {"command": "approve_plan", "task_id": "dynamic_planning"},
+                            ensure_ascii=False,
+                        )
+                        + "\n"
+                    )
+                stdout, stderr = process.communicate(timeout=90)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.communicate(timeout=10)
+
+            self.assertEqual(
+                process.returncode,
+                0,
+                msg=f"stdout:\n{stdout}\n\nstderr:\n{stderr}",
+            )
+            summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
+            self.assertEqual(summary.get("interrupted_reason"), "")
+            self.assertEqual(summary.get("pending_plan_approval_count"), 0)
+            self.assertEqual(
+                pathlib.Path(str(summary.get("lead_command_path", ""))).resolve(),
+                command_path.resolve(),
+            )
+            lead_interaction = json.loads(
+                (output_dir / runtime.LEAD_INTERACTION_FILENAME).read_text(encoding="utf-8")
+            )
+            self.assertGreaterEqual(lead_interaction.get("command_cursor", 0), 1)
+            self.assertEqual(lead_interaction.get("pending_plan_approval_count"), 0)
+            self.assertTrue(
+                any(
+                    item.get("command") == "approve_plan"
+                    for item in lead_interaction.get("recent_commands", [])
+                    if isinstance(item, dict)
+                )
+            )
+            board = json.loads((output_dir / "task_board.json").read_text(encoding="utf-8"))
+            states = {item["task_id"]: item["status"] for item in board["tasks"]}
+            self.assertIn("heading_structure_followup", states)
+            self.assertIn("length_risk_followup", states)
+            self.assertTrue(all(state == "completed" for state in states.values()))
 
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

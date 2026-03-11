@@ -17,6 +17,7 @@ REQUIRED_FILES = [
     "shared_state.json",
     "file_locks.json",
     "host_enforcement.json",
+    "lead_commands.jsonl",
     "lead_interaction.json",
     "lead_interaction.md",
     "session_boundaries.json",
@@ -176,6 +177,12 @@ def main() -> int:
     lead_interaction_path = pathlib.Path(raw_lead_interaction_path).resolve()
     if not lead_interaction_path.exists():
         return fail(f"Referenced lead interaction artifact does not exist: {lead_interaction_path}")
+    raw_lead_command_path = str(summary.get("lead_command_path", "") or "")
+    if not raw_lead_command_path:
+        return fail("Missing lead command path in run_summary.json: lead_command_path")
+    lead_command_path = pathlib.Path(raw_lead_command_path).resolve()
+    if not lead_command_path.exists():
+        return fail(f"Referenced lead command artifact does not exist: {lead_command_path}")
     raw_lead_interaction_report_path = str(summary.get("lead_interaction_report_path", "") or "")
     if not raw_lead_interaction_report_path:
         return fail("Missing lead interaction report path in run_summary.json: lead_interaction_report_path")
@@ -187,9 +194,13 @@ def main() -> int:
     lead_interaction = load_json(output_dir / "lead_interaction.json")
     if "pending_plan_approval_count" not in lead_interaction:
         return fail("lead_interaction.json must contain pending_plan_approval_count")
+    if pathlib.Path(str(lead_interaction.get("command_path", "") or "")).resolve() != lead_command_path:
+        return fail("lead_interaction.json command_path does not match run_summary lead_command_path")
     lead_interaction_report = (output_dir / "lead_interaction.md").read_text(encoding="utf-8")
     if "## Pending Approvals" not in lead_interaction_report:
         return fail("lead_interaction.md is missing the Pending Approvals section")
+    if "## Recent Commands" not in lead_interaction_report:
+        return fail("lead_interaction.md is missing the Recent Commands section")
     raw_session_boundary_path = str(summary.get("session_boundary_path", "") or "")
     if not raw_session_boundary_path:
         return fail("Missing session boundary path in run_summary.json: session_boundary_path")

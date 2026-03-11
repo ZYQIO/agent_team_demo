@@ -37,10 +37,10 @@ Direction review (2026-03-10, analyst checkpoint):
 - built-in workflow analyst task paths now also cross explicit external assignment/result/telemetry contracts
 - the remaining host gap is no longer task-path coverage; it is replacing the `external_process` session-worker backend with a true host-backed teammate session while preserving the explicit contract model
 
-Official parity check (2026-03-10, against current Claude Code Agent Teams docs):
+Official parity check (2026-03-11, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
 - the backlog has some drift: replay/rewind depth and workflow-specific debate mechanics are ahead of official parity-critical features
-- the clearest under-modeled official features are lead-facing teammate interaction and plan approval before teammate-driven task-list changes
+- the clearest under-modeled official features are richer lead-facing teammate interaction and stronger host-native teammate sessions; file-backed live plan approval now exists, but it is still not a first-class in-run UI
 
 ## Priority Order
 

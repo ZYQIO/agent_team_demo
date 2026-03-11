@@ -46,6 +46,8 @@ from .lead_interaction import (
     PLAN_APPROVAL_STATUS_APPLIED,
     PLAN_APPROVAL_STATUS_PENDING,
     PLAN_APPROVAL_STATUS_REJECTED,
+    consume_lead_commands,
+    ensure_lead_command_channel,
     list_plan_approval_requests,
     update_plan_approval_request,
 )
@@ -177,6 +179,28 @@ def apply_requested_plan_approvals(
         "applied_task_ids": applied_task_ids,
         "rejected_task_ids": rejected_task_ids,
         "pending_task_ids": remaining_task_ids,
+    }
+
+
+def apply_lead_commands(
+    lead_context: AgentContext,
+    decision_source: str = "lead_command",
+) -> Dict[str, Any]:
+    consumed = consume_lead_commands(
+        output_dir=lead_context.output_dir,
+        shared_state=lead_context.shared_state,
+        logger=lead_context.logger,
+    )
+    resolution = apply_requested_plan_approvals(
+        lead_context=lead_context,
+        approve_task_ids=consumed.get("approve_task_ids", []),
+        reject_task_ids=consumed.get("reject_task_ids", []),
+        approve_all_pending=bool(consumed.get("approve_all_pending_plans", False)),
+        decision_source=decision_source,
+    )
+    return {
+        **consumed,
+        **resolution,
     }
 
 
@@ -420,6 +444,7 @@ def run_team(
     approve_plan_task_ids: Optional[Sequence[str]] = None,
     reject_plan_task_ids: Optional[Sequence[str]] = None,
     approve_all_pending_plans: bool = False,
+    lead_command_wait_seconds: float = 0.0,
 ) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / CHECKPOINT_FILENAME
@@ -658,6 +683,7 @@ def run_team(
             "approve_all_pending": bool(approve_all_pending_plans),
             "approve_task_ids": [str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
             "reject_task_ids": [str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
+            "lead_command_wait_seconds": float(lead_command_wait_seconds),
         },
     )
     shared_state.set("run_resume_from", str(resume_from) if resume_from else "")
@@ -686,6 +712,7 @@ def run_team(
     shared_state.set("run_rewind_seed_event_count", effective_rewind_seed_event_count)
     shared_state.set("tmux_cleanup_deferred_for_resume", False)
     shared_state.set("tmux_cleanup_deferred_reason", "")
+    ensure_lead_command_channel(output_dir=output_dir, shared_state=shared_state)
     session_registry = TeammateSessionRegistry(shared_state=shared_state)
     initial_session_states: Dict[str, Dict[str, Any]] = {}
     for profile in profiles:
@@ -825,6 +852,7 @@ def run_team(
     max_completed_tasks = max(0, int(max_completed_tasks))
     try:
         while True:
+            live_command_resolution = apply_lead_commands(lead_context=lead_context)
             approval_resolution = apply_requested_plan_approvals(
                 lead_context=lead_context,
                 approve_task_ids=approve_plan_task_ids,
@@ -833,7 +861,10 @@ def run_team(
                 decision_source="cli",
             )
             ran_approval_action = bool(
-                approval_resolution.get("applied_task_ids")
+                live_command_resolution.get("applied_task_ids")
+                or live_command_resolution.get("rejected_task_ids")
+                or live_command_resolution.get("consumed_count")
+                or approval_resolution.get("applied_task_ids")
                 or approval_resolution.get("rejected_task_ids")
             )
             ran_tmux_task = False
@@ -894,14 +925,44 @@ def run_team(
                 approve_all_pending=approve_all_pending_plans,
                 decision_source="cli",
             )
+            live_command_resolution = apply_lead_commands(lead_context=lead_context)
             ran_lead_task = ran_lead_task or bool(
-                approval_resolution.get("applied_task_ids")
+                live_command_resolution.get("applied_task_ids")
+                or live_command_resolution.get("rejected_task_ids")
+                or approval_resolution.get("applied_task_ids")
                 or approval_resolution.get("rejected_task_ids")
             )
             pending_plan_approvals = list_plan_approval_requests(
                 shared_state=lead_context.shared_state,
                 status=PLAN_APPROVAL_STATUS_PENDING,
             )
+            if pending_plan_approvals:
+                if lead_command_wait_seconds > 0:
+                    logger.log(
+                        "run_waiting_for_plan_approval_live",
+                        pending_task_ids=[
+                            str(item.get("task_id", "") or "")
+                            for item in pending_plan_approvals
+                            if str(item.get("task_id", "") or "")
+                        ],
+                        pending_count=len(pending_plan_approvals),
+                        lead_command_wait_seconds=float(lead_command_wait_seconds),
+                    )
+                wait_deadline = time.time() + max(0.0, float(lead_command_wait_seconds))
+                while pending_plan_approvals and time.time() < wait_deadline:
+                    live_command_resolution = apply_lead_commands(lead_context=lead_context)
+                    if (
+                        live_command_resolution.get("applied_task_ids")
+                        or live_command_resolution.get("rejected_task_ids")
+                    ):
+                        ran_lead_task = True
+                    pending_plan_approvals = list_plan_approval_requests(
+                        shared_state=lead_context.shared_state,
+                        status=PLAN_APPROVAL_STATUS_PENDING,
+                    )
+                    if not pending_plan_approvals:
+                        break
+                    time.sleep(0.2)
             if pending_plan_approvals:
                 pending_task_ids = [str(item.get("task_id", "") or "") for item in pending_plan_approvals if str(item.get("task_id", "") or "")]
                 interrupted_reason = (
@@ -914,6 +975,7 @@ def run_team(
                     approve_all_pending=bool(approve_all_pending_plans),
                     approved_task_ids=[str(task_id) for task_id in (approve_plan_task_ids or []) if str(task_id)],
                     rejected_task_ids=[str(task_id) for task_id in (reject_plan_task_ids or []) if str(task_id)],
+                    lead_command_wait_seconds=float(lead_command_wait_seconds),
                 )
                 break
             if board.all_terminal():

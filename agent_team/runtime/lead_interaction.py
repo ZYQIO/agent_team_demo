@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import pathlib
 from typing import Any, Dict, List, Mapping, MutableMapping
 
 from ..core import SharedState, utc_now
@@ -7,6 +9,7 @@ from .task_mutations import proposed_task_mutation_summary
 
 
 LEAD_INTERACTION_STATE_KEY = "lead_interaction"
+LEAD_COMMANDS_FILENAME = "lead_commands.jsonl"
 PLAN_APPROVAL_STATUS_PENDING = "pending"
 PLAN_APPROVAL_STATUS_APPLIED = "applied"
 PLAN_APPROVAL_STATUS_REJECTED = "rejected"
@@ -15,6 +18,10 @@ PLAN_APPROVAL_STATUS_REJECTED = "rejected"
 def _empty_state() -> Dict[str, Any]:
     return {
         "updated_at": "",
+        "command_path": "",
+        "command_cursor": 0,
+        "last_command_at": "",
+        "recent_commands": [],
         "plan_approval_requests": {},
     }
 
@@ -30,6 +37,15 @@ def _normalized_state(value: Any) -> Dict[str, Any]:
             for task_id, item in raw_requests.items()
             if str(task_id) and isinstance(item, Mapping)
         }
+    state["command_path"] = str(value.get("command_path", "") or "")
+    try:
+        state["command_cursor"] = int(value.get("command_cursor", 0) or 0)
+    except (TypeError, ValueError):
+        state["command_cursor"] = 0
+    state["last_command_at"] = str(value.get("last_command_at", "") or "")
+    raw_recent_commands = value.get("recent_commands", [])
+    if isinstance(raw_recent_commands, list):
+        state["recent_commands"] = [dict(item) for item in raw_recent_commands if isinstance(item, Mapping)]
     state["updated_at"] = str(value.get("updated_at", "") or "")
     return state
 
@@ -43,6 +59,117 @@ def set_lead_interaction_state(shared_state: SharedState, state: Mapping[str, An
     normalized["updated_at"] = utc_now()
     shared_state.set(LEAD_INTERACTION_STATE_KEY, normalized)
     return normalized
+
+
+def ensure_lead_command_channel(output_dir: pathlib.Path, shared_state: SharedState) -> pathlib.Path:
+    command_path = pathlib.Path(output_dir) / LEAD_COMMANDS_FILENAME
+    command_path.parent.mkdir(parents=True, exist_ok=True)
+    command_path.touch(exist_ok=True)
+    state = get_lead_interaction_state(shared_state)
+    if str(state.get("command_path", "") or "") != str(command_path):
+        state["command_path"] = str(command_path)
+        set_lead_interaction_state(shared_state=shared_state, state=state)
+    return command_path
+
+
+def consume_lead_commands(
+    output_dir: pathlib.Path,
+    shared_state: SharedState,
+    logger: Any,
+    recent_limit: int = 20,
+) -> Dict[str, Any]:
+    command_path = ensure_lead_command_channel(output_dir=output_dir, shared_state=shared_state)
+    state = get_lead_interaction_state(shared_state)
+    cursor = max(0, int(state.get("command_cursor", 0) or 0))
+    recent_commands = list(state.get("recent_commands", []))
+    approve_task_ids: List[str] = []
+    reject_task_ids: List[str] = []
+    approve_all_pending = False
+    consumed_count = 0
+
+    lines = command_path.read_text(encoding="utf-8").splitlines()
+    for line_index, raw_line in enumerate(lines[cursor:], start=cursor):
+        line = raw_line.strip()
+        if not line:
+            continue
+        received_at = utc_now()
+        consumed_count += 1
+        command_record: Dict[str, Any] = {
+            "line_index": line_index,
+            "received_at": received_at,
+            "raw": line,
+            "valid": False,
+            "command": "",
+            "task_ids": [],
+        }
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            logger.log(
+                "lead_command_invalid",
+                line_index=line_index,
+                error="invalid_json",
+            )
+            recent_commands.append(command_record)
+            continue
+        if not isinstance(payload, Mapping):
+            logger.log(
+                "lead_command_invalid",
+                line_index=line_index,
+                error="invalid_payload",
+            )
+            recent_commands.append(command_record)
+            continue
+        command = str(payload.get("command", "") or "").strip().lower()
+        raw_task_ids = payload.get("task_ids", [])
+        task_ids: List[str] = []
+        if isinstance(raw_task_ids, list):
+            task_ids.extend(str(item) for item in raw_task_ids if str(item))
+        task_id = str(payload.get("task_id", "") or "")
+        if task_id:
+            task_ids.append(task_id)
+        command_record.update(
+            {
+                "valid": True,
+                "command": command,
+                "task_ids": list(task_ids),
+            }
+        )
+        recent_commands.append(command_record)
+        if command == "approve_plan":
+            approve_task_ids.extend(task_ids)
+        elif command == "reject_plan":
+            reject_task_ids.extend(task_ids)
+        elif command == "approve_all_pending_plans":
+            approve_all_pending = True
+        else:
+            command_record["valid"] = False
+            logger.log(
+                "lead_command_invalid",
+                line_index=line_index,
+                error="unsupported_command",
+                command=command,
+            )
+            continue
+        logger.log(
+            "lead_command_received",
+            line_index=line_index,
+            command=command,
+            task_ids=task_ids,
+        )
+
+    state["command_cursor"] = len(lines)
+    if consumed_count:
+        state["last_command_at"] = utc_now()
+    state["recent_commands"] = recent_commands[-max(1, int(recent_limit)) :]
+    set_lead_interaction_state(shared_state=shared_state, state=state)
+    return {
+        "approve_task_ids": approve_task_ids,
+        "reject_task_ids": reject_task_ids,
+        "approve_all_pending_plans": approve_all_pending,
+        "consumed_count": consumed_count,
+        "command_path": str(command_path),
+    }
 
 
 def plan_approval_required(shared_state: SharedState, requested_by: str, task_mutations: Any) -> bool:
