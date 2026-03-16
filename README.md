@@ -269,7 +269,7 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode host
 ```
 
-Host mode currently uses external session-worker subprocesses for the built-in workflow teammate task paths: analyst scans/follow-ups plus mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer planning tasks (`dynamic_planning`, `repo_dynamic_planning`), reviewer `llm_synthesis`, report tasks (`recommendation_pack`, `repo_recommendation_pack`), and teammate auto-replies. The remaining host gap is backend authenticity: these are still session-worker subprocesses, not true host-backed teammate sessions.
+Host mode currently uses external session-worker subprocesses for the built-in workflow teammate task paths: analyst scans/follow-ups plus mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer planning tasks (`dynamic_planning`, `repo_dynamic_planning`), reviewer `llm_synthesis`, report tasks (`recommendation_pack`, `repo_recommendation_pack`), and teammate auto-replies. `host_enforcement.json` now records that path explicitly as `host_session_backend=external_process`, so host-mode artifacts no longer describe those workers as true host-native teammate sessions.
 
 Resume from a checkpoint:
 
@@ -346,8 +346,8 @@ After runtime execution, output directory contains:
 - `shared_state.json`: shared runtime data
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
-- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from actually active host-native isolation and showing when `host` mode is truly running with `host_managed` boundaries
-- `session_boundaries.json`: host/session boundary posture for each teammate session, including workspace scope, isolated temp/session directories, and host-mode descriptors such as `host://<host-kind>/sessions/<session_id>/...` when host transport is active
+- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from the active backend in use and recording when host mode is still transport-backed through `host_session_backend=external_process`
+- `session_boundaries.json`: host/session boundary posture for each teammate session, including `transport_backend`, workspace scope, isolated temp/session directories, and host-native descriptors such as `host://<host-kind>/sessions/<session_id>/...` only when a true host-native workspace boundary is active
 - `teammate_sessions.json`: persistent per-agent session ids, transport, transport-session names, memory, recent task/message history, and resume continuity metadata
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity
 - `team_progress.md`: lead-facing team progress dashboard

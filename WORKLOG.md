@@ -13,6 +13,18 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-16 - Host backend authenticity checkpoint
+- Goal: stop reporting the current host session-worker subprocess backend as if it were already a true host-native teammate session
+- Changes:
+  - added explicit host session backend metadata so runtime enforcement can record when `--teammate-mode host` is still backed by the current `external_process` transport implementation
+  - downgraded host-mode runtime enforcement from `host_managed` to transport-backed enforcement when the active backend is the external session-worker subprocess, instead of treating that path as host-native isolation
+  - extended teammate session boundaries with `transport_backend` and reclassified host external-process sessions as transport-backed worker subprocess boundaries while keeping inline host fallback work runtime-emulated
+  - updated host-mode end-to-end coverage so artifacts now assert `host_session_backend=external_process` instead of `host_native_session`
+- Validation:
+  - `python -m py_compile agent_team\\host.py agent_team\\runtime\\engine.py agent_team\\runtime\\session_state.py agent_team\\transports\\host.py agent_team\\runtime\\persistence.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted tests passed for host enforcement downgrade, host boundary classification, inline host fallback boundary recording, and host-mode CLI artifact output
+- Commit: pending current round
+- Next implication: the remaining host gap is now represented more honestly in artifacts and tests, so the next transport round can focus on replacing the backend rather than arguing about what the current backend is
 ### 2026-03-11 - Embedded lead prompt checkpoint
 - Goal: move lead plan approval one step closer to an embedded in-run control surface instead of depending on a separate console or file edit workflow
 - Changes:

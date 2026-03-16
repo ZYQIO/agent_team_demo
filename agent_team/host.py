@@ -30,6 +30,18 @@ def _normalize_capabilities(value: Any) -> Dict[str, Any]:
     return {str(key): value[key] for key in value}
 
 
+def _dedupe_string_list(items: List[str]) -> List[str]:
+    seen: set[str] = set()
+    result: List[str] = []
+    for item in items:
+        normalized = str(item or "")
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
 def _default_runtime_enforcement(
     host_metadata: Mapping[str, Any],
     runtime_config: Mapping[str, Any],
@@ -93,6 +105,10 @@ def _default_runtime_enforcement(
         "limits": _normalize_string_list(host_metadata.get("limits", [])),
         "note": str(host_metadata.get("note", "") or ""),
         "notes": notes,
+        "host_session_backend": "",
+        "host_session_backend_source": "",
+        "host_session_backend_session_isolation_active": False,
+        "host_session_backend_workspace_isolation_active": False,
     }
 
 
@@ -212,7 +228,103 @@ class HostAdapter:
             "limits": _normalize_string_list(metadata.get("limits", [])),
             "note": str(self.config.note or ""),
             "notes": notes,
+            "host_session_backend": "",
+            "host_session_backend_source": "",
+            "host_session_backend_session_isolation_active": False,
+            "host_session_backend_workspace_isolation_active": False,
         }
+
+
+def apply_host_session_backend_enforcement(
+    enforcement: Mapping[str, Any],
+    backend: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    raw_backend = dict(backend or {})
+    normalized = {
+        "host_kind": str(enforcement.get("host_kind", "") or ""),
+        "configured_session_transport": str(enforcement.get("configured_session_transport", "") or ""),
+        "requested_teammate_mode": str(enforcement.get("requested_teammate_mode", "") or "in-process"),
+        "session_enforcement": str(enforcement.get("session_enforcement", "") or "runtime_managed"),
+        "workspace_enforcement": str(enforcement.get("workspace_enforcement", "") or "runtime_managed"),
+        "host_native_session_active": bool(enforcement.get("host_native_session_active", False)),
+        "host_native_workspace_active": bool(enforcement.get("host_native_workspace_active", False)),
+        "host_managed_context_requested": bool(
+            enforcement.get("host_managed_context_requested", True)
+        ),
+        "host_managed_context_active": bool(enforcement.get("host_managed_context_active", False)),
+        "effective_boundary_source": str(enforcement.get("effective_boundary_source", "") or "runtime"),
+        "effective_boundary_strength": str(
+            enforcement.get("effective_boundary_strength", "") or "emulated"
+        ),
+        "capabilities": _normalize_capabilities(enforcement.get("capabilities", {})),
+        "limits": _normalize_string_list(enforcement.get("limits", [])),
+        "note": str(enforcement.get("note", "") or ""),
+        "notes": _normalize_string_list(enforcement.get("notes", [])),
+        "host_session_backend": str(
+            raw_backend.get("backend", "") or enforcement.get("host_session_backend", "") or ""
+        ),
+        "host_session_backend_source": str(
+            raw_backend.get("source", "")
+            or enforcement.get("host_session_backend_source", "")
+            or ""
+        ),
+        "host_session_backend_session_isolation_active": bool(
+            raw_backend.get(
+                "session_isolation_active",
+                enforcement.get("host_session_backend_session_isolation_active", False),
+            )
+        ),
+        "host_session_backend_workspace_isolation_active": bool(
+            raw_backend.get(
+                "workspace_isolation_active",
+                enforcement.get("host_session_backend_workspace_isolation_active", False),
+            )
+        ),
+    }
+    backend_name = normalized["host_session_backend"]
+    if not backend_name or backend_name == "host_native":
+        return normalized
+
+    capabilities = normalized["capabilities"]
+    host_supports_native_sessions = bool(capabilities.get("independent_sessions", False))
+    host_supports_workspace_isolation = bool(capabilities.get("workspace_isolation", False))
+    host_supports_managed_context = bool(capabilities.get("auto_context_files", False))
+    session_isolation_active = bool(normalized["host_session_backend_session_isolation_active"])
+    workspace_isolation_active = bool(normalized["host_session_backend_workspace_isolation_active"])
+
+    normalized["host_native_session_active"] = False
+    normalized["host_native_workspace_active"] = False
+    normalized["host_managed_context_active"] = False
+    if normalized["requested_teammate_mode"] == "host" and session_isolation_active:
+        normalized["session_enforcement"] = "transport_managed"
+    normalized["workspace_enforcement"] = (
+        "transport_managed" if workspace_isolation_active else "runtime_managed"
+    )
+    normalized["effective_boundary_source"] = str(
+        normalized["host_session_backend_source"] or "transport"
+    )
+    normalized["effective_boundary_strength"] = "medium" if session_isolation_active else "emulated"
+
+    notes = [
+        item
+        for item in normalized["notes"]
+        if item != "host_transport_manages_session_boundaries"
+    ]
+    notes.append(f"host_session_backend_{backend_name}")
+    if normalized["requested_teammate_mode"] == "host" and backend_name == "external_process":
+        notes.append("requested_host_sessions_backed_by_transport_process")
+    if host_supports_native_sessions:
+        notes.append("host_independent_sessions_advertised_only")
+    if host_supports_workspace_isolation and not workspace_isolation_active:
+        notes.append("host_workspace_isolation_advertised_only")
+    if (
+        normalized["host_managed_context_requested"]
+        and host_supports_managed_context
+        and not normalized["host_managed_context_active"]
+    ):
+        notes.append("host_managed_context_not_bound_to_runtime")
+    normalized["notes"] = _dedupe_string_list(notes)
+    return normalized
 
 
 def build_host_enforcement_snapshot(shared_state: SharedState) -> Dict[str, Any]:
@@ -283,7 +395,21 @@ def build_host_enforcement_snapshot(shared_state: SharedState) -> Dict[str, Any]
             ),
             "note": str(enforcement.get("note", "") or host_metadata.get("note", "") or ""),
             "notes": _normalize_string_list(enforcement.get("notes", [])),
+            "host_session_backend": str(
+                enforcement.get("host_session_backend", "") or ""
+            ),
+            "host_session_backend_source": str(
+                enforcement.get("host_session_backend_source", "") or ""
+            ),
+            "host_session_backend_session_isolation_active": bool(
+                enforcement.get("host_session_backend_session_isolation_active", False)
+            ),
+            "host_session_backend_workspace_isolation_active": bool(
+                enforcement.get("host_session_backend_workspace_isolation_active", False)
+            ),
         }
+    if enforcement.get("host_session_backend", ""):
+        enforcement = apply_host_session_backend_enforcement(enforcement)
     return {
         "generated_at": utc_now(),
         "host": {

@@ -1307,29 +1307,35 @@ class RuntimeEndToEndTests(unittest.TestCase):
             host_enforcement = json.loads(
                 (output_dir / runtime.HOST_ENFORCEMENT_FILENAME).read_text(encoding="utf-8")
             )
-            self.assertEqual(host_enforcement.get("session_enforcement"), "host_managed")
-            self.assertEqual(host_enforcement.get("workspace_enforcement"), "host_managed")
-            self.assertTrue(host_enforcement.get("host_native_session_active"))
-            self.assertTrue(host_enforcement.get("host_native_workspace_active"))
+            self.assertEqual(host_enforcement.get("session_enforcement"), "transport_managed")
+            self.assertEqual(host_enforcement.get("workspace_enforcement"), "runtime_managed")
+            self.assertFalse(host_enforcement.get("host_native_session_active"))
+            self.assertFalse(host_enforcement.get("host_native_workspace_active"))
+            self.assertEqual(host_enforcement.get("host_session_backend"), "external_process")
+            self.assertTrue(host_enforcement.get("host_session_backend_session_isolation_active"))
+            self.assertFalse(host_enforcement.get("host_session_backend_workspace_isolation_active"))
 
             session_boundaries = json.loads(
                 (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")
             )
             self.assertGreaterEqual(
-                session_boundaries.get("boundary_mode_counts", {}).get("host_native_session", 0),
+                session_boundaries.get("boundary_mode_counts", {}).get("worker_subprocess_session", 0),
                 1,
             )
             host_boundaries = [
                 item
                 for item in session_boundaries.get("sessions", [])
-                if isinstance(item, dict) and item.get("boundary_mode") == "host_native_session"
+                if isinstance(item, dict)
+                and item.get("boundary_mode") == "worker_subprocess_session"
+                and item.get("transport") == "host"
             ]
             self.assertGreaterEqual(len(host_boundaries), 1)
             first_boundary = host_boundaries[0]
             self.assertEqual(first_boundary.get("transport"), "host")
+            self.assertEqual(first_boundary.get("transport_backend"), "external_process")
             self.assertTrue(str(first_boundary.get("transport_session_name", "")).startswith("claude-code:"))
-            self.assertTrue(str(first_boundary.get("workspace_root", "")).startswith("host://claude-code/sessions/"))
-            self.assertTrue(first_boundary.get("workspace_isolation_active"))
+            self.assertEqual(str(first_boundary.get("workspace_root", "") or ""), "")
+            self.assertFalse(first_boundary.get("workspace_isolation_active"))
 
             teammate_sessions = json.loads(
                 (output_dir / runtime.TEAMMATE_SESSIONS_FILENAME).read_text(encoding="utf-8")

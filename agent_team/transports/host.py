@@ -29,11 +29,21 @@ HOST_WORKER_RUNTIME_ATTR = "_host_worker_runtime"
 HOST_EXTERNAL_WORKER_NAMES_ATTR = "_host_external_worker_names"
 HOST_ASSIGNED_TASK_LOCKS_ATTR = "_host_assigned_task_locks"
 HOST_WORKER_PAYLOAD_DIRNAME = "_host_session_workers"
+HOST_SESSION_BACKEND_EXTERNAL_PROCESS = "external_process"
 
 
 class _NullLogger:
     def log(self, _event: str, **_fields: Any) -> None:
         return
+
+
+def host_session_backend_metadata() -> Dict[str, Any]:
+    return {
+        "backend": HOST_SESSION_BACKEND_EXTERNAL_PROCESS,
+        "source": "transport",
+        "session_isolation_active": True,
+        "workspace_isolation_active": False,
+    }
 
 
 class _StaticTaskBoard:
@@ -84,7 +94,7 @@ class _StaticTaskBoard:
 
 
 class _HostSessionWorkerProcess:
-    worker_backend = "external_process"
+    worker_backend = HOST_SESSION_BACKEND_EXTERNAL_PROCESS
 
     def __init__(
         self,
@@ -184,7 +194,14 @@ def _host_transport_identity(lead_context: Any, profile: AgentProfile) -> Dict[s
     host_kind = str(host_metadata.get("kind", "host") or "host")
     session_transport = str(host_metadata.get("session_transport", "host") or "host")
     transport_session_name = f"{host_kind}:{profile.name}"
-    workspace_isolation_active = bool(host_enforcement.get("host_native_workspace_active", False))
+    worker_backend = _host_worker_backend(
+        lead_context=lead_context,
+        worker_name=profile.name,
+    )
+    host_native_backend_active = worker_backend in {"", "host_native"}
+    workspace_isolation_active = bool(
+        host_enforcement.get("host_native_workspace_active", False)
+    ) and host_native_backend_active
     workspace_scope = ""
     workspace_root = ""
     workspace_workdir = ""
@@ -251,6 +268,10 @@ def _record_host_boundary(
         agent_name=profile.name,
         transport="host",
         transport_session_name=str(transport_identity.get("transport_session_name", "") or ""),
+        transport_backend=_host_worker_backend(
+            lead_context=lead_context,
+            worker_name=profile.name,
+        ),
         workspace_root=str(transport_identity.get("workspace_root", "") or ""),
         workspace_workdir=str(transport_identity.get("workspace_workdir", "") or ""),
         workspace_home_dir=str(transport_identity.get("workspace_home_dir", "") or ""),
@@ -433,7 +454,7 @@ def _spawn_host_session_worker(
     lead_context.logger.log(
         "host_session_worker_started",
         worker=profile.name,
-        session_worker_backend="external_process",
+        session_worker_backend=HOST_SESSION_BACKEND_EXTERNAL_PROCESS,
         pid=int(process.pid or 0),
         workflow_pack=str(runtime_meta.get("workflow_pack", "") or "markdown-audit"),
     )
@@ -851,10 +872,10 @@ def run_host_teammate_task_once(
             continue
         next_index = (rr_index + offset + 1) % len(teammate_profiles)
         lead_context.shared_state.set("_host_rr_index", next_index)
-        transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
         handler = handlers.get(task.task_type)
 
         if handler is None:
+            transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
             error = f"no handler registered for task_type={task.task_type}"
             lead_context.board.fail(task_id=task.task_id, owner=profile.name, error=error)
             lead_context.mailbox.send(
@@ -881,6 +902,7 @@ def run_host_teammate_task_once(
                 lead_context=lead_context,
                 teammate_profiles=teammate_profiles,
             )
+            transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
             session_worker = _host_worker_thread(lead_context=lead_context, profile_name=profile.name)
             if session_worker is None:
                 error = f"no external host session worker available for {profile.name}"
@@ -987,6 +1009,7 @@ def run_host_teammate_task_once(
             lead_context.board.defer(task_id=task.task_id, owner=profile.name, reason="file lock unavailable")
             return True
 
+        transport_identity = _host_transport_identity(lead_context=lead_context, profile=profile)
         lead_context.logger.log(
             "task_started",
             task_id=task.task_id,

@@ -62,6 +62,7 @@ def _normalize_session_entry(agent_name: str, entry: Mapping[str, Any]) -> Dict[
         "current_task_id": str(entry.get("current_task_id", "") or ""),
         "current_task_type": str(entry.get("current_task_type", "") or ""),
         "transport_session_name": str(entry.get("transport_session_name", "") or ""),
+        "transport_backend": str(entry.get("transport_backend", "") or ""),
         "workspace_root": str(entry.get("workspace_root", "") or ""),
         "workspace_workdir": str(entry.get("workspace_workdir", "") or ""),
         "workspace_home_dir": str(entry.get("workspace_home_dir", "") or ""),
@@ -150,6 +151,9 @@ def apply_session_telemetry_event(
     transport = str(telemetry.get("transport", "") or "")
     if transport:
         normalized["transport"] = transport
+    transport_backend = str(telemetry.get("transport_backend", "") or "")
+    if transport_backend:
+        normalized["transport_backend"] = transport_backend
     if event_type == "status":
         status = str(telemetry.get("status", "") or "")
         if status:
@@ -354,6 +358,7 @@ class TeammateSessionRegistry:
         agent_name: str,
         transport: str = "",
         transport_session_name: str = "",
+        transport_backend: str = "",
         workspace_root: str = "",
         workspace_workdir: str = "",
         workspace_home_dir: str = "",
@@ -375,6 +380,8 @@ class TeammateSessionRegistry:
                 entry["transport"] = str(transport)
             if transport_session_name:
                 entry["transport_session_name"] = str(transport_session_name)
+            if transport_backend:
+                entry["transport_backend"] = str(transport_backend)
             if workspace_root:
                 entry["workspace_root"] = str(workspace_root)
             if workspace_workdir:
@@ -614,13 +621,23 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
         if not isinstance(session, Mapping):
             continue
         transport = str(session.get("transport", "") or "unknown")
+        transport_backend = str(session.get("transport_backend", "") or "")
         notes: List[str] = []
         workspace_isolation_active = bool(session.get("workspace_isolation_active", False))
-        if host_native_session_active and transport == "host":
+        if (
+            host_native_session_active
+            and transport == "host"
+            and transport_backend in {"", "host_native"}
+        ):
             boundary_mode = "host_native_session"
             boundary_strength = "strong"
             isolation_source = "host"
             notes.append("session_isolation_backed_by_host_transport")
+        elif transport == "host" and transport_backend == "external_process":
+            boundary_mode = "worker_subprocess_session"
+            boundary_strength = "medium"
+            isolation_source = "transport"
+            notes.append("session_isolation_backed_by_host_external_process")
         elif transport == "tmux" or transport.startswith("tmux"):
             boundary_mode = "tmux_worker_session"
             boundary_strength = "medium"
@@ -629,6 +646,11 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
                 notes.append("session_isolation_backed_by_tmux_process")
             else:
                 notes.append("session_isolation_backed_by_tmux_fallback_transport")
+        elif transport == "host" and transport_backend == "inprocess_thread":
+            boundary_mode = "runtime_emulated_session"
+            boundary_strength = "emulated"
+            isolation_source = "runtime"
+            notes.append("host_transport_requested_but_task_ran_inline")
         elif workspace_isolation_active or transport == "subprocess":
             boundary_mode = "worker_subprocess_session"
             boundary_strength = "medium"
@@ -660,6 +682,7 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
             "session_id": str(session.get("session_id", "") or ""),
             "transport": transport,
             "transport_session_name": str(session.get("transport_session_name", "") or ""),
+            "transport_backend": transport_backend,
             "boundary_mode": boundary_mode,
             "boundary_strength": boundary_strength,
             "isolation_source": isolation_source,

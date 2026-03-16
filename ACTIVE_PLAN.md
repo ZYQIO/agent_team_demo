@@ -123,6 +123,7 @@ Recent completed outcomes:
 - task-context snapshots now include the minimal board/task view needed for host planning workers to compute mutations without a full parent-runtime board object
 - host assigned-task coverage now includes worker-payload-backed analyst tasks, so the built-in workflow teammate task paths no longer need the lead-inline executor
 - lead-side `task_context_prepared` logging now stays accurate for assigned host tasks, keeping `context_boundaries.json` valid under full teammate offload
+- host-mode enforcement and boundary artifacts now record the current `external_process` backend explicitly instead of treating transport-backed host workers as true host-native sessions
 
 Acceptance criteria:
 - built-in workflow teammate task paths remain off the lead-inline executor

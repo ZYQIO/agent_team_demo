@@ -4663,6 +4663,124 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("host_workspace_isolation_advertised_only", snapshot["notes"])
         self.assertIn("host_managed_context_not_bound_to_runtime", snapshot["notes"])
 
+    def test_build_host_enforcement_snapshot_downgrades_external_process_host_backend(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+        shared_state.set("policies", {"allow_host_managed_context": True})
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "claude-code",
+                "configured_session_transport": "session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "host_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": True,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": True,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
+                "host_session_backend": "external_process",
+                "host_session_backend_source": "transport",
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+
+        snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_enforcement"], "transport_managed")
+        self.assertEqual(snapshot["workspace_enforcement"], "runtime_managed")
+        self.assertFalse(snapshot["host_native_session_active"])
+        self.assertFalse(snapshot["host_native_workspace_active"])
+        self.assertEqual(snapshot["host_session_backend"], "external_process")
+        self.assertIn("host_session_backend_external_process", snapshot["notes"])
+        self.assertIn("requested_host_sessions_backed_by_transport_process", snapshot["notes"])
+
+    def test_build_session_boundary_snapshot_marks_host_external_process_sessions_as_transport_backed(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "claude-code",
+                "configured_session_transport": "session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "transport_managed",
+                "workspace_enforcement": "runtime_managed",
+                "host_native_session_active": False,
+                "host_native_workspace_active": False,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": False,
+                "effective_boundary_source": "transport",
+                "effective_boundary_strength": "medium",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+                "notes": [
+                    "host_session_backend_external_process",
+                    "requested_host_sessions_backed_by_transport_process",
+                ],
+                "host_session_backend": "external_process",
+                "host_session_backend_source": "transport",
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+        registry.ensure_profile(profile=reviewer, transport="host", status="ready")
+        registry.record_boundary(
+            agent_name="reviewer_gamma",
+            transport="host",
+            transport_session_name="claude-code:reviewer_gamma",
+            transport_backend="external_process",
+            workspace_isolation_active=False,
+        )
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["worker_subprocess_session"], 1)
+        session = snapshot["sessions"][0]
+        self.assertEqual(session["transport"], "host")
+        self.assertEqual(session["transport_backend"], "external_process")
+        self.assertEqual(session["boundary_mode"], "worker_subprocess_session")
+        self.assertIn("session_isolation_backed_by_host_external_process", session["notes"])
+
     def test_build_session_boundary_snapshot_requires_active_host_enforcement_for_host_native_mode(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -4852,11 +4970,12 @@ class RuntimeLogicTests(unittest.TestCase):
             )
             session = registry.session_for("reviewer_gamma")
             self.assertEqual(session.get("transport"), "host")
-            self.assertTrue(session.get("workspace_isolation_active"))
+            self.assertEqual(session.get("transport_backend"), "inprocess_thread")
+            self.assertFalse(session.get("workspace_isolation_active"))
             self.assertEqual(session.get("transport_session_name"), "claude-code:reviewer_gamma")
-            self.assertTrue(str(session.get("workspace_root", "")).startswith("host://claude-code/sessions/"))
+            self.assertEqual(str(session.get("workspace_root", "") or ""), "")
             boundaries = runtime.build_session_boundary_snapshot(shared_state=shared_state)
-            self.assertEqual(boundaries.get("boundary_mode_counts", {}).get("host_native_session", 0), 1)
+            self.assertEqual(boundaries.get("boundary_mode_counts", {}).get("runtime_emulated_session", 0), 1)
             events = [
                 json.loads(line)
                 for line in logger.path.read_text(encoding="utf-8").splitlines()

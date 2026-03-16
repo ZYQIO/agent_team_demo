@@ -1290,6 +1290,14 @@ def append_host_enforcement_to_final_report(report_path: pathlib.Path, snapshot:
         f"managed_context_requested={snapshot.get('host_managed_context_requested', False)} "
         f"managed_context_active={snapshot.get('host_managed_context_active', False)}"
     )
+    backend = str(snapshot.get("host_session_backend", "") or "")
+    if backend:
+        lines.append(
+            f"- Host session backend: backend={backend} "
+            f"source={snapshot.get('host_session_backend_source', '')} "
+            f"session_isolated={snapshot.get('host_session_backend_session_isolation_active', False)} "
+            f"workspace_isolated={snapshot.get('host_session_backend_workspace_isolation_active', False)}"
+        )
     limits = snapshot.get("limits", [])
     if isinstance(limits, list) and limits:
         lines.append("- Limits: " + ", ".join(str(item) for item in limits))
@@ -1340,6 +1348,7 @@ def append_session_boundaries_to_final_report(report_path: pathlib.Path, snapsho
             f"mode={session.get('boundary_mode', '')} "
             f"strength={session.get('boundary_strength', '')} "
             f"transport={session.get('transport', '')} "
+            f"transport_backend={session.get('transport_backend', '') or 'n/a'} "
             f"transport_session={session.get('transport_session_name', '')} "
             f"status={session.get('status', '')} "
             f"workspace_scope={session.get('workspace_scope', '')} "

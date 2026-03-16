@@ -25,7 +25,11 @@ from ..core import (
     TaskBoard,
     task_from_dict,
 )
-from ..host import HOST_RUNTIME_ENFORCEMENT_KEY, build_host_adapter
+from ..host import (
+    HOST_RUNTIME_ENFORCEMENT_KEY,
+    apply_host_session_backend_enforcement,
+    build_host_adapter,
+)
 from ..models import LLMProvider, build_provider
 from ..transports.inprocess import InProcessTeammateAgent
 import agent_team.transports.host as host_transport
@@ -739,6 +743,11 @@ def run_team(
         runtime_config=runtime_config,
         policies=effective_agent_team_config.policies,
     )
+    if runtime_config.teammate_mode == "host":
+        host_runtime_enforcement = apply_host_session_backend_enforcement(
+            host_runtime_enforcement,
+            backend=host_transport.host_session_backend_metadata(),
+        )
 
     provider, provider_meta = build_provider(
         provider_name=effective_agent_team_config.model.provider_name,

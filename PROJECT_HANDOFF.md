@@ -38,7 +38,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - reviewer `peer_challenge` and `evidence_pack` stay on the parent mailbox path by design
 - Current host coverage:
   - `--teammate-mode host` dispatches teammate work through a distinct host transport path
-  - host-mode artifacts record `host_native_session` and `host_native_workspace` posture from execution
+  - host-mode artifacts now explicitly record the active `host_session_backend`; the current built-in backend is still `external_process`, so transport-backed host workers are no longer reported as true host-native sessions
   - built-in workflow teammate task paths now reach external session-worker subprocesses through explicit `session_task_assignment` mailbox messages, including analyst scans/follow-ups plus mailbox-driven reviewer tasks (`peer_challenge`, `evidence_pack`) and reviewer planning/report/llm tasks (`dynamic_planning`, `repo_dynamic_planning`, `llm_synthesis`, `recommendation_pack`, `repo_recommendation_pack`)
   - those external workers now return through explicit `session_task_result` mailbox messages and update teammate session ledgers through explicit `session_telemetry` mailbox messages
   - reviewer planning results now carry explicit task-mutation payloads so the lead side inserts follow-up tasks and dependencies instead of external workers mutating the board directly

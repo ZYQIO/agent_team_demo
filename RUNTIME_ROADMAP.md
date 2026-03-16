@@ -92,8 +92,8 @@ The intended architecture is now:
 | Subprocess reviewer llm synthesis | Completed | Reviewer `llm_synthesis` now rebuilds the configured provider inside isolated worker subprocesses and preserves the existing `llm_synthesis` shared-state contract for downstream report generation. |
 | Mailbox reviewer transport guardrail | Completed | `peer_challenge` and `evidence_pack` are now explicitly protected from accidental subprocess offload until mailbox request/reply semantics can cross process or host boundaries. |
 | Host transport skeleton | Completed | `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries in runtime artifacts. |
-| Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions. |
-| Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
+| Host enforcement posture artifact | Completed | Runtime now emits `host_enforcement.json` so configured host capabilities are separated from runtime-active host/session enforcement decisions, including explicit host session backend identity when host mode is still transport-backed. |
+| Session-boundary posture artifact | Completed | Runtime now emits `session_boundaries.json` and final-report summaries describing whether each teammate session is host-native, transport-backed external-process, tmux-backed, worker-subprocess-backed, or runtime-emulated. |
 | True independent teammate sessions | Pending | Still `Partial` per [PARITY.md](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/PARITY.md). |
 
 ## 4. Completed Work
@@ -419,7 +419,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py   --outp
 Evidence review:
 
 - subprocess smoke confirms reviewer `task_history` contains `llm_synthesis=subprocess`
-- host smoke confirms `transport=host`, `boundary_mode=host_native_session`, and `workspace_root=host://claude-code/sessions/<session_id>`
+- host smoke confirms `transport=host`, `transport_backend=external_process`, and transport-backed host session enforcement instead of overstated host-native boundaries
 
 
 ## 7. Recommended Next Tasks
@@ -520,7 +520,7 @@ Completed slice:
 - Added `host_enforcement.json` so advertised host capabilities are separated from runtime-active enforcement decisions
 - Added `session_boundaries.json` and final-report summaries so host/session isolation posture is explicit instead of implicit in host metadata and transport internals
 - Added reviewer `llm_synthesis` subprocess isolation with provider reconstruction and shared-state-compatible output
-- Added an executable `host` teammate mode with a distinct host transport path, `host_native_session` boundaries, and `host://<host-kind>/sessions/<session_id>/...` workspace descriptors
+- Added an executable `host` teammate mode with a distinct host transport path, explicit external session-worker subprocess boundaries for the current backend, and `host_session_backend=external_process` artifact reporting so transport-backed host runs are not mislabeled as true host-native sessions
 - Verified subprocess and host-mode smoke runs plus artifact validation
 
 Remaining focus:
