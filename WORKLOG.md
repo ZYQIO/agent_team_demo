@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Current-focus teammate request checkpoint
+- Goal: let lead continue asking the focused teammate for live status or plan context without repeating the teammate id after entering one review
+- Changes:
+  - updated the embedded stdin approval prompt with `status current` and `plan current`, both resolved against the current teammate review focus established by `review next` or `review teammate <agent>`
+  - updated current-focus prompt hints so the embedded flow now advertises status/plan requests as part of the same sequential review path as `approve current` / `reject current`
+  - updated interactive `lead_console.py` with the same `status current` / `plan current` current-focus behavior
+  - added regression coverage for the new current-focus parse actions and for an end-to-end embedded prompt flow using `review next`, `status current`, and `approve current`
+- Validation:
+  - `python -m py_compile agent_team/runtime/engine.py skills/agent-team-runtime/scripts/lead_console.py tests/test_runtime_logic.py tests/test_runtime_end_to_end.py`
+  - `python -m unittest tests.test_runtime_logic.RuntimeLogicTests.test_parse_interactive_plan_command_supports_embedded_lead_prompt tests.test_runtime_end_to_end.RuntimeEndToEndTests.test_cli_interactive_lead_prompt_applies_pending_plan_without_resume -v`
+  - full suite: `142/142` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should keep extending the current focus model, likely by letting more review helpers default to the focused teammate or focused pending request instead of requiring another explicit selector
+
 ### 2026-03-17 - Current review focus checkpoint
 - Goal: let lead stay inside one teammate review and apply approval decisions without repeating the teammate id
 - Changes:

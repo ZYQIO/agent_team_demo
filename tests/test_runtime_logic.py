@@ -766,6 +766,22 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("status current"),
+            {
+                "action": "request_current_review_status",
+                "raw": "status current",
+                "task_id": "",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("plan current"),
+            {
+                "action": "request_current_review_plan",
+                "raw": "plan current",
+                "task_id": "",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("status reviewer_gamma"),
             {
                 "action": "request_teammate_status",

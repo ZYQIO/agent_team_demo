@@ -412,6 +412,10 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
             return {"action": "approve_current_review", "raw": text, "task_id": ""}
         if verb in {"reject", "reject-plan"}:
             return {"action": "reject_current_review", "raw": text, "task_id": ""}
+        if verb in {"status", "request-status", "request_status"}:
+            return {"action": "request_current_review_status", "raw": text, "task_id": ""}
+        if verb in {"plan", "request-plan", "request_plan"}:
+            return {"action": "request_current_review_plan", "raw": text, "task_id": ""}
     if len(parts) == 3 and parts[0].strip().lower() == "review" and parts[1].strip().lower() in {"teammate", "agent"}:
         task_id = parts[2].strip()
         if task_id:
@@ -707,7 +711,7 @@ def _print_interactive_plan_approval_status(
             )
     if str(current_review_agent or ""):
         print(
-            f"[lead] current_review_focus={str(current_review_agent or '')} use `approve current` or `reject current`",
+            f"[lead] current_review_focus={str(current_review_agent or '')} use `status current`, `plan current`, `approve current`, or `reject current`",
             flush=True,
         )
     print("[lead] interactive_pending_approvals:", flush=True)
@@ -737,7 +741,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | status current | plan current | pause",
         flush=True,
     )
 
@@ -816,7 +820,7 @@ def run_interactive_plan_approval_prompt(
                     task_id
                     if action in {"request_teammate_status", "request_teammate_plan", "show_teammate", "review_teammate", "approve_teammate_plans", "reject_teammate_plans"}
                     else current_review_agent
-                    if action in {"approve_current_review", "reject_current_review"}
+                    if action in {"approve_current_review", "reject_current_review", "request_current_review_status", "request_current_review_plan"}
                     else ""
                 ),
                 raw=str(raw_command or ""),
@@ -879,9 +883,42 @@ def run_interactive_plan_approval_prompt(
             continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | status current | plan current | pause",
                 flush=True,
             )
+            continue
+        if action in {"request_current_review_plan", "request_current_review_status"}:
+            if not current_review_agent:
+                print("[lead] no current review focus. Use `review next` or `review teammate <agent>` first.", flush=True)
+                continue
+            if action == "request_current_review_plan":
+                plan_resolution = request_teammate_plans(
+                    lead_context=lead_context,
+                    agent_names=[current_review_agent],
+                    decision_source="interactive",
+                )
+                if plan_resolution.get("plan_request_agents"):
+                    print(
+                        "[lead] requested teammate plan from "
+                        + ", ".join(plan_resolution.get("plan_request_agents", [])),
+                        flush=True,
+                    )
+                else:
+                    print(f"[lead] unknown teammate: {current_review_agent}", flush=True)
+                continue
+            status_resolution = request_teammate_statuses(
+                lead_context=lead_context,
+                agent_names=[current_review_agent],
+                decision_source="interactive",
+            )
+            if status_resolution.get("status_request_agents"):
+                print(
+                    "[lead] requested teammate status from "
+                    + ", ".join(status_resolution.get("status_request_agents", [])),
+                    flush=True,
+                )
+            else:
+                print(f"[lead] unknown teammate: {current_review_agent}", flush=True)
             continue
         if action == "request_teammate_plan":
             plan_resolution = request_teammate_plans(

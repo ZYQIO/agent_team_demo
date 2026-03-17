@@ -598,7 +598,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     current_review_agent = ""
     help_text = (
-        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | approve current | reject <task_id> | reject teammate <agent> | reject current | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | status current | plan current | approve <task_id> | approve teammate <agent> | approve current | reject <task_id> | reject teammate <agent> | reject current | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -660,6 +660,15 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 print(f"[lead-console] {line}")
             continue
         if raw.startswith("status "):
+            if raw == "status current":
+                if not current_review_agent:
+                    print("[lead-console] no current review focus", file=sys.stderr)
+                    continue
+                append_command(
+                    resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                    {"command": "request_teammate_status", "agent": current_review_agent},
+                )
+                continue
             agent = raw.split(" ", 1)[1].strip()
             if agent:
                 append_command(
@@ -668,6 +677,15 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 )
                 continue
         if raw.startswith("plan "):
+            if raw == "plan current":
+                if not current_review_agent:
+                    print("[lead-console] no current review focus", file=sys.stderr)
+                    continue
+                append_command(
+                    resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                    {"command": "request_teammate_plan", "agent": current_review_agent},
+                )
+                continue
             agent = raw.split(" ", 1)[1].strip()
             if agent:
                 append_command(

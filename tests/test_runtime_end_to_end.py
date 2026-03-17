@@ -637,7 +637,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
                     msg="runtime never wrote a live lead interaction snapshot with pending approvals",
                 )
                 self.assertIsNotNone(process.stdin, msg="interactive runtime stdin should be available")
-                process.stdin.write("review next\napprove current\n")
+                process.stdin.write("review next\nstatus current\napprove current\n")
                 process.stdin.flush()
                 stdout, stderr = process.communicate(timeout=90)
             finally:
@@ -655,6 +655,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("current_review_focus=reviewer_gamma", stdout)
             self.assertIn("heading_structure_followup", stdout)
             self.assertIn("review_pending_approvals=1 task_ids=dynamic_planning", stdout)
+            self.assertIn("requested teammate status from reviewer_gamma", stdout)
             self.assertIn("approved current review focus reviewer_gamma", stdout)
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("interrupted_reason"), "")
@@ -663,6 +664,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 (output_dir / runtime.LEAD_INTERACTION_FILENAME).read_text(encoding="utf-8")
             )
             self.assertEqual(lead_interaction.get("pending_plan_approval_count"), 0)
+            self.assertTrue(
+                any(
+                    item.get("command") == "request_current_review_status" and item.get("agent") == "reviewer_gamma"
+                    for item in lead_interaction.get("recent_commands", [])
+                    if isinstance(item, dict)
+                )
+            )
             self.assertTrue(
                 any(
                     item.get("command") == "approve_current_review" and item.get("source") == "interactive"

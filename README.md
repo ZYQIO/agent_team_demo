@@ -169,7 +169,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
 ```
 
 The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` plus teammate detail inspection (`teammate <agent>` / `show teammate <agent>` in the interactive surfaces, `--show-teammate <agent>` in `lead_console.py`), and the console plus embedded prompt now also support a combined teammate review view (`review teammate <agent>` / `--review-teammate <agent>`) that brings together one teammate's current session state, recent lead-visible messages, pending approvals, and likely next actions. They also support `review pending` / `--review-pending` to list all teammates currently blocked on pending approvals before lead drills into one agent, and `review next` / `--review-next` to jump straight to the next suggested teammate review from that pending queue. Live command surfaces can also request teammate `status <agent>` or `plan <agent>` replies and approve/reject pending teammate plans by teammate identity so lead-visible team messages and actions stay closer together.
-When lead is already inside one teammate review in the embedded prompt, `approve current` and `reject current` now act on that current review focus directly, so the runtime no longer requires lead to repeat the teammate name for the next approval decision.
+When lead is already inside one teammate review in the embedded prompt, `status current` / `plan current` plus `approve current` / `reject current` now act on that current review focus directly, so the runtime no longer requires lead to repeat the teammate name for follow-on teammate requests or the next approval decision.
 
 Use an embedded lead prompt inside the runtime process:
 
@@ -186,7 +186,7 @@ When a pending teammate plan appears, the runtime will prompt:
 ```text
 lead-approval> review pending
 lead-approval> review next
-lead-approval> review teammate reviewer_gamma
+lead-approval> status current
 lead-approval> approve current
 ```
 
