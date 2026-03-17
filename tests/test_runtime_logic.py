@@ -742,6 +742,14 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("review next"),
+            {
+                "action": "review_next",
+                "raw": "review next",
+                "task_id": "",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("status reviewer_gamma"),
             {
                 "action": "request_teammate_status",
@@ -1178,6 +1186,8 @@ class RuntimeLogicTests(unittest.TestCase):
             snapshot = written.get("snapshot", {})
             self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
             self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
+            self.assertEqual(snapshot.get("pending_review_agents"), ["reviewer_gamma"])
+            self.assertEqual(snapshot.get("next_pending_review_agent"), "reviewer_gamma")
             self.assertEqual(snapshot.get("recent_team_message_count"), 6)
             self.assertEqual(snapshot.get("teammate_session_count"), 2)
             self.assertEqual(snapshot.get("active_teammate_session_count"), 1)
@@ -1216,6 +1226,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("heading_structure_followup", report_text)
             self.assertIn("analyst_alpha status=running current=discover[discover]", report_text)
             self.assertIn("dynamic planning follow-up", report_text)
+            self.assertIn("Next pending review: reviewer_gamma", report_text)
             self.assertIn("pending_approvals=1", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)

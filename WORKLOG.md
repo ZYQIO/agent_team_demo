@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Next pending review checkpoint
+- Goal: let lead jump straight into the next recommended teammate review instead of manually picking the next agent from the pending queue
+- Changes:
+  - extended `lead_interaction.json` / `lead_interaction.md` with `pending_review_agents` and `next_pending_review_agent` so the live snapshot now exposes the current recommended next teammate review directly
+  - updated the embedded stdin approval prompt with `review next`, plus inline next-review hints inside the pending-approval status output
+  - updated `lead_console.py` with `--review-next` plus interactive `review next` support for the same guided teammate review jump
+  - added regression coverage for `review next` command parsing, live snapshot fields, and the one-shot live console `--review-next` flow
+- Validation:
+  - `python -m py_compile agent_team/runtime/persistence.py agent_team/runtime/engine.py skills/agent-team-runtime/scripts/lead_console.py tests/test_runtime_logic.py tests/test_runtime_end_to_end.py`
+  - `python -m unittest tests.test_runtime_logic.RuntimeLogicTests.test_parse_interactive_plan_command_supports_embedded_lead_prompt tests.test_runtime_logic.RuntimeLogicTests.test_write_live_lead_interaction_artifacts_persists_current_snapshot tests.test_runtime_end_to_end.RuntimeEndToEndTests.test_cli_live_lead_status_request_records_teammate_reply -v`
+  - full suite: `142/142` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should make the embedded prompt itself more sequential, likely by tracking current review focus and making approve/reject actions default to that focus when lead is already inside one teammate review
+
 ### 2026-03-17 - Pending teammate review checkpoint
 - Goal: let lead scan all current pending approvals by teammate before drilling into one review or approval path
 - Changes:

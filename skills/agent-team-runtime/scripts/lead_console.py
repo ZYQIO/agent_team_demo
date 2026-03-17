@@ -88,6 +88,11 @@ def parse_args() -> argparse.Namespace:
         help="Print teammate-centric review summaries for all current pending approvals.",
     )
     parser.add_argument(
+        "--review-next",
+        action="store_true",
+        help="Print the next teammate review that lead should look at based on current pending approvals.",
+    )
+    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=1.0,
@@ -393,6 +398,25 @@ def describe_pending_teammate_reviews(snapshot: Dict[str, Any]) -> List[str]:
     return lines
 
 
+def next_pending_review_agent(snapshot: Dict[str, Any]) -> str:
+    pending_review_agents = snapshot.get("pending_review_agents", [])
+    if isinstance(pending_review_agents, list):
+        for item in pending_review_agents:
+            agent_name = str(item or "").strip()
+            if agent_name:
+                return agent_name
+    pending_requests = [
+        item
+        for item in snapshot.get("plan_approval_requests", [])
+        if isinstance(item, dict) and str(item.get("status", "") or "") == "pending"
+    ]
+    for item in pending_requests:
+        agent_name = str(item.get("requested_by", "") or "").strip()
+        if agent_name:
+            return agent_name
+    return ""
+
+
 def build_status_lines(
     output_dir: pathlib.Path,
     snapshot: Dict[str, Any],
@@ -418,6 +442,13 @@ def build_status_lines(
         f"- Pending approvals: {snapshot.get('pending_plan_approval_count', 0)} "
         f"of {snapshot.get('plan_approval_request_count', 0)}"
     )
+    pending_review_agents = snapshot.get("pending_review_agents", [])
+    if isinstance(pending_review_agents, list):
+        lines.append(
+            "- Pending review agents: "
+            + (",".join(str(item) for item in pending_review_agents if str(item)) or "none")
+            + f" next={snapshot.get('next_pending_review_agent', '') or 'none'}"
+        )
     lines.append(
         f"- Recent messages: {snapshot.get('recent_team_message_count', 0)} "
         f"recent commands: {len(snapshot.get('recent_commands', []))}"
@@ -566,7 +597,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -613,6 +644,14 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 continue
         if raw == "review pending":
             for line in describe_pending_teammate_reviews(snapshot=snapshot):
+                print(f"[lead-console] {line}")
+            continue
+        if raw == "review next":
+            next_agent = next_pending_review_agent(snapshot=snapshot)
+            if not next_agent:
+                print("[lead-console] no pending teammate review available")
+                continue
+            for line in describe_teammate_review(snapshot=snapshot, agent_name=next_agent):
                 print(f"[lead-console] {line}")
             continue
         if raw.startswith("status "):
@@ -718,6 +757,15 @@ def main() -> int:
         lines.append("Requested pending teammate reviews:")
         for line in describe_pending_teammate_reviews(snapshot=snapshot):
             lines.append(f"- {line}")
+    if args.review_next:
+        lines.append("")
+        lines.append("Requested next teammate review:")
+        next_agent = next_pending_review_agent(snapshot=snapshot)
+        if not next_agent:
+            lines.append("- no pending teammate review available")
+        else:
+            for line in describe_teammate_review(snapshot=snapshot, agent_name=next_agent):
+                lines.append(f"- {line}")
     print(
         "\n".join(
             lines

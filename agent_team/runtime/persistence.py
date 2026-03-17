@@ -1167,6 +1167,14 @@ def build_lead_interaction_snapshot(
     pending_requests = [
         item for item in requests if str(item.get("status", "") or "") == PLAN_APPROVAL_STATUS_PENDING
     ]
+    pending_review_agents: List[str] = []
+    seen_pending_review_agents = set()
+    for item in pending_requests:
+        agent_name = str(item.get("requested_by", "") or "")
+        if not agent_name or agent_name in seen_pending_review_agents:
+            continue
+        pending_review_agents.append(agent_name)
+        seen_pending_review_agents.add(agent_name)
 
     recent_team_messages: List[Dict[str, Any]] = []
     if logger.path.exists():
@@ -1231,6 +1239,8 @@ def build_lead_interaction_snapshot(
             for item in pending_requests
             if str(item.get("task_id", "") or "")
         ],
+        "pending_review_agents": pending_review_agents,
+        "next_pending_review_agent": pending_review_agents[0] if pending_review_agents else "",
         "recent_team_messages": recent_team_messages,
         "recent_team_message_count": len(recent_team_messages),
         "controls": controls,
@@ -1264,6 +1274,15 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
     lines.append(f"- Lead: {snapshot.get('lead_name', 'lead')}")
     lines.append(f"- Plan approval requests: {snapshot.get('plan_approval_request_count', 0)}")
     lines.append(f"- Pending approvals: {snapshot.get('pending_plan_approval_count', 0)}")
+    pending_review_agents = snapshot.get("pending_review_agents", [])
+    if isinstance(pending_review_agents, list):
+        lines.append(
+            "- Pending review agents: "
+            + (",".join(str(item) for item in pending_review_agents if str(item)) or "none")
+        )
+    lines.append(
+        f"- Next pending review: {snapshot.get('next_pending_review_agent', '') or 'none'}"
+    )
     controls = snapshot.get("controls", {})
     if isinstance(controls, dict):
         lines.append(

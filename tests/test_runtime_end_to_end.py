@@ -878,6 +878,28 @@ class RuntimeEndToEndTests(unittest.TestCase):
                     "pending_teammate=reviewer_gamma task_ids=dynamic_planning next=review teammate reviewer_gamma | approve teammate reviewer_gamma | reject teammate reviewer_gamma",
                     pending_review_command.stdout,
                 )
+                next_review_command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                        "--review-next",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    next_review_command.returncode,
+                    0,
+                    msg=f"stdout:\n{next_review_command.stdout}\n\nstderr:\n{next_review_command.stderr}",
+                )
+                self.assertIn("Requested next teammate review:", next_review_command.stdout)
+                self.assertIn("agent=reviewer_gamma", next_review_command.stdout)
+                self.assertIn("review_pending_approvals=1 task_ids=dynamic_planning", next_review_command.stdout)
                 approve_command = subprocess.run(
                     [
                         sys.executable,
