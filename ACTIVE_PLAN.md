@@ -11,7 +11,7 @@ Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subproc
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
 Priority 4 is in progress: host mode now has true host-backed `codex_exec` plus guarded `claude_exec` session backends, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical Claude path in this environment still falls back to the transport-backed `external_process` worker backend because official prerequisites are not locally ready.
-Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, those control surfaces now also surface teammate session summaries from the live session ledger, both live control surfaces can inspect one pending request in detail with `show <task_id>` and one teammate in detail with teammate/session inspection commands, and live command surfaces can request teammate status/plan replies plus approve or reject pending plans by teammate identity. The newest slices add a combined teammate review view, a pending-teammate review overview, and a direct `review next` jump into the next suggested teammate review, so lead can scan or jump through pending teammates with less manual command choice; the next lead-side gap is richer embedded control rather than missing inspection/action primitives.
+Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, those control surfaces now also surface teammate session summaries from the live session ledger, both live control surfaces can inspect one pending request in detail with `show <task_id>` and one teammate in detail with teammate/session inspection commands, and live command surfaces can request teammate status/plan replies plus approve or reject pending plans by teammate identity. The newest slices add a combined teammate review view, a pending-teammate review overview, a direct `review next` jump into the next suggested teammate review, and `approve current` / `reject current` inside the embedded prompt when lead is already focused on one teammate review, so lead can scan, jump, and decide with less manual command choice; the next lead-side gap is richer embedded control rather than missing inspection/action primitives.
 
 Direction reset (2026-03-17, Codex-first target clarification):
 - the project goal is not a literal Claude Code runtime clone; it is a Codex-usable agent team runtime that benchmarks itself against Claude Code Agent Teams-style functionality
@@ -77,6 +77,11 @@ Direction review (2026-03-17, teammate review checkpoint):
 - the latest three Codex-first lead-control rounds still improved the runtime interaction loop instead of drifting into report-only work
 - lead can now move from one teammate review entry point to status/plan requests, detailed request inspection, and teammate-scoped approval actions without manually correlating separate surfaces
 - there is no target drift: the remaining Priority 5 gap is reducing surface fragmentation further inside the embedded prompt rather than inventing more standalone verbs or Claude-specific environment work
+
+Direction review (2026-03-17, current review focus checkpoint):
+- the latest three lead-control rounds still improved in-run decision flow rather than adding passive visibility layers
+- lead can now scan pending teammates, jump to the next suggested review, and approve or reject the current review focus without repeating teammate ids, which is directly aligned with the Codex-first control-surface goal
+- there is no priority drift: the next slice should keep collapsing embedded prompt friction, likely by carrying more intent through the current focus instead of adding fresh command families
 
 ## Priority Order
 
@@ -183,6 +188,7 @@ Recent completed outcomes:
 - lead control surfaces now also support a combined teammate review view (`review teammate <agent>` in the embedded prompt plus `--review-teammate <agent>` in `lead_console.py`) that gathers one teammate's session state, recent lead-visible messages, pending approvals, and likely next actions into one Codex-friendly output
 - lead control surfaces now also support `review pending` plus `--review-pending` so lead can enumerate pending approvals by teammate before drilling into one review or approval path
 - lead control surfaces now also support `review next` plus `--review-next`, backed by `next_pending_review_agent` in the live interaction snapshot, so lead can jump straight to the next suggested teammate review from the pending queue
+- the embedded prompt now also tracks the current teammate review focus so `approve current` / `reject current` can act on that focus without repeating the teammate id
 
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts

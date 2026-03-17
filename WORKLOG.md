@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Current review focus checkpoint
+- Goal: let lead stay inside one teammate review and apply approval decisions without repeating the teammate id
+- Changes:
+  - updated the embedded stdin approval prompt with a current review focus so `review next` / `review teammate <agent>` establish focus and `approve current` / `reject current` act on that focused teammate
+  - updated interactive prompt status output to surface `current_review_focus=<agent>` hints alongside next-pending review guidance
+  - updated the interactive `lead_console.py` flow with the same current review focus model plus `approve current` / `reject current`
+  - added regression coverage for `approve current` / `reject current` command parsing and for the end-to-end embedded prompt path using `review next` followed by `approve current`
+  - direction review: the last three lead-control rounds stayed aligned with the Codex-first target by reducing in-run decision friction rather than adding passive visibility; the next slice should keep carrying more intent through the current focus instead of inventing fresh command families
+- Validation:
+  - `python -m py_compile agent_team/runtime/engine.py skills/agent-team-runtime/scripts/lead_console.py tests/test_runtime_logic.py tests/test_runtime_end_to_end.py`
+  - `python -m unittest tests.test_runtime_logic.RuntimeLogicTests.test_parse_interactive_plan_command_supports_embedded_lead_prompt tests.test_runtime_end_to_end.RuntimeEndToEndTests.test_cli_interactive_lead_prompt_applies_pending_plan_without_resume -v`
+  - full suite: `142/142` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should keep the prompt sequential, likely by propagating the current review focus into more default actions or follow-on teammate requests instead of requiring separate command selection
+
 ### 2026-03-17 - Next pending review checkpoint
 - Goal: let lead jump straight into the next recommended teammate review instead of manually picking the next agent from the pending queue
 - Changes:

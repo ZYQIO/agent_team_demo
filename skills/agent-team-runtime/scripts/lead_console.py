@@ -596,12 +596,15 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
+    current_review_agent = ""
     help_text = (
-        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | approve current | reject <task_id> | reject teammate <agent> | reject current | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
         print("\n".join(build_status_lines(output_dir=output_dir, snapshot=snapshot)))
+        if current_review_agent:
+            print(f"Current review focus: {current_review_agent}")
         print(help_text)
         try:
             raw = input("lead-console> ").strip()
@@ -639,6 +642,7 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
         if raw.startswith("review teammate "):
             agent = raw.split(" ", 2)[2].strip()
             if agent:
+                current_review_agent = agent
                 for line in describe_teammate_review(snapshot=snapshot, agent_name=agent):
                     print(f"[lead-console] {line}")
                 continue
@@ -651,6 +655,7 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
             if not next_agent:
                 print("[lead-console] no pending teammate review available")
                 continue
+            current_review_agent = next_agent
             for line in describe_teammate_review(snapshot=snapshot, agent_name=next_agent):
                 print(f"[lead-console] {line}")
             continue
@@ -671,6 +676,15 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 )
                 continue
         if raw.startswith("approve "):
+            if raw == "approve current":
+                if not current_review_agent:
+                    print("[lead-console] no current review focus", file=sys.stderr)
+                    continue
+                append_command(
+                    resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                    {"command": "approve_teammate_plans", "agent": current_review_agent},
+                )
+                continue
             if raw.startswith("approve teammate "):
                 agent = raw.split(" ", 2)[2].strip()
                 if agent:
@@ -687,6 +701,15 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 )
                 continue
         if raw.startswith("reject "):
+            if raw == "reject current":
+                if not current_review_agent:
+                    print("[lead-console] no current review focus", file=sys.stderr)
+                    continue
+                append_command(
+                    resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                    {"command": "reject_teammate_plans", "agent": current_review_agent},
+                )
+                continue
             if raw.startswith("reject teammate "):
                 agent = raw.split(" ", 2)[2].strip()
                 if agent:

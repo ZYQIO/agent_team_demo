@@ -637,7 +637,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
                     msg="runtime never wrote a live lead interaction snapshot with pending approvals",
                 )
                 self.assertIsNotNone(process.stdin, msg="interactive runtime stdin should be available")
-                process.stdin.write("show dynamic_planning\napprove dynamic_planning\n")
+                process.stdin.write("review next\napprove current\n")
                 process.stdin.flush()
                 stdout, stderr = process.communicate(timeout=90)
             finally:
@@ -652,10 +652,10 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertIn("interactive_pending_approvals", stdout)
             self.assertIn("lead-approval>", stdout)
+            self.assertIn("current_review_focus=reviewer_gamma", stdout)
             self.assertIn("heading_structure_followup", stdout)
-            self.assertIn("result_keys=", stdout)
-            self.assertIn("enabled", stdout)
-            self.assertIn("state_update_keys=dynamic_plan", stdout)
+            self.assertIn("review_pending_approvals=1 task_ids=dynamic_planning", stdout)
+            self.assertIn("approved current review focus reviewer_gamma", stdout)
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("interrupted_reason"), "")
             self.assertEqual(summary.get("pending_plan_approval_count"), 0)
@@ -665,7 +665,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(lead_interaction.get("pending_plan_approval_count"), 0)
             self.assertTrue(
                 any(
-                    item.get("command") == "approve_plan" and item.get("source") == "interactive"
+                    item.get("command") == "approve_current_review" and item.get("source") == "interactive"
                     for item in lead_interaction.get("recent_commands", [])
                     if isinstance(item, dict)
                 )

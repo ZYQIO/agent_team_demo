@@ -406,6 +406,12 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
         return {"action": "review_pending", "raw": text, "task_id": ""}
     if len(parts) == 2 and parts[0].strip().lower() == "review" and parts[1].strip().lower() == "next":
         return {"action": "review_next", "raw": text, "task_id": ""}
+    if len(parts) == 2 and parts[1].strip().lower() == "current":
+        verb = parts[0].strip().lower()
+        if verb in {"approve", "approve-plan"}:
+            return {"action": "approve_current_review", "raw": text, "task_id": ""}
+        if verb in {"reject", "reject-plan"}:
+            return {"action": "reject_current_review", "raw": text, "task_id": ""}
     if len(parts) == 3 and parts[0].strip().lower() == "review" and parts[1].strip().lower() in {"teammate", "agent"}:
         task_id = parts[2].strip()
         if task_id:
@@ -655,6 +661,7 @@ def _next_pending_review_agent_name(interaction_snapshot: Mapping[str, Any]) -> 
 def _print_interactive_plan_approval_status(
     pending_plan_approvals: Sequence[Dict[str, Any]],
     interaction_snapshot: Optional[Mapping[str, Any]] = None,
+    current_review_agent: str = "",
 ) -> None:
     def _task_preview_text(item: Mapping[str, Any]) -> str:
         task_id = str(item.get("task_id", "") or "")
@@ -698,6 +705,11 @@ def _print_interactive_plan_approval_status(
                 f"[lead] next_pending_review={next_pending_agent} use `review next` or `review teammate {next_pending_agent}`",
                 flush=True,
             )
+    if str(current_review_agent or ""):
+        print(
+            f"[lead] current_review_focus={str(current_review_agent or '')} use `approve current` or `reject current`",
+            flush=True,
+        )
     print("[lead] interactive_pending_approvals:", flush=True)
     for item in pending_plan_approvals:
         if not isinstance(item, Mapping):
@@ -725,7 +737,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
         flush=True,
     )
 
@@ -754,11 +766,13 @@ def run_interactive_plan_approval_prompt(
         ],
         pending_count=len(pending_plan_approvals),
     )
+    current_review_agent = ""
     while pending_plan_approvals:
         interaction = refresh_live_lead_interaction(lead_context=lead_context)
         _print_interactive_plan_approval_status(
             pending_plan_approvals=pending_plan_approvals,
             interaction_snapshot=interaction.get("snapshot", {}),
+            current_review_agent=current_review_agent,
         )
         try:
             raw_command = input("lead-approval> ")
@@ -798,7 +812,13 @@ def run_interactive_plan_approval_prompt(
                 shared_state=lead_context.shared_state,
                 command=action,
                 task_ids=task_ids,
-                agent=task_id if action in {"request_teammate_status", "request_teammate_plan", "show_teammate", "review_teammate", "approve_teammate_plans", "reject_teammate_plans"} else "",
+                agent=(
+                    task_id
+                    if action in {"request_teammate_status", "request_teammate_plan", "show_teammate", "review_teammate", "approve_teammate_plans", "reject_teammate_plans"}
+                    else current_review_agent
+                    if action in {"approve_current_review", "reject_current_review"}
+                    else ""
+                ),
                 raw=str(raw_command or ""),
                 valid=action not in {"invalid"},
                 source="interactive",
@@ -842,6 +862,7 @@ def run_interactive_plan_approval_prompt(
             if not next_pending_agent:
                 print("[lead] no pending teammate review available", flush=True)
                 continue
+            current_review_agent = next_pending_agent
             for line in _describe_teammate_review(
                 interaction_snapshot=interaction.get("snapshot", {}),
                 agent_name=next_pending_agent,
@@ -849,6 +870,7 @@ def run_interactive_plan_approval_prompt(
                 print("[lead] " + line, flush=True)
             continue
         if action == "review_teammate":
+            current_review_agent = task_id
             for line in _describe_teammate_review(
                 interaction_snapshot=interaction.get("snapshot", {}),
                 agent_name=task_id,
@@ -857,7 +879,7 @@ def run_interactive_plan_approval_prompt(
             continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve current | reject current | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review next | review teammate <agent> | status <agent> | plan <agent> | pause",
                 flush=True,
             )
             continue
@@ -906,6 +928,49 @@ def run_interactive_plan_approval_prompt(
         if action == "invalid":
             print("[lead] invalid command. Type `help` for options.", flush=True)
             continue
+        if action in {"approve_current_review", "reject_current_review"}:
+            if not current_review_agent:
+                print("[lead] no current review focus. Use `review next` or `review teammate <agent>` first.", flush=True)
+                continue
+            request_resolution = resolve_pending_plan_request_task_ids(
+                lead_context=lead_context,
+                requested_by_agents=[current_review_agent],
+            )
+            resolved_task_ids = list(request_resolution.get("task_ids", []))
+            if not resolved_task_ids:
+                print(f"[lead] no pending approvals requested by {current_review_agent}", flush=True)
+                current_review_agent = ""
+                continue
+            resolution = apply_requested_plan_approvals(
+                lead_context=lead_context,
+                approve_task_ids=resolved_task_ids if action == "approve_current_review" else [],
+                reject_task_ids=resolved_task_ids if action == "reject_current_review" else [],
+                decision_source="interactive",
+            )
+            print(
+                "[lead] "
+                + (
+                    f"approved current review focus {current_review_agent}: "
+                    if action == "approve_current_review"
+                    else f"rejected current review focus {current_review_agent}: "
+                )
+                + ", ".join(resolved_task_ids),
+                flush=True,
+            )
+            pending_plan_approvals = list_plan_approval_requests(
+                shared_state=lead_context.shared_state,
+                status=PLAN_APPROVAL_STATUS_PENDING,
+            )
+            current_review_agent = _next_pending_review_agent_name(
+                interaction_snapshot=refresh_live_lead_interaction(lead_context=lead_context).get("snapshot", {})
+            )
+            if not pending_plan_approvals:
+                return {
+                    **resolution,
+                    "pending_task_ids": [],
+                    "pause_requested": False,
+                }
+            continue
         if action in {"approve_teammate_plans", "reject_teammate_plans"}:
             request_resolution = resolve_pending_plan_request_task_ids(
                 lead_context=lead_context,
@@ -936,6 +1001,10 @@ def run_interactive_plan_approval_prompt(
                     shared_state=lead_context.shared_state,
                     status=PLAN_APPROVAL_STATUS_PENDING,
                 )
+                if task_id == current_review_agent:
+                    current_review_agent = _next_pending_review_agent_name(
+                        interaction_snapshot=refresh_live_lead_interaction(lead_context=lead_context).get("snapshot", {})
+                    )
                 continue
             pending_plan_approvals = []
             break
