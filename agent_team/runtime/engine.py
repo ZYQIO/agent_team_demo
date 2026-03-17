@@ -402,6 +402,8 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
     }:
         return {"action": "approve_all_pending_plans", "raw": text, "task_id": ""}
     parts = text.split()
+    if len(parts) == 2 and parts[0].strip().lower() == "review" and parts[1].strip().lower() in {"pending", "approvals"}:
+        return {"action": "review_pending", "raw": text, "task_id": ""}
     if len(parts) == 3 and parts[0].strip().lower() == "review" and parts[1].strip().lower() in {"teammate", "agent"}:
         task_id = parts[2].strip()
         if task_id:
@@ -593,6 +595,43 @@ def _describe_teammate_review(interaction_snapshot: Mapping[str, Any], agent_nam
     return lines
 
 
+def _describe_pending_teammate_reviews(interaction_snapshot: Mapping[str, Any]) -> List[str]:
+    pending_requests = [
+        item
+        for item in interaction_snapshot.get("plan_approval_requests", [])
+        if isinstance(item, Mapping)
+        and str(item.get("status", "") or "") == PLAN_APPROVAL_STATUS_PENDING
+    ]
+    if not pending_requests:
+        return ["pending_teammate_reviews=none"]
+    grouped: Dict[str, List[Mapping[str, Any]]] = {}
+    for item in pending_requests:
+        agent_name = str(item.get("requested_by", "") or "")
+        if not agent_name:
+            continue
+        grouped.setdefault(agent_name, []).append(item)
+    if not grouped:
+        return ["pending_teammate_reviews=none"]
+    lines = [
+        "pending_teammate_reviews="
+        + ",".join(
+            f"{agent_name}:{len(grouped.get(agent_name, []))}"
+            for agent_name in sorted(grouped.keys())
+        )
+    ]
+    for agent_name in sorted(grouped.keys()):
+        task_ids = [
+            str(item.get("task_id", "") or "")
+            for item in grouped.get(agent_name, [])
+            if str(item.get("task_id", "") or "")
+        ]
+        lines.append(
+            f"pending_teammate={agent_name} task_ids={','.join(task_ids) or 'none'} "
+            f"next=review teammate {agent_name} | approve teammate {agent_name} | reject teammate {agent_name}"
+        )
+    return lines
+
+
 def _print_interactive_plan_approval_status(
     pending_plan_approvals: Sequence[Dict[str, Any]],
     interaction_snapshot: Optional[Mapping[str, Any]] = None,
@@ -630,6 +669,9 @@ def _print_interactive_plan_approval_status(
                 f"last_active_at={item.get('last_active_at', '') or 'n/a'}",
                 flush=True,
             )
+    if isinstance(interaction_snapshot, Mapping):
+        for line in _describe_pending_teammate_reviews(interaction_snapshot=interaction_snapshot):
+            print("[lead] " + line, flush=True)
     print("[lead] interactive_pending_approvals:", flush=True)
     for item in pending_plan_approvals:
         if not isinstance(item, Mapping):
@@ -657,7 +699,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review teammate <agent> | status <agent> | plan <agent> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review teammate <agent> | status <agent> | plan <agent> | pause",
         flush=True,
     )
 
@@ -765,6 +807,10 @@ def run_interactive_plan_approval_prompt(
             ):
                 print("[lead] " + line, flush=True)
             continue
+        if action == "review_pending":
+            for line in _describe_pending_teammate_reviews(interaction_snapshot=interaction.get("snapshot", {})):
+                print("[lead] " + line, flush=True)
+            continue
         if action == "review_teammate":
             for line in _describe_teammate_review(
                 interaction_snapshot=interaction.get("snapshot", {}),
@@ -774,7 +820,7 @@ def run_interactive_plan_approval_prompt(
             continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review teammate <agent> | status <agent> | plan <agent> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review pending | review teammate <agent> | status <agent> | plan <agent> | pause",
                 flush=True,
             )
             continue

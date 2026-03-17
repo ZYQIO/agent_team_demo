@@ -853,6 +853,31 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 self.assertIn("Requested teammate reviews:", teammate_review_command.stdout)
                 self.assertIn("review_pending_approvals=1 task_ids=dynamic_planning", teammate_review_command.stdout)
                 self.assertIn("suggested_actions=status reviewer_gamma", teammate_review_command.stdout)
+                pending_review_command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                        "--review-pending",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    pending_review_command.returncode,
+                    0,
+                    msg=f"stdout:\n{pending_review_command.stdout}\n\nstderr:\n{pending_review_command.stderr}",
+                )
+                self.assertIn("Requested pending teammate reviews:", pending_review_command.stdout)
+                self.assertIn("pending_teammate_reviews=reviewer_gamma:1", pending_review_command.stdout)
+                self.assertIn(
+                    "pending_teammate=reviewer_gamma task_ids=dynamic_planning next=review teammate reviewer_gamma | approve teammate reviewer_gamma | reject teammate reviewer_gamma",
+                    pending_review_command.stdout,
+                )
                 approve_command = subprocess.run(
                     [
                         sys.executable,

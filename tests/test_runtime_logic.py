@@ -734,6 +734,14 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("review pending"),
+            {
+                "action": "review_pending",
+                "raw": "review pending",
+                "task_id": "",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("status reviewer_gamma"),
             {
                 "action": "request_teammate_status",

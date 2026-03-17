@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Pending teammate review checkpoint
+- Goal: let lead scan all current pending approvals by teammate before drilling into one review or approval path
+- Changes:
+  - updated the embedded stdin approval prompt with `review pending` so lead can enumerate pending approvals grouped by teammate from inside the runtime
+  - updated `lead_console.py` with `--review-pending` plus interactive `review pending` support for the same teammate-centric pending approval overview
+  - updated terminal status output and embedded prompt status output to surface pending teammate review summaries alongside raw pending task rows
+  - added regression coverage for `review pending` command parsing and the live console pending-review flow
+- Validation:
+  - `python -m py_compile agent_team/runtime/engine.py skills/agent-team-runtime/scripts/lead_console.py tests/test_runtime_logic.py tests/test_runtime_end_to_end.py`
+  - `python -m unittest tests.test_runtime_logic.RuntimeLogicTests.test_parse_interactive_plan_command_supports_embedded_lead_prompt tests.test_runtime_end_to_end.RuntimeEndToEndTests.test_cli_live_lead_status_request_records_teammate_reply -v`
+  - full suite: `142/142` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should keep reducing embedded control fragmentation, likely by making the runtime prompt itself steer lead through the next pending teammate review/decision path instead of requiring manual command selection
+
 ### 2026-03-17 - Teammate review checkpoint
 - Goal: unify teammate inspection, recent lead-visible message context, pending approvals, and likely next actions into one Codex-friendly review output
 - Changes:
