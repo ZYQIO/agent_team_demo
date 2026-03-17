@@ -1314,6 +1314,7 @@ def append_host_enforcement_to_final_report(report_path: pathlib.Path, snapshot:
             lines.append(
                 f"- Host environment: cli_installed={environment.get('cli_installed', False)} "
                 f"relay={environment.get('relay_host', '')} "
+                f"official_relay_active={environment.get('official_relay_active', False)} "
                 f"relay_source={environment.get('relay_source', '')} "
                 f"subscription_available={environment.get('subscription_available', '')} "
                 f"native_prerequisites_ready={environment.get('native_session_prerequisites_ready', False)} "

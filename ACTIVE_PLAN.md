@@ -10,7 +10,7 @@ The priority is execution isolation and real teammate transport behavior.
 Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
-Priority 4 is in progress: host mode now has a true host-backed `codex` session backend, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical `claude-code` path in this environment still falls back to the transport-backed `external_process` worker backend.
+Priority 4 is in progress: host mode now has true host-backed `codex_exec` plus guarded `claude_exec` session backends, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical Claude path in this environment still falls back to the transport-backed `external_process` worker backend because official prerequisites are not locally ready.
 Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, and both live control surfaces can inspect one pending request in detail with `show <task_id>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
 
 Direction review (2026-03-10):
@@ -36,7 +36,7 @@ Direction review (2026-03-10, reviewer planning checkpoint):
 Direction review (2026-03-10, analyst checkpoint):
 - the latest three host transport rounds still improved execution semantics and did not regress into artifact-only work
 - built-in workflow analyst task paths now also cross explicit external assignment/result/telemetry contracts
-- the remaining host gap is no longer task-path coverage; it is replacing the `external_process` session-worker backend with a true host-backed teammate session while preserving the explicit contract model
+- the remaining host gap is no longer task-path coverage; it is replacing the remaining `external_process` fallback with validated official-ready host-backed teammate sessions while preserving the explicit contract model
 
 Official parity check (2026-03-11, against current Claude Code Agent Teams docs):
 - the core target is still correct: long-lived teammates, shared task coordination, direct team messaging, and genuinely independent teammate sessions
@@ -46,7 +46,7 @@ Official parity check (2026-03-11, against current Claude Code Agent Teams docs)
 Direction review (2026-03-11, lead console checkpoint):
 - the last three parity-focused rounds improved official Agent Teams behavior rather than transport-only depth
 - they did not drift into artifact-only work; the latest slice added a real in-run control loop through live snapshots plus a terminal lead console
-- the priority order still holds: the remaining gaps are true host-backed teammate sessions and a richer embedded lead control surface, not more reporting
+- the priority order still holds: the remaining gaps are official-ready host-backed teammate validation and a richer embedded lead control surface, not more reporting
 
 Direction review (2026-03-11, embedded lead prompt checkpoint):
 - the latest parity slice still improved in-run behavior rather than adding another artifact layer
@@ -56,7 +56,12 @@ Direction review (2026-03-11, embedded lead prompt checkpoint):
 Direction review (2026-03-17, Codex host plus approval preview checkpoint):
 - the last three rounds improved execution semantics and lead-side runtime behavior rather than artifact-only visibility
 - the runtime now has one true host-backed session backend plus readable preview details for pending teammate plans
-- the priority order should tilt toward Priority 5 for the next slice unless a trustworthy direct `claude-code` backend becomes available locally; the remaining host gap is now Claude-specific authenticity rather than absence of any host-backed backend
+- the priority order should tilt toward Priority 5 for the next slice unless an official-ready Claude environment becomes available locally; the remaining host gap is now Claude-specific validation/authenticity rather than absence of any host-backed backend
+
+Direction review (2026-03-17, guarded Claude backend checkpoint):
+- the latest three rounds still improved execution semantics instead of drifting into artifact-only work
+- the runtime now has a guarded `claude_exec` backend, but it only counts as Claude-parity execution when the local relay is canonical and native prerequisites are truly ready
+- the priority order should now tilt toward Priority 5 unless an official-ready Claude environment is available for live backend validation
 
 ## Priority Order
 
@@ -121,7 +126,7 @@ Status: In Progress
 
 Why:
 - built-in workflow teammate task paths now cross an external boundary through explicit assignment/result/telemetry contracts
-- the next value is replacing the `external_process` backend with a real host-backed teammate session, not inventing more in-runtime mailbox ceremony
+- the next value is replacing the remaining `external_process` fallback with validated official-ready host-backed teammate sessions, not inventing more in-runtime mailbox ceremony
 
 Recent completed outcomes:
 - host assigned-task results now carry explicit task-mutation payloads for reviewer `dynamic_planning` and `repo_dynamic_planning`
@@ -131,13 +136,14 @@ Recent completed outcomes:
 - lead-side `task_context_prepared` logging now stays accurate for assigned host tasks, keeping `context_boundaries.json` valid under full teammate offload
 - host-mode enforcement and boundary artifacts now record the current `external_process` backend explicitly instead of treating transport-backed host workers as true host-native sessions
 - `host_kind=codex` now uses a real host-backed `codex_exec` session backend with persisted Codex thread ids, while preserving the existing lead-owned assignment/result/telemetry contracts through a one-shot host session task entrypoint
-- `host_kind=claude-code` host metadata now probes local CLI/relay/subscription prerequisites and records them in `host_enforcement.json`, so blocked local environments are visible as explicit runtime state instead of implicit operator knowledge
+- `host_kind=claude-code` host metadata now probes local CLI/relay/subscription prerequisites, rejects third-party relay configurations as non-parity execution, and records that state in `host_enforcement.json`
+- `host_kind=claude-code` now also has a guarded `claude_exec` session backend that preserves the existing lead-owned assignment/result/telemetry contracts, but only activates when native Claude prerequisites are ready on the canonical relay
 
 Acceptance criteria:
 - built-in workflow teammate task paths remain off the lead-inline executor
 - artifacts and event logs continue to describe the real boundary used for each task path
 - host task-mutation flows stay on explicit lead-applied contracts instead of regressing to direct shared-state or board mutation from worker contexts
-- the remaining `claude-code` backend swap does not hide whether a task ran through `external_process` versus a true host-backed session such as `codex_exec`, and does not erase local prerequisite state such as relay selection or subscription availability
+- the remaining Claude host work does not hide whether a task ran through `external_process` versus a true host-backed session such as `codex_exec` or `claude_exec`, and does not erase local prerequisite state such as relay selection, official-relay posture, or subscription availability
 
 ### 5. Add lead-facing team interaction and plan approval
 Status: In Progress

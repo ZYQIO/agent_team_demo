@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -11,6 +12,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from ..config import ModelConfig, RuntimeConfig
 from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState, task_from_dict
+from ..host import probe_host_environment
 from ..models import build_provider
 from ..runtime.lead_interaction import plan_approval_required, queue_plan_approval_request
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
@@ -32,6 +34,7 @@ HOST_EXTERNAL_WORKER_NAMES_ATTR = "_host_external_worker_names"
 HOST_ASSIGNED_TASK_LOCKS_ATTR = "_host_assigned_task_locks"
 HOST_WORKER_PAYLOAD_DIRNAME = "_host_session_workers"
 HOST_SESSION_BACKEND_EXTERNAL_PROCESS = "external_process"
+HOST_SESSION_BACKEND_CLAUDE_EXEC = "claude_exec"
 HOST_SESSION_BACKEND_CODEX_EXEC = "codex_exec"
 HOST_SESSION_TASK_RESULT_SCHEMA_FILENAME = "codex_session_result.schema.json"
 
@@ -47,6 +50,16 @@ def _normalize_host_kind(value: str) -> str:
 
 def host_session_backend_metadata(host_kind: str = "") -> Dict[str, Any]:
     normalized_kind = _normalize_host_kind(host_kind)
+    if normalized_kind == "claude-code":
+        environment = probe_host_environment(normalized_kind)
+        if bool(environment.get("native_session_prerequisites_ready", False)):
+            return {
+                "backend": HOST_SESSION_BACKEND_CLAUDE_EXEC,
+                "source": "host",
+                "host_managed": True,
+                "session_isolation_active": True,
+                "workspace_isolation_active": False,
+            }
     if normalized_kind == "codex":
         return {
             "backend": HOST_SESSION_BACKEND_CODEX_EXEC,
@@ -336,6 +349,50 @@ def _parse_codex_exec_output(stdout: str) -> Dict[str, str]:
     }
 
 
+def _parse_claude_stream_output(stdout: str) -> Dict[str, str]:
+    session_id = ""
+    assistant_text = ""
+    result_text = ""
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        session_id = str(payload.get("session_id", "") or session_id)
+        message_type = str(payload.get("type", "") or "")
+        if message_type == "assistant":
+            message = payload.get("message", {})
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content", [])
+            if not isinstance(content, list):
+                continue
+            text_parts = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type", "") or "") != "text":
+                    continue
+                text_value = str(item.get("text", "") or "")
+                if text_value:
+                    text_parts.append(text_value)
+            if text_parts:
+                assistant_text = "\n".join(text_parts)
+            continue
+        if message_type == "result" and str(payload.get("subtype", "") or "") == "success":
+            result_text = str(payload.get("result", "") or result_text)
+    return {
+        "session_id": session_id,
+        "assistant_text": assistant_text,
+        "result_text": result_text,
+    }
+
+
 def _parse_json_object_text(raw_text: str) -> Dict[str, Any]:
     text = str(raw_text or "").strip()
     if not text:
@@ -375,6 +432,28 @@ def _codex_session_prompt(
     )
     return (
         f'You are the persistent Codex teammate session for agent "{profile_name}".\n'
+        "Run the exact PowerShell command below and wait for it to finish.\n"
+        "Do not change the command.\n"
+        f"{command}\n\n"
+        f'After the command finishes, read the JSON file at "{result_path}".\n'
+        "Reply with exactly one JSON object and nothing else.\n"
+        f'If the file exists, reply with {json.dumps({"status": "ok", "result_path": str(result_path)}, ensure_ascii=False)}.\n'
+        'If the command fails or the file is missing, reply with {"status":"error","error":"brief reason"}.\n'
+    )
+
+
+def _claude_session_prompt(
+    runtime_script: pathlib.Path,
+    payload_path: pathlib.Path,
+    result_path: pathlib.Path,
+    profile_name: str,
+) -> str:
+    command = (
+        f'& "{sys.executable}" "{runtime_script}" '
+        f'--host-session-task-file "{payload_path}"'
+    )
+    return (
+        f'You are the persistent Claude Code teammate session for agent "{profile_name}".\n'
         "Run the exact PowerShell command below and wait for it to finish.\n"
         "Do not change the command.\n"
         f"{command}\n\n"
@@ -623,6 +702,331 @@ class _CodexHostSessionWorker(threading.Thread):
             task_context=task_context,
         )
         result_payload = self._run_codex_task(task_id=task.task_id, assignment_payload=payload)
+        self._send_session_telemetry(
+            event_type="status",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            status="running",
+        )
+        success = bool(result_payload.get("success", False))
+        outbound_payload = {
+            "contract": "session_task_result",
+            "contract_version": 1,
+            "transport": "host",
+            "execution_mode": "session_thread",
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "worker": self.profile_name,
+            "success": success,
+            "result": result_payload.get("result", {}) if success else {},
+            "error": "" if success else str(result_payload.get("error", "") or "unknown worker error"),
+            "state_updates": result_payload.get("state_updates", {}) if success else {},
+            "task_mutations": result_payload.get("task_mutations", {}) if success else {},
+        }
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=str(self._lead_context.profile.name or "lead"),
+            subject=SESSION_TASK_RESULT_SUBJECT,
+            body=json.dumps(outbound_payload, ensure_ascii=False),
+            task_id=task.task_id,
+        )
+        self._send_session_telemetry(
+            event_type="task_result",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            success=success,
+        )
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            messages = self._lead_context.mailbox.pull_matching(
+                self.profile_name,
+                lambda message: message.subject in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT},
+            )
+            handled_any = False
+            for message in messages:
+                handled_any = True
+                if message.subject == SESSION_CONTROL_SUBJECT:
+                    self._stop_event.set()
+                    continue
+                task_id = str(message.task_id or "")
+                if not self._activate_assigned_task(task_id):
+                    continue
+                try:
+                    self._handle_assignment(message)
+                except Exception as exc:
+                    self._lead_context.mailbox.send(
+                        sender=self.profile_name,
+                        recipient=str(self._lead_context.profile.name or "lead"),
+                        subject=SESSION_TASK_RESULT_SUBJECT,
+                        body=json.dumps(
+                            {
+                                "contract": "session_task_result",
+                                "contract_version": 1,
+                                "transport": "host",
+                                "execution_mode": "session_thread",
+                                "task_id": task_id,
+                                "task_type": "",
+                                "worker": self.profile_name,
+                                "success": False,
+                                "result": {},
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "state_updates": {},
+                                "task_mutations": {},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        task_id=task_id,
+                    )
+                    self._send_session_telemetry(
+                        event_type="task_result",
+                        task_id=task_id,
+                        task_type="",
+                        success=False,
+                    )
+                    self._lead_context.logger.log(
+                        "host_session_worker_task_failed",
+                        worker=self.profile_name,
+                        task_id=task_id,
+                        session_worker_backend=self.worker_backend,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                finally:
+                    self._finish_assigned_task(task_id)
+            if not handled_any:
+                time.sleep(0.05)
+
+
+class _ClaudeHostSessionWorker(threading.Thread):
+    worker_backend = HOST_SESSION_BACKEND_CLAUDE_EXEC
+
+    def __init__(
+        self,
+        lead_context: Any,
+        profile: AgentProfile,
+    ) -> None:
+        super().__init__(name=f"host-claude-{profile.name}", daemon=True)
+        self._lead_context = lead_context
+        self._profile = profile
+        self.profile_name = str(profile.name or "")
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._assigned_task_id = ""
+        self._assigned_task_active = False
+        session_registry = getattr(lead_context, "session_registry", None)
+        existing_session = (
+            session_registry.session_for(self.profile_name)
+            if session_registry is not None
+            else {}
+        )
+        self._session_id = str(existing_session.get("session_id", "") or "")
+
+    def is_alive(self) -> bool:
+        return super().is_alive() and (not self._stop_event.is_set())
+
+    def can_accept_assigned_task(self) -> bool:
+        with self._lock:
+            return (not self._stop_event.is_set()) and (not self._assigned_task_active) and (not self._assigned_task_id)
+
+    def reserve_assigned_task(self, task_id: str) -> bool:
+        normalized_task_id = str(task_id or "")
+        if not normalized_task_id:
+            return False
+        with self._lock:
+            if self._stop_event.is_set() or self._assigned_task_active or self._assigned_task_id:
+                return False
+            self._assigned_task_id = normalized_task_id
+        return True
+
+    def release_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            if not self._assigned_task_active:
+                self._assigned_task_id = ""
+
+    def stop(
+        self,
+        mailbox: Mailbox,
+        lead_name: str,
+        logger: Any,
+        timeout_sec: float = 5.0,
+    ) -> None:
+        del mailbox, lead_name
+        self._stop_event.set()
+        logger.log(
+            "host_session_worker_stop_requested",
+            worker=self.profile_name,
+            session_worker_backend=self.worker_backend,
+        )
+        self.join(timeout=max(0.1, float(timeout_sec)))
+
+    def _activate_assigned_task(self, task_id: str) -> bool:
+        normalized_task_id = str(task_id or "")
+        if not normalized_task_id:
+            return False
+        with self._lock:
+            if self._assigned_task_active:
+                return False
+            if self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return False
+            self._assigned_task_active = True
+            self._assigned_task_id = normalized_task_id
+        return True
+
+    def _finish_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            self._assigned_task_active = False
+            self._assigned_task_id = ""
+
+    def _send_session_telemetry(
+        self,
+        event_type: str,
+        task_id: str = "",
+        task_type: str = "",
+        success: Optional[bool] = None,
+        status: str = "",
+        task_context: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "agent": self.profile_name,
+            "agent_type": self._profile.agent_type,
+            "skills": sorted(self._profile.skills),
+            "event_type": event_type,
+            "transport": "host",
+            "transport_backend": self.worker_backend,
+            "session_id": self._session_id,
+            "transport_session_name": f"claude-code:{self.profile_name}",
+            "task_id": str(task_id or ""),
+            "task_type": str(task_type or ""),
+        }
+        if status:
+            payload["status"] = str(status)
+            payload["current_task_id"] = str(task_id or "")
+            payload["current_task_type"] = str(task_type or "")
+        if success is not None:
+            payload["success"] = bool(success)
+            payload["status"] = "ready" if success else "error"
+        if isinstance(task_context, Mapping):
+            payload["visible_shared_state_keys"] = list(task_context.get("visible_shared_state_keys", []))
+            payload["visible_shared_state_key_count"] = int(
+                task_context.get(
+                    "visible_shared_state_key_count",
+                    len(payload["visible_shared_state_keys"]),
+                )
+                or 0
+            )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=str(self._lead_context.profile.name or "lead"),
+            subject=SESSION_TELEMETRY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(task_id or ""),
+        )
+
+    def _run_claude_task(
+        self,
+        task_id: str,
+        assignment_payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        worker_dir = pathlib.Path(self._lead_context.output_dir) / HOST_WORKER_PAYLOAD_DIRNAME / self.profile_name
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        result_path = worker_dir / f"{task_id}.result.json"
+        prompt_path = worker_dir / f"{task_id}.payload.json"
+        runtime_script = pathlib.Path(str(self._lead_context.runtime_script or "")).resolve()
+        if not runtime_script.exists():
+            raise RuntimeError(f"host runtime_script not found: {runtime_script}")
+        task_payload = _build_host_session_task_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            assignment_payload=assignment_payload,
+            result_path=result_path,
+        )
+        prompt_path.write_text(json.dumps(task_payload, ensure_ascii=False), encoding="utf-8")
+        if result_path.exists():
+            result_path.unlink()
+        prompt = _claude_session_prompt(
+            runtime_script=runtime_script,
+            payload_path=prompt_path,
+            result_path=result_path,
+            profile_name=self.profile_name,
+        )
+        command = [
+            "claude",
+            "--output-format",
+            "stream-json",
+            "--verbose",
+            "--permission-mode",
+            "bypassPermissions",
+        ]
+        if self._session_id:
+            command.extend(["--resume", self._session_id])
+        command.extend(["-p", prompt])
+        env = dict(os.environ)
+        env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
+        env["DISABLE_TELEMETRY"] = "1"
+        env["DISABLE_AUTOUPDATER"] = "1"
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            cwd=str(pathlib.Path(self._lead_context.target_dir).resolve()),
+            env=env,
+            timeout=max(60, int(getattr(self._lead_context.runtime_config, "provider_timeout_sec", 60) or 60) * 12),
+        )
+        parsed_output = _parse_claude_stream_output(completed.stdout)
+        session_id = str(parsed_output.get("session_id", "") or "")
+        if session_id:
+            self._session_id = session_id
+        response_payload = _parse_json_object_text(
+            parsed_output.get("result_text", "") or parsed_output.get("assistant_text", "")
+        )
+        if completed.returncode != 0:
+            error = response_payload.get("error", "") if isinstance(response_payload, Mapping) else ""
+            raise RuntimeError(
+                error
+                or f"claude exec failed for {self.profile_name} task {task_id}: {completed.stderr.strip() or completed.stdout.strip()}"
+            )
+        if str(response_payload.get("status", "") or "") != "ok":
+            error = str(response_payload.get("error", "") or "").strip()
+            raise RuntimeError(error or f"claude session did not acknowledge task {task_id}")
+        resolved_result_path = pathlib.Path(
+            str(response_payload.get("result_path", "") or result_path)
+        ).resolve()
+        if not resolved_result_path.exists():
+            raise RuntimeError(f"claude session result file missing: {resolved_result_path}")
+        result_payload = json.loads(resolved_result_path.read_text(encoding="utf-8"))
+        if not isinstance(result_payload, dict):
+            raise RuntimeError(f"invalid claude session result payload for {task_id}")
+        return result_payload
+
+    def _handle_assignment(self, message: Any) -> None:
+        try:
+            payload = json.loads(message.body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid assignment payload: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("invalid assignment payload: missing object")
+        task_payload = payload.get("task", {})
+        if not isinstance(task_payload, dict):
+            raise RuntimeError("invalid assignment payload: missing task")
+        task = task_from_dict(task_payload)
+        task_context = payload.get("task_context", {})
+        if not isinstance(task_context, dict):
+            task_context = {}
+        self._send_session_telemetry(
+            event_type="bind_task",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            task_context=task_context,
+        )
+        result_payload = self._run_claude_task(task_id=task.task_id, assignment_payload=payload)
         self._send_session_telemetry(
             event_type="status",
             task_id=task.task_id,
@@ -1031,11 +1435,36 @@ def _spawn_codex_host_session_worker(
     return worker
 
 
+def _spawn_claude_host_session_worker(
+    lead_context: Any,
+    profile: AgentProfile,
+) -> _ClaudeHostSessionWorker:
+    runtime_meta = _host_worker_runtime(lead_context=lead_context)
+    runtime_script = pathlib.Path(str(runtime_meta.get("runtime_script", "") or "")).resolve()
+    if not runtime_script.exists():
+        raise RuntimeError(f"host runtime_script not found: {runtime_script}")
+    worker = _ClaudeHostSessionWorker(lead_context=lead_context, profile=profile)
+    worker.start()
+    lead_context.logger.log(
+        "host_session_worker_started",
+        worker=profile.name,
+        session_worker_backend=HOST_SESSION_BACKEND_CLAUDE_EXEC,
+        workflow_pack=str(runtime_meta.get("workflow_pack", "") or "markdown-audit"),
+    )
+    return worker
+
+
 def _spawn_host_session_worker(
     lead_context: Any,
     profile: AgentProfile,
 ) -> Any:
-    if _host_kind(lead_context=lead_context) == "codex":
+    backend_name = str(
+        host_session_backend_metadata(host_kind=_host_kind(lead_context=lead_context)).get("backend", "")
+        or HOST_SESSION_BACKEND_EXTERNAL_PROCESS
+    )
+    if backend_name == HOST_SESSION_BACKEND_CLAUDE_EXEC:
+        return _spawn_claude_host_session_worker(lead_context=lead_context, profile=profile)
+    if backend_name == HOST_SESSION_BACKEND_CODEX_EXEC:
         return _spawn_codex_host_session_worker(lead_context=lead_context, profile=profile)
     return _spawn_external_process_host_session_worker(lead_context=lead_context, profile=profile)
 
@@ -1065,6 +1494,7 @@ def ensure_host_session_workers(
         active_workers[str(name)] = worker
         if str(getattr(worker, "worker_backend", "") or "") in {
             HOST_SESSION_BACKEND_EXTERNAL_PROCESS,
+            HOST_SESSION_BACKEND_CLAUDE_EXEC,
             HOST_SESSION_BACKEND_CODEX_EXEC,
         }:
             external_names.add(str(name))

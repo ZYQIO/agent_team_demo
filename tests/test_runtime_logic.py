@@ -18,6 +18,7 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 import agent_team_runtime as runtime
+import agent_team.transports.host as host_transport
 from agent_team.host import build_host_adapter
 from agent_team.runtime.engine import run_lead_tasks_once
 from agent_team.workflows import build_workflow_lead_task_order, build_workflow_runtime_metadata
@@ -4737,14 +4738,138 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(environment.get("kind"), "claude-code")
         self.assertTrue(environment.get("cli_installed"))
         self.assertEqual(environment.get("relay_host"), "relay07.example.com")
+        self.assertEqual(environment.get("relay_host_normalized"), "relay07.example.com")
         self.assertEqual(environment.get("relay_source"), "relay_file")
+        self.assertFalse(environment.get("official_relay_active"))
         self.assertFalse(environment.get("subscription_available"))
         self.assertFalse(environment.get("native_session_prerequisites_ready"))
         self.assertEqual(
             environment.get("native_session_prerequisite_reason"),
-            "subscription_unavailable",
+            "unsupported_relay",
         )
-        self.assertIn("claude_code_prerequisites_subscription_unavailable", metadata.get("limits", []))
+        self.assertIn("claude_code_prerequisites_unsupported_relay", metadata.get("limits", []))
+
+    def test_build_host_runtime_metadata_blocks_third_party_relay_even_with_subscription(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home_dir = pathlib.Path(tmp)
+            claudecode_dir = home_dir / ".claudecode"
+            claudecode_dir.mkdir(parents=True, exist_ok=True)
+            (claudecode_dir / "relay").write_text(
+                json.dumps({"host": "relay07.example.com"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (home_dir / ".claude.json").write_text(
+                json.dumps({"hasAvailableSubscription": True}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with mock.patch("agent_team.host.pathlib.Path.home", return_value=home_dir):
+                with mock.patch("agent_team.host.shutil.which", return_value="C:\\tools\\claude.cmd"):
+                    with mock.patch.dict("agent_team.host.os.environ", {}, clear=True):
+                        metadata = build_host_adapter(
+                            runtime.default_host_config("claude-code")
+                        ).runtime_metadata()
+
+        environment = metadata.get("environment", {})
+        self.assertTrue(environment.get("subscription_available"))
+        self.assertFalse(environment.get("official_relay_active"))
+        self.assertFalse(environment.get("native_session_prerequisites_ready"))
+        self.assertEqual(environment.get("native_session_prerequisite_reason"), "unsupported_relay")
+        self.assertIn("claude_code_prerequisites_unsupported_relay", metadata.get("limits", []))
+
+    def test_host_session_backend_metadata_selects_claude_exec_when_prerequisites_ready(self) -> None:
+        with mock.patch.object(
+            host_transport,
+            "probe_host_environment",
+            return_value={
+                "kind": "claude-code",
+                "native_session_prerequisites_ready": True,
+                "native_session_prerequisite_reason": "subscription_available",
+            },
+        ):
+            metadata = host_transport.host_session_backend_metadata(host_kind="claude-code")
+
+        self.assertEqual(metadata.get("backend"), host_transport.HOST_SESSION_BACKEND_CLAUDE_EXEC)
+        self.assertEqual(metadata.get("source"), "host")
+        self.assertTrue(metadata.get("host_managed"))
+        self.assertTrue(metadata.get("session_isolation_active"))
+
+    def test_parse_claude_stream_output_extracts_session_id_and_result(self) -> None:
+        stdout = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "type": "system",
+                        "subtype": "init",
+                        "session_id": "claude-session-123",
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "session_id": "claude-session-123",
+                        "message": {
+                            "content": [
+                                {
+                                    "type": "text",
+                                    "text": '{"status":"ok","result_path":"C:/tmp/from-assistant.json"}',
+                                }
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    {
+                        "type": "result",
+                        "subtype": "success",
+                        "session_id": "claude-session-123",
+                        "result": '{"status":"ok","result_path":"C:/tmp/final.json"}',
+                    },
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+
+        parsed = host_transport._parse_claude_stream_output(stdout)
+
+        self.assertEqual(parsed.get("session_id"), "claude-session-123")
+        self.assertEqual(parsed.get("assistant_text"), '{"status":"ok","result_path":"C:/tmp/from-assistant.json"}')
+        self.assertEqual(parsed.get("result_text"), '{"status":"ok","result_path":"C:/tmp/final.json"}')
+
+    def test_spawn_host_session_worker_selects_claude_backend_when_ready(self) -> None:
+        lead_context = mock.Mock()
+        lead_context.shared_state = runtime.SharedState()
+        lead_context.shared_state.set("host", {"kind": "claude-code"})
+        profile = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+
+        with mock.patch.object(
+            host_transport,
+            "host_session_backend_metadata",
+            return_value={"backend": host_transport.HOST_SESSION_BACKEND_CLAUDE_EXEC},
+        ):
+            with mock.patch.object(
+                host_transport,
+                "_spawn_claude_host_session_worker",
+                return_value="claude-worker",
+            ):
+                with mock.patch.object(
+                    host_transport,
+                    "_spawn_codex_host_session_worker",
+                    return_value="codex-worker",
+                ):
+                    with mock.patch.object(
+                        host_transport,
+                        "_spawn_external_process_host_session_worker",
+                        return_value="external-worker",
+                    ):
+                        worker = host_transport._spawn_host_session_worker(
+                            lead_context=lead_context,
+                            profile=profile,
+                        )
+
+        self.assertEqual(worker, "claude-worker")
 
     def test_build_host_enforcement_snapshot_includes_claude_environment_probe(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -4779,13 +4904,74 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(environment.get("kind"), "claude-code")
         self.assertEqual(environment.get("relay_host"), "gaccode.com")
         self.assertEqual(environment.get("relay_source"), "canonical_default")
+        self.assertTrue(environment.get("official_relay_active"))
         self.assertFalse(environment.get("native_session_prerequisites_ready"))
         self.assertEqual(
             environment.get("native_session_prerequisite_reason"),
             "subscription_unavailable",
         )
         self.assertIn("claude_code_canonical_relay_defaulted", snapshot["notes"])
+        self.assertIn("claude_code_official_relay_active", snapshot["notes"])
         self.assertIn("claude_code_prerequisites_subscription_unavailable", snapshot["notes"])
+
+    def test_build_host_enforcement_snapshot_preserves_claude_host_backend_as_host_managed(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+        shared_state.set("policies", {"allow_host_managed_context": True})
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "claude-code",
+                "configured_session_transport": "session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "runtime_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": False,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": True,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
+                "host_session_backend": "claude_exec",
+                "host_session_backend_source": "host",
+                "host_session_backend_host_managed": True,
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+
+        snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_enforcement"], "host_managed")
+        self.assertEqual(snapshot["workspace_enforcement"], "runtime_managed")
+        self.assertTrue(snapshot["host_native_session_active"])
+        self.assertFalse(snapshot["host_native_workspace_active"])
+        self.assertTrue(snapshot["host_managed_context_active"])
+        self.assertEqual(snapshot["host_session_backend"], "claude_exec")
+        self.assertEqual(snapshot["host_session_backend_source"], "host")
+        self.assertTrue(snapshot["host_session_backend_host_managed"])
+        self.assertIn("host_session_backend_claude_exec", snapshot["notes"])
+        self.assertIn("host_transport_manages_session_boundaries", snapshot["notes"])
 
     def test_build_host_enforcement_snapshot_downgrades_external_process_host_backend(self) -> None:
         shared_state = runtime.SharedState()
@@ -5029,6 +5215,74 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(session["transport_backend"], "codex_exec")
         self.assertEqual(session["session_id"], "thread-codex-123")
         self.assertEqual(session["transport_session_name"], "codex:analyst_alpha")
+        self.assertEqual(session["boundary_mode"], "host_native_session")
+        self.assertIn("session_isolation_backed_by_host_transport", session["notes"])
+
+    def test_build_session_boundary_snapshot_treats_claude_host_backend_as_host_native(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "claude-code",
+                "session_transport": "session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "claude-code",
+                "configured_session_transport": "session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "runtime_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": False,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": False,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": True,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
+                "host_session_backend": "claude_exec",
+                "host_session_backend_source": "host",
+                "host_session_backend_host_managed": True,
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+        registry.ensure_profile(profile=reviewer, transport="host", status="ready")
+        registry.apply_telemetry(
+            {
+                "agent": "reviewer_gamma",
+                "agent_type": "reviewer",
+                "skills": ["review"],
+                "event_type": "status",
+                "transport": "host",
+                "transport_backend": "claude_exec",
+                "transport_session_name": "claude-code:reviewer_gamma",
+                "session_id": "claude-session-123",
+                "status": "ready",
+            }
+        )
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["host_native_session"], 1)
+        session = snapshot["sessions"][0]
+        self.assertEqual(session["transport_backend"], "claude_exec")
+        self.assertEqual(session["session_id"], "claude-session-123")
+        self.assertEqual(session["transport_session_name"], "claude-code:reviewer_gamma")
         self.assertEqual(session["boundary_mode"], "host_native_session")
         self.assertIn("session_isolation_backed_by_host_transport", session["notes"])
 

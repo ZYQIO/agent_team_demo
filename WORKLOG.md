@@ -13,6 +13,25 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Guarded Claude host backend checkpoint
+- Goal: add a real `claude_exec` host-backed session backend without treating third-party relay environments as official Claude Code parity
+- Changes:
+  - added a guarded `claude_exec` host session worker that uses `claude --output-format stream-json --verbose -p` plus persisted `session_id` resume while preserving the existing lead-owned `session_task_result` and `session_telemetry` contracts
+  - switched `host_kind=claude-code` backend selection to use `claude_exec` when local native-session prerequisites are ready
+  - tightened the Claude environment probe to normalize relay hostnames, record `official_relay_active`, and treat third-party relay configurations as `unsupported_relay` so guarded Claude execution only activates on the canonical relay
+  - updated host enforcement/final-report metadata plus parity docs so runtime state now shows official-relay posture instead of treating any relay-capable CLI as equivalent to official Claude Code
+  - added regression coverage for guarded Claude backend selection, stream-json parsing, host-native boundary classification, and third-party-relay blocking
+  - direction review: the last three rounds still improved execution semantics rather than artifact-only layers; the runtime remains aligned with official Claude Code Agent Teams, and the next slice should tilt toward richer embedded lead control unless an official-ready Claude environment is available for live backend validation
+- Validation:
+  - `python -m py_compile agent_team\host.py agent_team\transports\host.py agent_team\runtime\session_state.py agent_team\runtime\persistence.py tests\test_runtime_logic.py`
+  - targeted Claude host logic tests passed
+  - full suite: `138/138` tests passed
+  - real CLI host smoke passed: `.codex_tmp\smoke_output_host_claude_guarded`
+  - verifier passed for that smoke output
+  - smoke artifact review confirmed `official_relay_active=true`, `native_session_prerequisite_reason=subscription_unavailable`, `host_session_backend=external_process`, and `worker_subprocess_session` boundaries on this machine
+- Commit: recorded in the git history for this round
+- Next implication: in this environment, the next highest-value parity slice is richer embedded lead control; Claude host work now mainly needs live validation in an official-ready setup rather than more fallback semantics
+
 ### 2026-03-17 - Claude host prerequisite visibility checkpoint
 - Goal: stop treating the local `claude-code` host gap as a vague transport issue when the actual blocker can be relay or subscription state on the machine
 - Changes:
@@ -24,7 +43,7 @@ Each entry should capture:
   - `python -m py_compile agent_team\\host.py agent_team\\runtime\\persistence.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
   - targeted tests passed for Claude host environment probe and host-mode CLI artifacts
   - full suite: `132/132` tests passed
-- Commit: pending current round
+- Commit: `aa77576`
 - Next implication: the next host slice should either wire a trustworthy native `claude-code` backend or make the fallback/selection policy explicit, but it no longer needs to rediscover local relay and subscription state first
 
 ### 2026-03-17 - Detailed pending-plan inspection checkpoint
@@ -37,7 +56,7 @@ Each entry should capture:
 - Validation:
   - `python -m py_compile agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\engine.py agent_team\\runtime\\__init__.py agent_team_runtime.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
   - full suite: `130/130` tests passed
-- Commit: pending current round
+- Commit: `8a3189e`
 - Next implication: the next lead-facing parity slice should keep pushing embedded runtime control richness instead of adding new parallel approval surfaces
 
 ### 2026-03-17 - Lead approval preview checkpoint
@@ -79,7 +98,7 @@ Each entry should capture:
 - Validation:
   - `python -m py_compile agent_team\\host.py agent_team\\runtime\\engine.py agent_team\\runtime\\session_state.py agent_team\\transports\\host.py agent_team\\runtime\\persistence.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
   - targeted tests passed for host enforcement downgrade, host boundary classification, inline host fallback boundary recording, and host-mode CLI artifact output
-- Commit: pending current round
+- Commit: `fcab444`
 - Next implication: the remaining host gap is now represented more honestly in artifacts and tests, so the next transport round can focus on replacing the backend rather than arguing about what the current backend is
 ### 2026-03-11 - Embedded lead prompt checkpoint
 - Goal: move lead plan approval one step closer to an embedded in-run control surface instead of depending on a separate console or file edit workflow

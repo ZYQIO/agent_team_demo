@@ -5,6 +5,7 @@ import json
 import os
 import pathlib
 import shutil
+import urllib.parse
 from typing import Any, Dict, List, Mapping
 
 from .config import HostConfig, RuntimeConfig
@@ -61,6 +62,19 @@ def _load_json_file(path: pathlib.Path) -> Dict[str, Any]:
     return {str(key): payload[key] for key in payload}
 
 
+def _normalize_relay_host(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    parsed = urllib.parse.urlparse(text if "://" in text else f"https://{text}")
+    host = str(parsed.netloc or parsed.path or "").strip().lower()
+    if "@" in host:
+        host = host.rsplit("@", 1)[-1]
+    if host.count(":") == 1:
+        host = host.split(":", 1)[0]
+    return host.strip()
+
+
 def _probe_codex_environment() -> Dict[str, Any]:
     cli_path = shutil.which("codex") or ""
     ready = bool(cli_path)
@@ -92,6 +106,8 @@ def _probe_claude_code_environment() -> Dict[str, Any]:
     if relay_host_from_file:
         relay_host = relay_host_from_file
         relay_source = "relay_file"
+    relay_host_normalized = _normalize_relay_host(relay_host)
+    official_relay_active = relay_host_normalized == CLAUDE_CODE_CANONICAL_RELAY
 
     api_key_present = bool(str(os.environ.get("ANTHROPIC_API_KEY", "") or "").strip())
     user_state = _load_json_file(user_state_file)
@@ -99,6 +115,14 @@ def _probe_claude_code_environment() -> Dict[str, Any]:
     subscription_available = (
         subscription_available_raw if isinstance(subscription_available_raw, bool) else None
     )
+    if api_key_present:
+        auth_source = "api_key_env"
+    elif isinstance(subscription_available, bool):
+        auth_source = "claude_json"
+    elif auth_config_file.exists():
+        auth_source = "claude_config"
+    else:
+        auth_source = "unknown"
 
     notes: List[str] = []
     if cli_path:
@@ -111,6 +135,10 @@ def _probe_claude_code_environment() -> Dict[str, Any]:
         notes.append("relay_overridden_by_env")
     else:
         notes.append("canonical_relay_defaulted")
+    if official_relay_active:
+        notes.append("official_relay")
+    else:
+        notes.append("third_party_relay")
     if api_key_present:
         notes.append("auth_api_key_env")
     elif subscription_available is True:
@@ -124,22 +152,21 @@ def _probe_claude_code_environment() -> Dict[str, Any]:
         ready = False
         reason = "cli_missing"
         auth_source = "missing"
+    elif not official_relay_active:
+        ready = False
+        reason = "unsupported_relay"
     elif api_key_present:
         ready = True
         reason = "api_key_env"
-        auth_source = "api_key_env"
     elif subscription_available is True:
         ready = True
         reason = "subscription_available"
-        auth_source = "claude_json"
     elif subscription_available is False:
         ready = False
         reason = "subscription_unavailable"
-        auth_source = "claude_json"
     else:
         ready = False
         reason = "auth_unknown"
-        auth_source = "unknown"
 
     return {
         "kind": "claude-code",
@@ -149,7 +176,9 @@ def _probe_claude_code_environment() -> Dict[str, Any]:
         "auth_config_present": auth_config_file.exists(),
         "relay_file_present": relay_file.exists(),
         "relay_host": relay_host,
+        "relay_host_normalized": relay_host_normalized,
         "relay_source": relay_source,
+        "official_relay_active": official_relay_active,
         "subscription_available": subscription_available,
         "auth_source": auth_source,
         "native_session_prerequisites_ready": ready,
@@ -355,6 +384,10 @@ class HostAdapter:
                 notes.append("claude_code_relay_overridden_by_env")
             elif relay_source:
                 notes.append("claude_code_canonical_relay_defaulted")
+            if bool(environment.get("official_relay_active", False)):
+                notes.append("claude_code_official_relay_active")
+            else:
+                notes.append("claude_code_third_party_relay_detected")
             if bool(environment.get("native_session_prerequisites_ready", False)):
                 notes.append("claude_code_prerequisites_ready")
             else:

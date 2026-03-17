@@ -23,7 +23,7 @@ This folder now contains two layers:
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
-  - host enforcement artifacts that now also surface local `claude-code` relay/subscription prerequisite state when `--host-kind claude-code` is used
+  - host enforcement artifacts that now also surface local `claude-code` relay/subscription prerequisite state when `--host-kind claude-code` is used, including whether the machine is still pointed at a third-party relay instead of the canonical Claude relay
   - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host mode now launching external session-worker subprocesses for built-in workflow analyst tasks plus reviewer mailbox/planning/report/llm tasks via explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox contracts)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
@@ -172,7 +172,7 @@ python3 agent_team_demo/agent_team_runtime.py \
 
 With `--host-kind codex`, assigned host-mode teammate tasks now use a persistent Codex-backed session backend (`host_session_backend=codex_exec`) that reuses `codex exec` / `codex exec resume` thread ids. Session isolation is host-backed on that path; workspace isolation is still unavailable.
 
-With `--host-kind claude-code`, host enforcement artifacts now also record the detected Claude Code relay source/host and whether native-session prerequisites are locally ready, so blocked environments are visible even though runtime execution still falls back to `external_process`.
+With `--host-kind claude-code`, the runtime now has a guarded Claude-backed session backend (`host_session_backend=claude_exec`) that only activates when local prerequisites are ready on the canonical Claude relay. Host enforcement artifacts also record the detected relay source/host plus whether the relay is official, so blocked or third-party-relay environments stay visible and continue to fall back to `external_process`.
 
 Run the second built-in workflow pack:
 
@@ -277,7 +277,7 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode host
 ```
 
-Host mode backend now depends on `host_kind`. `--host-kind claude-code` currently uses external session-worker subprocesses for the built-in workflow teammate task paths: analyst scans/follow-ups plus mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer planning tasks (`dynamic_planning`, `repo_dynamic_planning`), reviewer `llm_synthesis`, report tasks (`recommendation_pack`, `repo_recommendation_pack`), and teammate auto-replies. `--host-kind codex` now runs those assigned-task paths through a persistent Codex-backed host session backend (`host_session_backend=codex_exec`) while preserving the same explicit `session_task_assignment` / `session_task_result` / `session_telemetry` contracts. `host_enforcement.json` records the active backend explicitly so host-mode artifacts no longer blur transport-backed `external_process` workers with true host-backed sessions.
+Host mode backend now depends on `host_kind`. `--host-kind codex` runs assigned host tasks through a persistent Codex-backed host session backend (`host_session_backend=codex_exec`) while preserving the same explicit `session_task_assignment` / `session_task_result` / `session_telemetry` contracts. `--host-kind claude-code` now has the same style of guarded host-backed backend (`host_session_backend=claude_exec`), but it only activates when local Claude prerequisites are ready on the canonical relay; third-party-relay or otherwise blocked environments still use the explicit transport-backed `external_process` worker path for the built-in workflow teammate task paths. `host_enforcement.json` records the active backend explicitly so host-mode artifacts no longer blur transport-backed `external_process` workers with true host-backed sessions.
 
 Resume from a checkpoint:
 
@@ -354,7 +354,7 @@ After runtime execution, output directory contains:
 - `shared_state.json`: shared runtime data
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
-- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from the active backend in use and recording whether host mode is transport-backed (`host_session_backend=external_process`) or host-managed (`host_session_backend=codex_exec`)
+- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from the active backend in use and recording whether host mode is transport-backed (`host_session_backend=external_process`) or host-managed (`host_session_backend=codex_exec` / `host_session_backend=claude_exec`)
 - `session_boundaries.json`: host/session boundary posture for each teammate session, including `transport_backend`, workspace scope, isolated temp/session directories, and host-native descriptors such as `host://<host-kind>/sessions/<session_id>/...` only when a true host-native workspace boundary is active
 - `teammate_sessions.json`: persistent per-agent session ids, transport, transport-session names, memory, recent task/message history, and resume continuity metadata
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity

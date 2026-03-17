@@ -46,12 +46,12 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - analyst worker payloads now return lead-applied `state_updates`, and assigned host tasks still emit lead-side `task_context_prepared` events so `context_boundaries.json` remains accurate under full teammate offload
   - teammate auto-replies in the mailbox-driven reviewer flows now also come from external session-worker subprocesses rather than parent-runtime threads
   - `host_kind=codex` now uses a true host-backed `codex_exec` session backend with persisted Codex thread ids plus a one-shot `--host-session-task-file` runtime entrypoint behind the existing lead-owned assignment/result/telemetry contracts
-  - `host_kind=claude-code` still remains on the transport-backed `external_process` worker backend in this environment, but host enforcement now also records the detected Claude relay source/host and native-session prerequisite status, so Claude-parity host execution is still not complete but its blocker is visible
+  - `host_kind=claude-code` now has a guarded `claude_exec` host-backed session backend, but it only activates when local Claude prerequisites are ready on the canonical relay; this environment still remains on the transport-backed `external_process` worker backend, and host enforcement records the detected relay source/host plus whether the relay is official
 
 ## Main Remaining Gaps
 
 1. Claude Code parity for host teammate mode is still incomplete.
-   The runtime now has a true host-backed `codex_exec` backend, and host enforcement now exposes local Claude relay/subscription prerequisite state, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment.
+   The runtime now has a true host-backed `codex_exec` backend plus a guarded `claude_exec` implementation, and host enforcement exposes local Claude relay/subscription prerequisite state, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment because official prerequisites are not locally ready.
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction is still not a richer embedded in-run surface.
@@ -60,19 +60,19 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 
 ## Recommended Next Step
 
-Replace the remaining `claude-code` `external_process` backend with a trustworthy true host-backed teammate session.
+Validate and harden the guarded `claude_exec` backend in an official-ready Claude environment, while keeping third-party-relay fallback explicit.
 
 Why this is next:
 - The mailbox/request-reply boundary is now credible enough to stop treating it as purely design work.
 - Built-in workflow teammate task paths now all cross explicit assignment/result/telemetry contracts.
-- The next material gap is Claude-parity backend authenticity rather than task-path coverage.
+- The next material gap is official-ready Claude backend validation/authenticity rather than task-path coverage.
 - It matches the updated active plan after the external session-worker round.
 
 What that likely requires:
-- replace the remaining `claude-code` `external_process` worker backend without weakening the existing explicit mailbox/result/telemetry contracts
+- validate the guarded `claude_exec` worker backend in an official-ready Claude environment without weakening the existing explicit mailbox/result/telemetry contracts
 - keep the existing external session-worker contract explicit instead of reintroducing shared in-process state
 - improve event/report surfacing only where needed to describe real external execution, not to add artifact-only detail
-- extend tests and smoke coverage so a true host-backed backend can be distinguished from the remaining `external_process` session worker path
+- keep tests and smoke coverage able to distinguish true host-backed backends from the remaining `external_process` fallback path
 - after backend authenticity is improved, move to lead-facing interaction and plan approval before replay-first work
 
 ## Fast Validation Commands

@@ -623,7 +623,7 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
     host_native_workspace_active = bool(host_enforcement.get("host_native_workspace_active", False))
     host_session_enforcement = str(host_enforcement.get("session_enforcement", "") or "runtime_managed")
     host_workspace_enforcement = str(host_enforcement.get("workspace_enforcement", "") or "runtime_managed")
-    host_native_transport_backends = {"", "host_native", "codex_exec"}
+    host_native_transport_backends = {"", "host_native", "claude_exec", "codex_exec"}
     for session in teammate_sessions.get("sessions", []):
         if not isinstance(session, Mapping):
             continue
