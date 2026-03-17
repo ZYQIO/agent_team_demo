@@ -282,6 +282,10 @@ def run_host_session_worker_entrypoint(payload_file: pathlib.Path) -> int:
     return host_transport.run_host_session_worker_entrypoint(payload_file=payload_file)
 
 
+def run_host_session_task_entrypoint(payload_file: pathlib.Path) -> int:
+    return host_transport.run_host_session_task_entrypoint(payload_file=payload_file)
+
+
 def apply_host_session_result_messages(lead_context: AgentContext) -> int:
     return host_transport.apply_host_session_result_messages(lead_context=lead_context)
 
@@ -756,6 +760,11 @@ def parse_args() -> argparse.Namespace:
         default="",
         help=argparse.SUPPRESS,
     )
+    parser.add_argument(
+        "--host-session-task-file",
+        default="",
+        help=argparse.SUPPRESS,
+    )
     return parser.parse_args()
 
 
@@ -1005,6 +1014,8 @@ if __name__ == "__main__":
         raise SystemExit(run_tmux_worker_entrypoint(pathlib.Path(args.worker_task_file).resolve()))
     if args.host_session_worker_file:
         raise SystemExit(run_host_session_worker_entrypoint(pathlib.Path(args.host_session_worker_file).resolve()))
+    if args.host_session_task_file:
+        raise SystemExit(run_host_session_task_entrypoint(pathlib.Path(args.host_session_task_file).resolve()))
     try:
         runtime_config = build_runtime_config_from_args(args)
         approve_plan_task_ids = [str(task_id) for task_id in args.approve_plan if str(task_id)]

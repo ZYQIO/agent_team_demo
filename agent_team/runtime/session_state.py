@@ -151,6 +151,12 @@ def apply_session_telemetry_event(
     transport = str(telemetry.get("transport", "") or "")
     if transport:
         normalized["transport"] = transport
+    session_id = str(telemetry.get("session_id", "") or "")
+    if session_id:
+        normalized["session_id"] = session_id
+    transport_session_name = str(telemetry.get("transport_session_name", "") or "")
+    if transport_session_name:
+        normalized["transport_session_name"] = transport_session_name
     transport_backend = str(telemetry.get("transport_backend", "") or "")
     if transport_backend:
         normalized["transport_backend"] = transport_backend
@@ -617,6 +623,7 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
     host_native_workspace_active = bool(host_enforcement.get("host_native_workspace_active", False))
     host_session_enforcement = str(host_enforcement.get("session_enforcement", "") or "runtime_managed")
     host_workspace_enforcement = str(host_enforcement.get("workspace_enforcement", "") or "runtime_managed")
+    host_native_transport_backends = {"", "host_native", "codex_exec"}
     for session in teammate_sessions.get("sessions", []):
         if not isinstance(session, Mapping):
             continue
@@ -627,7 +634,7 @@ def build_session_boundary_snapshot(shared_state: SharedState) -> Dict[str, Any]
         if (
             host_native_session_active
             and transport == "host"
-            and transport_backend in {"", "host_native"}
+            and transport_backend in host_native_transport_backends
         ):
             boundary_mode = "host_native_session"
             boundary_strength = "strong"

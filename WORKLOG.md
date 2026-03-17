@@ -13,6 +13,22 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Codex host session backend
+- Goal: add a real host-backed teammate session backend without weakening the existing mailbox/result/telemetry contracts
+- Changes:
+  - switched `host_kind=codex` from advertised-only session capability to an actual host-backed session backend that uses persistent `codex exec` / `codex exec resume` thread ids
+  - added a one-shot `--host-session-task-file` entrypoint so Codex sessions can execute assigned host tasks through the existing runtime handlers while keeping the lead-owned `session_task_result` and `session_telemetry` contracts explicit
+  - taught host enforcement and session-boundary snapshots to distinguish transport-backed `external_process` workers from host-managed `codex_exec` sessions, including preserving real host session identity in the teammate session ledger
+  - extended regression coverage for Codex host enforcement, Codex host-native boundary classification, and the new one-shot host session task entrypoint while keeping existing external-process host regressions green
+- Validation:
+  - `python -m py_compile agent_team\\config.py agent_team\\host.py agent_team\\transports\\host.py agent_team\\runtime\\engine.py agent_team\\runtime\\session_state.py agent_team_runtime.py`
+  - targeted tests passed for Codex host enforcement, Codex boundary classification, the new host session task entrypoint, plus existing host external-process regressions
+  - full suite: `129/129` tests passed
+  - real `codex exec --json --dangerously-bypass-approvals-and-sandbox "Reply with exactly OK."` probe passed and returned a stable `thread_id`
+  - real `codex exec resume --json --dangerously-bypass-approvals-and-sandbox <thread_id> "Reply with exactly RESUME_OK."` probe passed and reused the same `thread_id`
+- Commit: recorded in the git history for this round
+- Next implication: the runtime now has one true host-backed session backend, so the remaining parity-critical host gap is a trustworthy `claude-code` backend in this environment rather than backend authenticity in the abstract
+
 ### 2026-03-16 - Host backend authenticity checkpoint
 - Goal: stop reporting the current host session-worker subprocess backend as if it were already a true host-native teammate session
 - Changes:

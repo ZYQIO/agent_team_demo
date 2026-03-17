@@ -166,6 +166,8 @@ python3 agent_team_demo/agent_team_runtime.py \
   --output agent_team_demo/output
 ```
 
+With `--host-kind codex`, assigned host-mode teammate tasks now use a persistent Codex-backed session backend (`host_session_backend=codex_exec`) that reuses `codex exec` / `codex exec resume` thread ids. Session isolation is host-backed on that path; workspace isolation is still unavailable.
+
 Run the second built-in workflow pack:
 
 ```bash
@@ -269,7 +271,7 @@ python3 agent_team_demo/agent_team_runtime.py \
   --teammate-mode host
 ```
 
-Host mode currently uses external session-worker subprocesses for the built-in workflow teammate task paths: analyst scans/follow-ups plus mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer planning tasks (`dynamic_planning`, `repo_dynamic_planning`), reviewer `llm_synthesis`, report tasks (`recommendation_pack`, `repo_recommendation_pack`), and teammate auto-replies. `host_enforcement.json` now records that path explicitly as `host_session_backend=external_process`, so host-mode artifacts no longer describe those workers as true host-native teammate sessions.
+Host mode backend now depends on `host_kind`. `--host-kind claude-code` currently uses external session-worker subprocesses for the built-in workflow teammate task paths: analyst scans/follow-ups plus mailbox-driven reviewer flows (`peer_challenge`, `evidence_pack`), reviewer planning tasks (`dynamic_planning`, `repo_dynamic_planning`), reviewer `llm_synthesis`, report tasks (`recommendation_pack`, `repo_recommendation_pack`), and teammate auto-replies. `--host-kind codex` now runs those assigned-task paths through a persistent Codex-backed host session backend (`host_session_backend=codex_exec`) while preserving the same explicit `session_task_assignment` / `session_task_result` / `session_telemetry` contracts. `host_enforcement.json` records the active backend explicitly so host-mode artifacts no longer blur transport-backed `external_process` workers with true host-backed sessions.
 
 Resume from a checkpoint:
 
@@ -346,7 +348,7 @@ After runtime execution, output directory contains:
 - `shared_state.json`: shared runtime data
 - `file_locks.json`: lock state snapshot
 - `context_boundaries.json`: prepared task-context scopes and visible shared-state keys per agent/task
-- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from the active backend in use and recording when host mode is still transport-backed through `host_session_backend=external_process`
+- `host_enforcement.json`: runtime-resolved host/session enforcement posture, separating advertised host capabilities from the active backend in use and recording whether host mode is transport-backed (`host_session_backend=external_process`) or host-managed (`host_session_backend=codex_exec`)
 - `session_boundaries.json`: host/session boundary posture for each teammate session, including `transport_backend`, workspace scope, isolated temp/session directories, and host-native descriptors such as `host://<host-kind>/sessions/<session_id>/...` only when a true host-native workspace boundary is active
 - `teammate_sessions.json`: persistent per-agent session ids, transport, transport-session names, memory, recent task/message history, and resume continuity metadata
 - `team_progress.json`: per-agent progress, backlog readiness, and message activity

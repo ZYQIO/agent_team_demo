@@ -192,7 +192,7 @@ def host_capabilities_for_kind(kind: str) -> HostCapabilities:
         )
     if normalized == "codex":
         return HostCapabilities(
-            independent_sessions=False,
+            independent_sessions=True,
             plan_approval=False,
             auto_context_files=True,
             mcp_bridge=True,

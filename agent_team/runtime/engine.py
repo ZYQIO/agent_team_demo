@@ -746,7 +746,9 @@ def run_team(
     if runtime_config.teammate_mode == "host":
         host_runtime_enforcement = apply_host_session_backend_enforcement(
             host_runtime_enforcement,
-            backend=host_transport.host_session_backend_metadata(),
+            backend=host_transport.host_session_backend_metadata(
+                host_kind=str(host_metadata.get("kind", "") or "")
+            ),
         )
 
     provider, provider_meta = build_provider(

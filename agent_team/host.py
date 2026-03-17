@@ -107,6 +107,7 @@ def _default_runtime_enforcement(
         "notes": notes,
         "host_session_backend": "",
         "host_session_backend_source": "",
+        "host_session_backend_host_managed": False,
         "host_session_backend_session_isolation_active": False,
         "host_session_backend_workspace_isolation_active": False,
     }
@@ -230,6 +231,7 @@ class HostAdapter:
             "notes": notes,
             "host_session_backend": "",
             "host_session_backend_source": "",
+            "host_session_backend_host_managed": False,
             "host_session_backend_session_isolation_active": False,
             "host_session_backend_workspace_isolation_active": False,
         }
@@ -268,6 +270,12 @@ def apply_host_session_backend_enforcement(
             or enforcement.get("host_session_backend_source", "")
             or ""
         ),
+        "host_session_backend_host_managed": bool(
+            raw_backend.get(
+                "host_managed",
+                enforcement.get("host_session_backend_host_managed", False),
+            )
+        ),
         "host_session_backend_session_isolation_active": bool(
             raw_backend.get(
                 "session_isolation_active",
@@ -289,34 +297,52 @@ def apply_host_session_backend_enforcement(
     host_supports_native_sessions = bool(capabilities.get("independent_sessions", False))
     host_supports_workspace_isolation = bool(capabilities.get("workspace_isolation", False))
     host_supports_managed_context = bool(capabilities.get("auto_context_files", False))
+    backend_host_managed = bool(normalized["host_session_backend_host_managed"])
     session_isolation_active = bool(normalized["host_session_backend_session_isolation_active"])
     workspace_isolation_active = bool(normalized["host_session_backend_workspace_isolation_active"])
 
-    normalized["host_native_session_active"] = False
-    normalized["host_native_workspace_active"] = False
-    normalized["host_managed_context_active"] = False
-    if normalized["requested_teammate_mode"] == "host" and session_isolation_active:
-        normalized["session_enforcement"] = "transport_managed"
-    normalized["workspace_enforcement"] = (
-        "transport_managed" if workspace_isolation_active else "runtime_managed"
-    )
-    normalized["effective_boundary_source"] = str(
-        normalized["host_session_backend_source"] or "transport"
-    )
-    normalized["effective_boundary_strength"] = "medium" if session_isolation_active else "emulated"
-
-    notes = [
-        item
-        for item in normalized["notes"]
-        if item != "host_transport_manages_session_boundaries"
-    ]
+    notes = [item for item in normalized["notes"] if item != "host_transport_manages_session_boundaries"]
     notes.append(f"host_session_backend_{backend_name}")
-    if normalized["requested_teammate_mode"] == "host" and backend_name == "external_process":
-        notes.append("requested_host_sessions_backed_by_transport_process")
-    if host_supports_native_sessions:
-        notes.append("host_independent_sessions_advertised_only")
-    if host_supports_workspace_isolation and not workspace_isolation_active:
-        notes.append("host_workspace_isolation_advertised_only")
+    if backend_host_managed:
+        normalized["host_native_session_active"] = session_isolation_active
+        normalized["host_native_workspace_active"] = workspace_isolation_active
+        normalized["host_managed_context_active"] = bool(
+            normalized["host_managed_context_requested"]
+            and host_supports_managed_context
+            and session_isolation_active
+        )
+        if normalized["requested_teammate_mode"] == "host" and session_isolation_active:
+            normalized["session_enforcement"] = "host_managed"
+        normalized["workspace_enforcement"] = (
+            "host_managed" if workspace_isolation_active else "runtime_managed"
+        )
+        normalized["effective_boundary_source"] = str(
+            normalized["host_session_backend_source"] or "host"
+        )
+        normalized["effective_boundary_strength"] = "strong" if session_isolation_active else "emulated"
+        if session_isolation_active:
+            notes.append("host_transport_manages_session_boundaries")
+        if host_supports_workspace_isolation and not workspace_isolation_active:
+            notes.append("host_workspace_isolation_advertised_only")
+    else:
+        normalized["host_native_session_active"] = False
+        normalized["host_native_workspace_active"] = False
+        normalized["host_managed_context_active"] = False
+        if normalized["requested_teammate_mode"] == "host" and session_isolation_active:
+            normalized["session_enforcement"] = "transport_managed"
+        normalized["workspace_enforcement"] = (
+            "transport_managed" if workspace_isolation_active else "runtime_managed"
+        )
+        normalized["effective_boundary_source"] = str(
+            normalized["host_session_backend_source"] or "transport"
+        )
+        normalized["effective_boundary_strength"] = "medium" if session_isolation_active else "emulated"
+        if normalized["requested_teammate_mode"] == "host" and backend_name == "external_process":
+            notes.append("requested_host_sessions_backed_by_transport_process")
+        if host_supports_native_sessions:
+            notes.append("host_independent_sessions_advertised_only")
+        if host_supports_workspace_isolation and not workspace_isolation_active:
+            notes.append("host_workspace_isolation_advertised_only")
     if (
         normalized["host_managed_context_requested"]
         and host_supports_managed_context
@@ -400,6 +426,9 @@ def build_host_enforcement_snapshot(shared_state: SharedState) -> Dict[str, Any]
             ),
             "host_session_backend_source": str(
                 enforcement.get("host_session_backend_source", "") or ""
+            ),
+            "host_session_backend_host_managed": bool(
+                enforcement.get("host_session_backend_host_managed", False)
             ),
             "host_session_backend_session_isolation_active": bool(
                 enforcement.get("host_session_backend_session_isolation_active", False)

@@ -1,6 +1,6 @@
 # Agent Team Runtime Roadmap
 
-Current status snapshot: `2026-03-11`
+Current status snapshot: `2026-03-17`
 
 This document tracks the working plan, completed refactors, validation status, and the recommended next tasks for `agent_team_demo`.
 
@@ -20,7 +20,7 @@ Official parity review (2026-03-11):
 - the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, file-backed live command intake, a terminal lead console, and an embedded stdin approval prompt, so the remaining gap is richer embedded in-run interaction rather than total absence of approval flow
+- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, and a true host-backed `codex` session backend, so the remaining gap is richer embedded in-run interaction plus a trustworthy `claude-code` host backend rather than total absence of approval flow or host-backed sessions
 
 ## 2. Target Architecture
 
@@ -419,15 +419,16 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/verify_run.py   --outp
 Evidence review:
 
 - subprocess smoke confirms reviewer `task_history` contains `llm_synthesis=subprocess`
-- host smoke confirms `transport=host`, `transport_backend=external_process`, and transport-backed host session enforcement instead of overstated host-native boundaries
+- host smoke confirms the current `claude-code` path still reports `transport=host`, `transport_backend=external_process`, and transport-backed host session enforcement instead of overstated host-native boundaries
+- direct Codex backend probes confirm `codex exec` plus `codex exec resume` return stable thread ids that can back a true host-managed session ledger
 
 
 ## 7. Recommended Next Tasks
 
 Priority order for the next work:
 
-1. Replace the executable `host` session-worker subprocess backend with a true host-backed teammate session
-   Goal: preserve the explicit mailbox/result/telemetry contracts while making host execution more authentic than the current `external_process` worker backend.
+1. Replace the remaining `claude-code` `host` session-worker subprocess backend with a trustworthy true host-backed teammate session
+   Goal: preserve the explicit mailbox/result/telemetry contracts while making Claude-parity host execution more authentic than the remaining `external_process` worker backend.
 2. Upgrade the current lead-facing interaction plus plan approval workflow into a richer embedded in-run control surface
    Goal: build past live snapshots, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a closer Claude-style interaction model.
 3. Add true event-level state replay

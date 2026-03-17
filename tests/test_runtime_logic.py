@@ -4718,6 +4718,65 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("host_session_backend_external_process", snapshot["notes"])
         self.assertIn("requested_host_sessions_backed_by_transport_process", snapshot["notes"])
 
+    def test_build_host_enforcement_snapshot_preserves_codex_host_backend_as_host_managed(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "codex",
+                "session_transport": "tooling-session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": False,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set("runtime_config", runtime.RuntimeConfig(teammate_mode="host").to_dict())
+        shared_state.set("policies", {"allow_host_managed_context": True})
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "codex",
+                "configured_session_transport": "tooling-session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "runtime_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": False,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": True,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": False,
+                    "auto_context_files": True,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
+                "host_session_backend": "codex_exec",
+                "host_session_backend_source": "host",
+                "host_session_backend_host_managed": True,
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+
+        snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["session_enforcement"], "host_managed")
+        self.assertEqual(snapshot["workspace_enforcement"], "runtime_managed")
+        self.assertTrue(snapshot["host_native_session_active"])
+        self.assertFalse(snapshot["host_native_workspace_active"])
+        self.assertTrue(snapshot["host_managed_context_active"])
+        self.assertEqual(snapshot["host_session_backend"], "codex_exec")
+        self.assertEqual(snapshot["host_session_backend_source"], "host")
+        self.assertTrue(snapshot["host_session_backend_host_managed"])
+        self.assertIn("host_session_backend_codex_exec", snapshot["notes"])
+        self.assertIn("host_transport_manages_session_boundaries", snapshot["notes"])
+
     def test_build_session_boundary_snapshot_marks_host_external_process_sessions_as_transport_backed(self) -> None:
         shared_state = runtime.SharedState()
         shared_state.set(
@@ -4780,6 +4839,74 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(session["transport_backend"], "external_process")
         self.assertEqual(session["boundary_mode"], "worker_subprocess_session")
         self.assertIn("session_isolation_backed_by_host_external_process", session["notes"])
+
+    def test_build_session_boundary_snapshot_treats_codex_host_backend_as_host_native(self) -> None:
+        shared_state = runtime.SharedState()
+        shared_state.set(
+            "host",
+            {
+                "kind": "codex",
+                "session_transport": "tooling-session",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": False,
+                },
+                "limits": [],
+            },
+        )
+        shared_state.set(
+            "host_runtime_enforcement",
+            {
+                "host_kind": "codex",
+                "configured_session_transport": "tooling-session",
+                "requested_teammate_mode": "host",
+                "session_enforcement": "host_managed",
+                "workspace_enforcement": "runtime_managed",
+                "host_native_session_active": True,
+                "host_native_workspace_active": False,
+                "host_managed_context_requested": True,
+                "host_managed_context_active": False,
+                "effective_boundary_source": "host",
+                "effective_boundary_strength": "strong",
+                "capabilities": {
+                    "independent_sessions": True,
+                    "workspace_isolation": False,
+                },
+                "limits": [],
+                "notes": ["host_transport_manages_session_boundaries"],
+                "host_session_backend": "codex_exec",
+                "host_session_backend_source": "host",
+                "host_session_backend_host_managed": True,
+                "host_session_backend_session_isolation_active": True,
+                "host_session_backend_workspace_isolation_active": False,
+            },
+        )
+        registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+        analyst = runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst")
+        registry.ensure_profile(profile=analyst, transport="host", status="ready")
+        registry.apply_telemetry(
+            {
+                "agent": "analyst_alpha",
+                "agent_type": "analyst",
+                "skills": ["analysis"],
+                "event_type": "status",
+                "transport": "host",
+                "transport_backend": "codex_exec",
+                "transport_session_name": "codex:analyst_alpha",
+                "session_id": "thread-codex-123",
+                "status": "ready",
+            }
+        )
+
+        snapshot = runtime.build_session_boundary_snapshot(shared_state=shared_state)
+
+        self.assertEqual(snapshot["boundary_mode_counts"]["host_native_session"], 1)
+        session = snapshot["sessions"][0]
+        self.assertEqual(session["transport_backend"], "codex_exec")
+        self.assertEqual(session["session_id"], "thread-codex-123")
+        self.assertEqual(session["transport_session_name"], "codex:analyst_alpha")
+        self.assertEqual(session["boundary_mode"], "host_native_session")
+        self.assertIn("session_isolation_backed_by_host_transport", session["notes"])
 
     def test_build_session_boundary_snapshot_requires_active_host_enforcement_for_host_native_mode(self) -> None:
         shared_state = runtime.SharedState()
@@ -6845,6 +6972,110 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(team_config.model.model, "gpt-4.1-mini")
             self.assertEqual(team_config.workflow.preset, "custom")
             self.assertEqual(team_config.team.agents[0].name, "doc_analyst")
+
+    def test_run_host_session_task_entrypoint_executes_assigned_task_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = pathlib.Path(tmp)
+            target_dir = root / "target"
+            output_dir = root / "output"
+            mailbox_dir = output_dir / "_mailbox"
+            target_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (target_dir / "a.md").write_text("# Title\nbody\n", encoding="utf-8")
+            (target_dir / "b.md").write_text("plain\nplain\nplain\n", encoding="utf-8")
+            payload_path = root / "host_session_task.json"
+            result_path = root / "host_session_task.result.json"
+            task = runtime.Task(
+                task_id="discover_markdown",
+                title="Scan markdown files",
+                task_type="discover_markdown",
+                required_skills={"inventory"},
+                dependencies=[],
+                payload={},
+                locked_paths=[],
+                allowed_agent_types={"analyst"},
+            )
+            payload_path.write_text(
+                json.dumps(
+                    {
+                        "contract": "host_session_task",
+                        "contract_version": 1,
+                        "profile": {
+                            "name": "analyst_alpha",
+                            "skills": ["inventory", "analysis"],
+                            "agent_type": "analyst",
+                        },
+                        "goal": "scan markdown",
+                        "target_dir": str(target_dir),
+                        "output_dir": str(output_dir),
+                        "runtime_script": str((MODULE_DIR / "agent_team_runtime.py").resolve()),
+                        "workflow_pack": "markdown-audit",
+                        "runtime_config": runtime.RuntimeConfig(teammate_mode="host").to_dict(),
+                        "model_config": {
+                            "provider_name": "heuristic",
+                            "model": "heuristic-v1",
+                            "openai_api_key_env": "OPENAI_API_KEY",
+                            "openai_base_url": "https://api.openai.com/v1",
+                            "require_llm": False,
+                            "timeout_sec": 5,
+                        },
+                        "participants": ["lead", "analyst_alpha"],
+                        "mailbox_storage_dir": str(mailbox_dir),
+                        "shared_state": {
+                            "lead_name": "lead",
+                            "runtime_config": runtime.RuntimeConfig(teammate_mode="host").to_dict(),
+                            "team_profiles": [
+                                {
+                                    "name": "analyst_alpha",
+                                    "agent_type": "analyst",
+                                    "skills": ["inventory", "analysis"],
+                                }
+                            ],
+                        },
+                        "session_state": {},
+                        "assignment": {
+                            "contract": "session_task_assignment",
+                            "contract_version": 1,
+                            "transport": "host",
+                            "execution_mode": "session_thread",
+                            "task": task.to_dict(),
+                            "task_context": {
+                                "scope": "task_specific",
+                                "visible_shared_state_keys": ["lead_name", "runtime_config", "team_profiles"],
+                                "visible_shared_state_key_count": 3,
+                                "omitted_shared_state_key_count": 0,
+                                "visible_shared_state": {
+                                    "lead_name": "lead",
+                                    "runtime_config": runtime.RuntimeConfig(teammate_mode="host").to_dict(),
+                                    "team_profiles": [
+                                        {
+                                            "name": "analyst_alpha",
+                                            "agent_type": "analyst",
+                                            "skills": ["inventory", "analysis"],
+                                        }
+                                    ],
+                                },
+                                "visible_task_results": {},
+                                "dependency_results": {},
+                                "board_task_ids": ["discover_markdown"],
+                                "dependencies": [],
+                            },
+                        },
+                        "result_path": str(result_path),
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            exit_code = runtime.run_host_session_task_entrypoint(payload_path)
+
+            self.assertEqual(exit_code, 0)
+            result = json.loads(result_path.read_text(encoding="utf-8"))
+            self.assertTrue(result.get("success"))
+            self.assertEqual(result.get("result", {}).get("markdown_files"), 2)
+            inventory = result.get("state_updates", {}).get("markdown_inventory", [])
+            self.assertEqual(len(inventory), 2)
 
     def test_apply_resume_runtime_defaults_uses_checkpoint_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

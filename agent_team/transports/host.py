@@ -5,6 +5,7 @@ import pathlib
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from typing import Any, Dict, Mapping, Optional, Sequence
 
@@ -18,6 +19,7 @@ from ..runtime.task_mutations import apply_task_mutation_payload
 from . import tmux as tmux_transport
 from .inprocess import (
     HOST_SESSION_ASSIGNED_TASK_TYPES,
+    HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES,
     SESSION_CONTROL_SUBJECT,
     SESSION_TASK_ASSIGNMENT_SUBJECT,
     SESSION_TASK_RESULT_SUBJECT,
@@ -30,6 +32,8 @@ HOST_EXTERNAL_WORKER_NAMES_ATTR = "_host_external_worker_names"
 HOST_ASSIGNED_TASK_LOCKS_ATTR = "_host_assigned_task_locks"
 HOST_WORKER_PAYLOAD_DIRNAME = "_host_session_workers"
 HOST_SESSION_BACKEND_EXTERNAL_PROCESS = "external_process"
+HOST_SESSION_BACKEND_CODEX_EXEC = "codex_exec"
+HOST_SESSION_TASK_RESULT_SCHEMA_FILENAME = "codex_session_result.schema.json"
 
 
 class _NullLogger:
@@ -37,10 +41,24 @@ class _NullLogger:
         return
 
 
-def host_session_backend_metadata() -> Dict[str, Any]:
+def _normalize_host_kind(value: str) -> str:
+    return str(value or "generic-cli").strip().lower()
+
+
+def host_session_backend_metadata(host_kind: str = "") -> Dict[str, Any]:
+    normalized_kind = _normalize_host_kind(host_kind)
+    if normalized_kind == "codex":
+        return {
+            "backend": HOST_SESSION_BACKEND_CODEX_EXEC,
+            "source": "host",
+            "host_managed": True,
+            "session_isolation_active": True,
+            "workspace_isolation_active": False,
+        }
     return {
         "backend": HOST_SESSION_BACKEND_EXTERNAL_PROCESS,
         "source": "transport",
+        "host_managed": False,
         "session_isolation_active": True,
         "workspace_isolation_active": False,
     }
@@ -176,6 +194,528 @@ class _HostSessionWorkerProcess:
             self.payload_path.unlink()
         except OSError:
             pass
+
+
+def _normalize_task_outcome(raw_outcome: Any) -> Dict[str, Any]:
+    if isinstance(raw_outcome, dict) and (
+        "result" in raw_outcome
+        or "state_updates" in raw_outcome
+        or "task_mutations" in raw_outcome
+    ):
+        result = raw_outcome.get("result", {})
+        state_updates = raw_outcome.get("state_updates", {})
+        task_mutations = raw_outcome.get("task_mutations", {})
+    else:
+        result = raw_outcome
+        state_updates = {}
+        task_mutations = {}
+    return {
+        "result": result if isinstance(result, dict) else {"raw_result": result},
+        "state_updates": state_updates if isinstance(state_updates, dict) else {},
+        "task_mutations": task_mutations if isinstance(task_mutations, dict) else {},
+    }
+
+
+def _merge_task_context_shared_state(
+    original_shared_state: Any,
+    task_context: Mapping[str, Any],
+) -> Any:
+    visible_state = task_context.get("visible_shared_state", {})
+    if not isinstance(visible_state, Mapping) or not visible_state:
+        return original_shared_state
+    if not isinstance(original_shared_state, SharedState):
+        return original_shared_state
+    merged_state = SharedState()
+    try:
+        baseline = original_shared_state.snapshot()
+    except AttributeError:
+        baseline = {}
+    if isinstance(baseline, Mapping):
+        for key, value in baseline.items():
+            merged_state.set(str(key), value)
+    for key, value in visible_state.items():
+        merged_state.set(str(key), value)
+    return merged_state
+
+
+def _run_host_assigned_worker_payload_task(
+    context: Any,
+    task: Any,
+    task_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    board_task_ids = task_context.get("board_task_ids", [])
+    if not isinstance(board_task_ids, list):
+        board_task_ids = []
+    model_config: Dict[str, Any] = {}
+    agent_team_config = context.shared_state.get("agent_team_config", {})
+    if isinstance(agent_team_config, Mapping):
+        raw_model_config = agent_team_config.get("model", {})
+        if isinstance(raw_model_config, Mapping):
+            model_config = dict(raw_model_config)
+    payload = {
+        "task_type": task.task_type,
+        "task_payload": task.payload,
+        "goal": context.goal,
+        "target_dir": str(pathlib.Path(context.target_dir).resolve()),
+        "output_dir": str(pathlib.Path(context.output_dir).resolve()),
+        "task_context": dict(task_context),
+        "board_snapshot": {
+            "tasks": [
+                {"task_id": str(task_id)}
+                for task_id in board_task_ids
+                if str(task_id)
+            ]
+        },
+        "runtime_config": context.runtime_config.to_dict(),
+        "model_config": model_config,
+    }
+    worker_payload = tmux_transport.run_tmux_worker_payload(payload)
+    if not isinstance(worker_payload, dict):
+        raise RuntimeError(f"invalid host assigned worker payload for task_type={task.task_type}")
+    return worker_payload
+
+
+def _write_host_session_task_result(result_path: pathlib.Path, payload: Mapping[str, Any]) -> None:
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    result_path.write_text(
+        json.dumps(dict(payload), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _build_host_session_task_result_schema(schema_path: pathlib.Path) -> pathlib.Path:
+    if schema_path.exists():
+        return schema_path
+    schema_path.parent.mkdir(parents=True, exist_ok=True)
+    schema_path.write_text(
+        json.dumps(
+            {
+                "type": "object",
+                "properties": {
+                    "status": {"type": "string", "enum": ["ok", "error"]},
+                    "result_path": {"type": "string"},
+                    "error": {"type": "string"},
+                },
+                "required": ["status"],
+                "additionalProperties": False,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    return schema_path
+
+
+def _parse_codex_exec_output(stdout: str) -> Dict[str, str]:
+    thread_id = ""
+    agent_message = ""
+    for raw_line in str(stdout or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if str(payload.get("type", "")) == "thread.started":
+            thread_id = str(payload.get("thread_id", "") or thread_id)
+            continue
+        if str(payload.get("type", "")) != "item.completed":
+            continue
+        item = payload.get("item", {})
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("type", "")) == "agent_message":
+            agent_message = str(item.get("text", "") or agent_message)
+    return {
+        "thread_id": thread_id,
+        "agent_message": agent_message,
+    }
+
+
+def _parse_json_object_text(raw_text: str) -> Dict[str, Any]:
+    text = str(raw_text or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return payload
+
+
+def _build_host_session_task_payload(
+    lead_context: Any,
+    profile: AgentProfile,
+    assignment_payload: Mapping[str, Any],
+    result_path: pathlib.Path,
+) -> Dict[str, Any]:
+    payload = _build_host_worker_payload(lead_context=lead_context, profile=profile)
+    payload["contract"] = "host_session_task"
+    payload["contract_version"] = 1
+    payload["assignment"] = dict(assignment_payload)
+    payload["result_path"] = str(result_path)
+    return payload
+
+
+def _codex_session_prompt(
+    runtime_script: pathlib.Path,
+    payload_path: pathlib.Path,
+    result_path: pathlib.Path,
+    profile_name: str,
+) -> str:
+    command = (
+        f'& "{sys.executable}" "{runtime_script}" '
+        f'--host-session-task-file "{payload_path}"'
+    )
+    return (
+        f'You are the persistent Codex teammate session for agent "{profile_name}".\n'
+        "Run the exact PowerShell command below and wait for it to finish.\n"
+        "Do not change the command.\n"
+        f"{command}\n\n"
+        f'After the command finishes, read the JSON file at "{result_path}".\n'
+        "Reply with exactly one JSON object and nothing else.\n"
+        f'If the file exists, reply with {json.dumps({"status": "ok", "result_path": str(result_path)}, ensure_ascii=False)}.\n'
+        'If the command fails or the file is missing, reply with {"status":"error","error":"brief reason"}.\n'
+    )
+
+
+class _CodexHostSessionWorker(threading.Thread):
+    worker_backend = HOST_SESSION_BACKEND_CODEX_EXEC
+
+    def __init__(
+        self,
+        lead_context: Any,
+        profile: AgentProfile,
+    ) -> None:
+        super().__init__(name=f"host-codex-{profile.name}", daemon=True)
+        self._lead_context = lead_context
+        self._profile = profile
+        self.profile_name = str(profile.name or "")
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._assigned_task_id = ""
+        self._assigned_task_active = False
+        session_registry = getattr(lead_context, "session_registry", None)
+        existing_session = (
+            session_registry.session_for(self.profile_name)
+            if session_registry is not None
+            else {}
+        )
+        self._session_id = str(existing_session.get("session_id", "") or "")
+
+    def is_alive(self) -> bool:
+        return super().is_alive() and (not self._stop_event.is_set())
+
+    def can_accept_assigned_task(self) -> bool:
+        with self._lock:
+            return (not self._stop_event.is_set()) and (not self._assigned_task_active) and (not self._assigned_task_id)
+
+    def reserve_assigned_task(self, task_id: str) -> bool:
+        normalized_task_id = str(task_id or "")
+        if not normalized_task_id:
+            return False
+        with self._lock:
+            if self._stop_event.is_set() or self._assigned_task_active or self._assigned_task_id:
+                return False
+            self._assigned_task_id = normalized_task_id
+        return True
+
+    def release_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            if not self._assigned_task_active:
+                self._assigned_task_id = ""
+
+    def stop(
+        self,
+        mailbox: Mailbox,
+        lead_name: str,
+        logger: Any,
+        timeout_sec: float = 5.0,
+    ) -> None:
+        del mailbox, lead_name
+        self._stop_event.set()
+        logger.log(
+            "host_session_worker_stop_requested",
+            worker=self.profile_name,
+            session_worker_backend=self.worker_backend,
+        )
+        self.join(timeout=max(0.1, float(timeout_sec)))
+
+    def _activate_assigned_task(self, task_id: str) -> bool:
+        normalized_task_id = str(task_id or "")
+        if not normalized_task_id:
+            return False
+        with self._lock:
+            if self._assigned_task_active:
+                return False
+            if self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return False
+            self._assigned_task_active = True
+            self._assigned_task_id = normalized_task_id
+        return True
+
+    def _finish_assigned_task(self, task_id: str = "") -> None:
+        normalized_task_id = str(task_id or "")
+        with self._lock:
+            if normalized_task_id and self._assigned_task_id and self._assigned_task_id != normalized_task_id:
+                return
+            self._assigned_task_active = False
+            self._assigned_task_id = ""
+
+    def _send_session_telemetry(
+        self,
+        event_type: str,
+        task_id: str = "",
+        task_type: str = "",
+        success: Optional[bool] = None,
+        status: str = "",
+        task_context: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        payload: Dict[str, Any] = {
+            "agent": self.profile_name,
+            "agent_type": self._profile.agent_type,
+            "skills": sorted(self._profile.skills),
+            "event_type": event_type,
+            "transport": "host",
+            "transport_backend": self.worker_backend,
+            "session_id": self._session_id,
+            "transport_session_name": f"codex:{self.profile_name}",
+            "task_id": str(task_id or ""),
+            "task_type": str(task_type or ""),
+        }
+        if status:
+            payload["status"] = str(status)
+            payload["current_task_id"] = str(task_id or "")
+            payload["current_task_type"] = str(task_type or "")
+        if success is not None:
+            payload["success"] = bool(success)
+            payload["status"] = "ready" if success else "error"
+        if isinstance(task_context, Mapping):
+            payload["visible_shared_state_keys"] = list(task_context.get("visible_shared_state_keys", []))
+            payload["visible_shared_state_key_count"] = int(
+                task_context.get(
+                    "visible_shared_state_key_count",
+                    len(payload["visible_shared_state_keys"]),
+                )
+                or 0
+            )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=str(self._lead_context.profile.name or "lead"),
+            subject=SESSION_TELEMETRY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(task_id or ""),
+        )
+
+    def _run_codex_task(
+        self,
+        task_id: str,
+        assignment_payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        worker_dir = pathlib.Path(self._lead_context.output_dir) / HOST_WORKER_PAYLOAD_DIRNAME / self.profile_name
+        worker_dir.mkdir(parents=True, exist_ok=True)
+        result_path = worker_dir / f"{task_id}.result.json"
+        prompt_path = worker_dir / f"{task_id}.payload.json"
+        last_message_path = worker_dir / f"{task_id}.message.txt"
+        schema_path = _build_host_session_task_result_schema(
+            worker_dir / HOST_SESSION_TASK_RESULT_SCHEMA_FILENAME
+        )
+        runtime_script = pathlib.Path(str(self._lead_context.runtime_script or "")).resolve()
+        if not runtime_script.exists():
+            raise RuntimeError(f"host runtime_script not found: {runtime_script}")
+        task_payload = _build_host_session_task_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            assignment_payload=assignment_payload,
+            result_path=result_path,
+        )
+        prompt_path.write_text(json.dumps(task_payload, ensure_ascii=False), encoding="utf-8")
+        if last_message_path.exists():
+            last_message_path.unlink()
+        if result_path.exists():
+            result_path.unlink()
+        prompt = _codex_session_prompt(
+            runtime_script=runtime_script,
+            payload_path=prompt_path,
+            result_path=result_path,
+            profile_name=self.profile_name,
+        )
+        command = ["codex", "exec"]
+        if self._session_id:
+            command.append("resume")
+        command.extend(
+            [
+                "--json",
+                "--skip-git-repo-check",
+                "--dangerously-bypass-approvals-and-sandbox",
+                "--output-schema",
+                str(schema_path),
+                "--output-last-message",
+                str(last_message_path),
+            ]
+        )
+        if self._session_id:
+            command.append(self._session_id)
+        command.append(prompt)
+        completed = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+            cwd=str(pathlib.Path(self._lead_context.target_dir).resolve()),
+            timeout=max(60, int(getattr(self._lead_context.runtime_config, "provider_timeout_sec", 60) or 60) * 12),
+        )
+        parsed_output = _parse_codex_exec_output(completed.stdout)
+        thread_id = str(parsed_output.get("thread_id", "") or "")
+        if thread_id:
+            self._session_id = thread_id
+        if last_message_path.exists():
+            response_payload = _parse_json_object_text(last_message_path.read_text(encoding="utf-8"))
+        else:
+            response_payload = _parse_json_object_text(parsed_output.get("agent_message", ""))
+        if completed.returncode != 0:
+            error = response_payload.get("error", "") if isinstance(response_payload, Mapping) else ""
+            raise RuntimeError(
+                error
+                or f"codex exec failed for {self.profile_name} task {task_id}: {completed.stderr.strip() or completed.stdout.strip()}"
+            )
+        if str(response_payload.get("status", "") or "") != "ok":
+            error = str(response_payload.get("error", "") or "").strip()
+            raise RuntimeError(error or f"codex session did not acknowledge task {task_id}")
+        resolved_result_path = pathlib.Path(
+            str(response_payload.get("result_path", "") or result_path)
+        ).resolve()
+        if not resolved_result_path.exists():
+            raise RuntimeError(f"codex session result file missing: {resolved_result_path}")
+        result_payload = json.loads(resolved_result_path.read_text(encoding="utf-8"))
+        if not isinstance(result_payload, dict):
+            raise RuntimeError(f"invalid codex session result payload for {task_id}")
+        return result_payload
+
+    def _handle_assignment(self, message: Any) -> None:
+        try:
+            payload = json.loads(message.body)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"invalid assignment payload: {exc}") from exc
+        if not isinstance(payload, dict):
+            raise RuntimeError("invalid assignment payload: missing object")
+        task_payload = payload.get("task", {})
+        if not isinstance(task_payload, dict):
+            raise RuntimeError("invalid assignment payload: missing task")
+        task = task_from_dict(task_payload)
+        task_context = payload.get("task_context", {})
+        if not isinstance(task_context, dict):
+            task_context = {}
+        self._send_session_telemetry(
+            event_type="bind_task",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            task_context=task_context,
+        )
+        result_payload = self._run_codex_task(task_id=task.task_id, assignment_payload=payload)
+        self._send_session_telemetry(
+            event_type="status",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            status="running",
+        )
+        success = bool(result_payload.get("success", False))
+        outbound_payload = {
+            "contract": "session_task_result",
+            "contract_version": 1,
+            "transport": "host",
+            "execution_mode": "session_thread",
+            "task_id": task.task_id,
+            "task_type": task.task_type,
+            "worker": self.profile_name,
+            "success": success,
+            "result": result_payload.get("result", {}) if success else {},
+            "error": "" if success else str(result_payload.get("error", "") or "unknown worker error"),
+            "state_updates": result_payload.get("state_updates", {}) if success else {},
+            "task_mutations": result_payload.get("task_mutations", {}) if success else {},
+        }
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=str(self._lead_context.profile.name or "lead"),
+            subject=SESSION_TASK_RESULT_SUBJECT,
+            body=json.dumps(outbound_payload, ensure_ascii=False),
+            task_id=task.task_id,
+        )
+        self._send_session_telemetry(
+            event_type="task_result",
+            task_id=task.task_id,
+            task_type=task.task_type,
+            success=success,
+        )
+
+    def run(self) -> None:
+        while not self._stop_event.is_set():
+            messages = self._lead_context.mailbox.pull_matching(
+                self.profile_name,
+                lambda message: message.subject in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT},
+            )
+            handled_any = False
+            for message in messages:
+                handled_any = True
+                if message.subject == SESSION_CONTROL_SUBJECT:
+                    self._stop_event.set()
+                    continue
+                task_id = str(message.task_id or "")
+                if not self._activate_assigned_task(task_id):
+                    continue
+                try:
+                    self._handle_assignment(message)
+                except Exception as exc:
+                    self._lead_context.mailbox.send(
+                        sender=self.profile_name,
+                        recipient=str(self._lead_context.profile.name or "lead"),
+                        subject=SESSION_TASK_RESULT_SUBJECT,
+                        body=json.dumps(
+                            {
+                                "contract": "session_task_result",
+                                "contract_version": 1,
+                                "transport": "host",
+                                "execution_mode": "session_thread",
+                                "task_id": task_id,
+                                "task_type": "",
+                                "worker": self.profile_name,
+                                "success": False,
+                                "result": {},
+                                "error": f"{type(exc).__name__}: {exc}",
+                                "state_updates": {},
+                                "task_mutations": {},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        task_id=task_id,
+                    )
+                    self._send_session_telemetry(
+                        event_type="task_result",
+                        task_id=task_id,
+                        task_type="",
+                        success=False,
+                    )
+                    self._lead_context.logger.log(
+                        "host_session_worker_task_failed",
+                        worker=self.profile_name,
+                        task_id=task_id,
+                        session_worker_backend=self.worker_backend,
+                        error=f"{type(exc).__name__}: {exc}",
+                    )
+                finally:
+                    self._finish_assigned_task(task_id)
+            if not handled_any:
+                time.sleep(0.05)
 
 
 def _host_transport_identity(lead_context: Any, profile: AgentProfile) -> Dict[str, Any]:
@@ -423,7 +963,14 @@ def _build_host_worker_payload(
     }
 
 
-def _spawn_host_session_worker(
+def _host_kind(lead_context: Any) -> str:
+    host_metadata = lead_context.shared_state.get("host", {})
+    if not isinstance(host_metadata, Mapping):
+        return "generic-cli"
+    return _normalize_host_kind(str(host_metadata.get("kind", "") or "generic-cli"))
+
+
+def _spawn_external_process_host_session_worker(
     lead_context: Any,
     profile: AgentProfile,
 ) -> _HostSessionWorkerProcess:
@@ -465,6 +1012,34 @@ def _spawn_host_session_worker(
     )
 
 
+def _spawn_codex_host_session_worker(
+    lead_context: Any,
+    profile: AgentProfile,
+) -> _CodexHostSessionWorker:
+    runtime_meta = _host_worker_runtime(lead_context=lead_context)
+    runtime_script = pathlib.Path(str(runtime_meta.get("runtime_script", "") or "")).resolve()
+    if not runtime_script.exists():
+        raise RuntimeError(f"host runtime_script not found: {runtime_script}")
+    worker = _CodexHostSessionWorker(lead_context=lead_context, profile=profile)
+    worker.start()
+    lead_context.logger.log(
+        "host_session_worker_started",
+        worker=profile.name,
+        session_worker_backend=HOST_SESSION_BACKEND_CODEX_EXEC,
+        workflow_pack=str(runtime_meta.get("workflow_pack", "") or "markdown-audit"),
+    )
+    return worker
+
+
+def _spawn_host_session_worker(
+    lead_context: Any,
+    profile: AgentProfile,
+) -> Any:
+    if _host_kind(lead_context=lead_context) == "codex":
+        return _spawn_codex_host_session_worker(lead_context=lead_context, profile=profile)
+    return _spawn_external_process_host_session_worker(lead_context=lead_context, profile=profile)
+
+
 def ensure_host_session_workers(
     lead_context: Any,
     teammate_profiles: Sequence[AgentProfile],
@@ -488,7 +1063,10 @@ def ensure_host_session_workers(
                 pass
             continue
         active_workers[str(name)] = worker
-        if getattr(worker, "worker_backend", "") == "external_process":
+        if str(getattr(worker, "worker_backend", "") or "") in {
+            HOST_SESSION_BACKEND_EXTERNAL_PROCESS,
+            HOST_SESSION_BACKEND_CODEX_EXEC,
+        }:
             external_names.add(str(name))
 
     for profile in teammate_profiles:
@@ -589,6 +1167,152 @@ def run_host_session_worker_entrypoint(payload_file: pathlib.Path) -> int:
     )
     worker.start()
     worker.join()
+    return 0
+
+
+def run_host_session_task_entrypoint(payload_file: pathlib.Path) -> int:
+    payload = json.loads(pathlib.Path(payload_file).read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"invalid host session task payload: {payload_file}")
+
+    from ..runtime.engine import AgentContext
+    from ..workflows import build_workflow_handlers
+
+    runtime_payload = payload.get("runtime_config", {})
+    runtime_config = RuntimeConfig(
+        **{
+            key: value
+            for key, value in dict(runtime_payload if isinstance(runtime_payload, dict) else {}).items()
+            if key in RuntimeConfig.__annotations__
+        }
+    )
+    model_payload = payload.get("model_config", {})
+    if not isinstance(model_payload, dict):
+        model_payload = {}
+    provider, _ = build_provider(
+        provider_name=str(model_payload.get("provider_name", "heuristic") or "heuristic"),
+        model=str(model_payload.get("model", "heuristic-v1") or "heuristic-v1"),
+        openai_api_key_env=str(model_payload.get("openai_api_key_env", "OPENAI_API_KEY") or "OPENAI_API_KEY"),
+        openai_base_url=str(model_payload.get("openai_base_url", "https://api.openai.com/v1") or "https://api.openai.com/v1"),
+        require_llm=bool(model_payload.get("require_llm", False)),
+        timeout_sec=int(model_payload.get("timeout_sec", 60) or 60),
+    )
+    profile_payload = payload.get("profile", {})
+    profile = AgentProfile(
+        name=str(profile_payload.get("name", "") or ""),
+        skills={str(skill) for skill in profile_payload.get("skills", [])},
+        agent_type=str(profile_payload.get("agent_type", "general") or "general"),
+    )
+    shared_state = SharedState()
+    state_payload = payload.get("shared_state", {})
+    if isinstance(state_payload, dict):
+        for key, value in state_payload.items():
+            shared_state.set(str(key), value)
+    logger = _NullLogger()
+    mailbox = Mailbox(
+        participants=[str(item) for item in payload.get("participants", [])],
+        logger=logger,
+        storage_dir=pathlib.Path(str(payload.get("mailbox_storage_dir", "") or "")).resolve(),
+        clear_storage=False,
+    )
+    assignment = payload.get("assignment", {})
+    if not isinstance(assignment, dict):
+        raise ValueError(f"invalid host session task assignment: {payload_file}")
+    task_payload = assignment.get("task", {})
+    if not isinstance(task_payload, dict):
+        raise ValueError(f"host session task assignment missing task: {payload_file}")
+    task = task_from_dict(task_payload)
+    if not task.task_id:
+        raise ValueError(f"host session task assignment missing task id: {payload_file}")
+    task_context = assignment.get("task_context", {})
+    if not isinstance(task_context, dict):
+        task_context = {}
+    result_path = pathlib.Path(str(payload.get("result_path", "") or "")).resolve()
+    board = _StaticTaskBoard()
+    if hasattr(board, "apply_task_context"):
+        board.apply_task_context(task_context)
+    worker_context = AgentContext(
+        profile=profile,
+        target_dir=pathlib.Path(str(payload.get("target_dir", ".") or ".")).resolve(),
+        output_dir=pathlib.Path(str(payload.get("output_dir", ".") or ".")).resolve(),
+        goal=str(payload.get("goal", "") or ""),
+        provider=provider,
+        runtime_config=runtime_config,
+        board=board,
+        mailbox=mailbox.transport_view(),
+        file_locks=FileLockRegistry(logger=logger),
+        shared_state=shared_state,
+        logger=logger,
+        runtime_script=pathlib.Path(str(payload.get("runtime_script", "") or "")).resolve(),
+        task_context=dict(task_context),
+        session_state=dict(payload.get("session_state", {})) if isinstance(payload.get("session_state", {}), dict) else {},
+        session_registry=None,
+    )
+    handlers = build_workflow_handlers(str(payload.get("workflow_pack", "markdown-audit") or "markdown-audit"))
+    handler = handlers.get(task.task_type)
+    if handler is None:
+        _write_host_session_task_result(
+            result_path,
+            {
+                "success": False,
+                "result": {},
+                "state_updates": {},
+                "task_mutations": {},
+                "error": f"no handler registered for task_type={task.task_type}",
+            },
+        )
+        return 0
+
+    original_shared_state = worker_context.shared_state
+    shared_state_underlying = _merge_task_context_shared_state(
+        original_shared_state=original_shared_state,
+        task_context=task_context,
+    )
+    scoped_shared_state = ScopedSharedState(
+        _underlying=shared_state_underlying,
+        _visible_keys=set(task_context.get("visible_shared_state_keys", [])),
+        _write_through=False,
+    )
+    worker_context.shared_state = scoped_shared_state
+    try:
+        if task.task_type in HOST_SESSION_WORKER_PAYLOAD_TASK_TYPES:
+            task_outcome = _normalize_task_outcome(
+                _run_host_assigned_worker_payload_task(
+                    context=worker_context,
+                    task=task,
+                    task_context=task_context,
+                )
+            )
+            state_updates = task_outcome.get("state_updates", {})
+            task_mutations = task_outcome.get("task_mutations", {})
+        else:
+            task_outcome = _normalize_task_outcome(handler(worker_context, task))
+            state_updates = scoped_shared_state.buffered_updates()
+            task_mutations = task_outcome.get("task_mutations", {})
+        _write_host_session_task_result(
+            result_path,
+            {
+                "success": True,
+                "result": task_outcome.get("result", {}),
+                "state_updates": state_updates,
+                "task_mutations": task_mutations,
+                "error": "",
+            },
+        )
+    except Exception as exc:
+        _write_host_session_task_result(
+            result_path,
+            {
+                "success": False,
+                "result": {},
+                "state_updates": {},
+                "task_mutations": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+        )
+    finally:
+        worker_context.shared_state = original_shared_state
+        worker_context.task_context = {}
     return 0
 
 
