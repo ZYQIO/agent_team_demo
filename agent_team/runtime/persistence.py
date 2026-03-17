@@ -21,6 +21,8 @@ from ..core import (
 from ..models import ProviderMetadata
 from .lead_interaction import (
     LEAD_INTERACTION_STATE_KEY,
+    LEAD_PLAN_REPLY_SUBJECT,
+    LEAD_PLAN_REQUEST_SUBJECT,
     LEAD_STATUS_REPLY_SUBJECT,
     LEAD_STATUS_REQUEST_SUBJECT,
     PLAN_APPROVAL_STATUS_PENDING,
@@ -58,6 +60,18 @@ def _lead_message_body_preview(subject: str, body: Any) -> str:
             if summary:
                 return summary[:200]
         return text[:200]
+    if str(subject or "") == LEAD_PLAN_REPLY_SUBJECT:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return text[:200]
+        if isinstance(payload, Mapping):
+            summary = str(payload.get("summary", "") or "").strip()
+            if summary:
+                return summary[:200]
+        return text[:200]
+    if str(subject or "") == LEAD_PLAN_REQUEST_SUBJECT:
+        return "plan requested"
     if str(subject or "") == LEAD_STATUS_REQUEST_SUBJECT:
         return "status requested"
     return ""

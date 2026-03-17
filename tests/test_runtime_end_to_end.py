@@ -712,6 +712,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             lead_interaction_path = output_dir / runtime.LEAD_INTERACTION_FILENAME
             lead_console_path = MODULE_DIR / "skills" / "agent-team-runtime" / "scripts" / "lead_console.py"
             saw_pending = False
+            saw_plan_reply = False
             saw_status_reply = False
             stdout = ""
             stderr = ""
@@ -768,6 +769,44 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         break
                     time.sleep(0.1)
                 self.assertTrue(saw_status_reply, msg="runtime never recorded a teammate status reply")
+                plan_command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                        "--request-plan",
+                        "reviewer_gamma",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    plan_command.returncode,
+                    0,
+                    msg=f"stdout:\n{plan_command.stdout}\n\nstderr:\n{plan_command.stderr}",
+                )
+                while time.time() < deadline:
+                    if lead_interaction_path.exists():
+                        try:
+                            interaction = json.loads(lead_interaction_path.read_text(encoding="utf-8"))
+                        except json.JSONDecodeError:
+                            interaction = {}
+                        recent_messages = interaction.get("recent_team_messages", [])
+                        if any(
+                            isinstance(item, dict)
+                            and item.get("subject") == runtime.LEAD_PLAN_REPLY_SUBJECT
+                            for item in recent_messages
+                        ):
+                            saw_plan_reply = True
+                            break
+                    if process.poll() is not None:
+                        break
+                    time.sleep(0.1)
+                self.assertTrue(saw_plan_reply, msg="runtime never recorded a teammate plan reply")
                 approve_command = subprocess.run(
                     [
                         sys.executable,
@@ -808,6 +847,14 @@ class RuntimeEndToEndTests(unittest.TestCase):
                     for item in lead_interaction.get("recent_commands", [])
                 )
             )
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and item.get("command") == "request_teammate_plan"
+                    and item.get("agent") == "reviewer_gamma"
+                    for item in lead_interaction.get("recent_commands", [])
+                )
+            )
             status_replies = [
                 item
                 for item in lead_interaction.get("recent_team_messages", [])
@@ -815,6 +862,13 @@ class RuntimeEndToEndTests(unittest.TestCase):
             ]
             self.assertTrue(status_replies)
             self.assertIn("reviewer_gamma status=", status_replies[-1].get("body_preview", ""))
+            plan_replies = [
+                item
+                for item in lead_interaction.get("recent_team_messages", [])
+                if isinstance(item, dict) and item.get("subject") == runtime.LEAD_PLAN_REPLY_SUBJECT
+            ]
+            self.assertTrue(plan_replies)
+            self.assertIn("reviewer_gamma focus=", plan_replies[-1].get("body_preview", ""))
 
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

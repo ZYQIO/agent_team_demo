@@ -15,6 +15,8 @@ from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState, task_fr
 from ..host import probe_host_environment
 from ..models import build_provider
 from ..runtime.lead_interaction import (
+    LEAD_PLAN_REPLY_SUBJECT,
+    LEAD_PLAN_REQUEST_SUBJECT,
     LEAD_STATUS_REPLY_SUBJECT,
     LEAD_STATUS_REQUEST_SUBJECT,
     plan_approval_required,
@@ -522,6 +524,69 @@ def _build_host_worker_status_reply_payload(
     return payload
 
 
+def _build_host_worker_plan_reply_payload(
+    *,
+    lead_context: Any,
+    profile: AgentProfile,
+    session_id: str,
+    transport_backend: str,
+    current_task_id: str = "",
+    current_task_type: str = "",
+    status: str = "",
+) -> Dict[str, Any]:
+    session = (
+        lead_context.session_registry.session_for(profile.name)
+        if getattr(lead_context, "session_registry", None) is not None
+        else {}
+    )
+    if not isinstance(session, Mapping):
+        session = {}
+    task_history = session.get("task_history", [])
+    last_task = task_history[-1] if isinstance(task_history, list) and task_history else {}
+    provider_memory = session.get("provider_memory", [])
+    last_memory = provider_memory[-1] if isinstance(provider_memory, list) and provider_memory else {}
+    effective_current_task_id = str(current_task_id or session.get("current_task_id", "") or "")
+    effective_current_task_type = str(current_task_type or session.get("current_task_type", "") or "")
+    effective_status = str(status or session.get("status", "") or "ready")
+    if effective_current_task_id:
+        current_focus = f"Continue {effective_current_task_id} ({effective_current_task_type or 'unknown'})."
+        next_step = f"Finish {effective_current_task_id} and return the result to lead."
+    elif str(last_task.get("task_id", "") or ""):
+        current_focus = (
+            f"Waiting for the next assignment after {last_task.get('task_id', '')} "
+            f"({last_task.get('status', '') or 'completed'})."
+        )
+        next_step = "Stay ready for the next task or follow-up question from lead."
+    else:
+        current_focus = "Waiting for the first assignment."
+        next_step = "Stay ready for the runtime to assign initial work."
+    last_reply_excerpt = str(last_memory.get("reply", "") or "").strip().replace("\n", " ")
+    if len(last_reply_excerpt) > 160:
+        last_reply_excerpt = last_reply_excerpt[:157] + "..."
+    payload = {
+        "agent": profile.name,
+        "agent_type": profile.agent_type,
+        "transport": "host",
+        "transport_backend": str(transport_backend or ""),
+        "status": effective_status,
+        "session_id": str(session_id or session.get("session_id", "") or ""),
+        "current_focus": current_focus,
+        "next_step": next_step,
+        "current_task_id": effective_current_task_id,
+        "current_task_type": effective_current_task_type,
+        "last_task_id": str(last_task.get("task_id", "") or ""),
+        "last_task_type": str(last_task.get("task_type", "") or ""),
+        "last_task_status": str(last_task.get("status", "") or ""),
+        "last_provider_topic": str(last_memory.get("topic", "") or ""),
+        "last_provider_reply_excerpt": last_reply_excerpt,
+    }
+    payload["summary"] = (
+        f"{profile.name} focus={current_focus} "
+        f"next={next_step}"
+    )
+    return payload
+
+
 class _CodexHostSessionWorker(threading.Thread):
     worker_backend = HOST_SESSION_BACKEND_CODEX_EXEC
 
@@ -676,6 +741,29 @@ class _CodexHostSessionWorker(threading.Thread):
             session_worker_backend=self.worker_backend,
         )
 
+    def _reply_to_lead_plan_request(self, message: Any) -> None:
+        payload = _build_host_worker_plan_reply_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            session_id=self._session_id,
+            transport_backend=self.worker_backend,
+            current_task_id=str(self._assigned_task_id or ""),
+            status="running" if self._assigned_task_active else "ready",
+        )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=message.sender,
+            subject=LEAD_PLAN_REPLY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(message.task_id or "") or None,
+        )
+        self._lead_context.logger.log(
+            "lead_plan_reply_sent",
+            agent=self.profile_name,
+            recipient=message.sender,
+            session_worker_backend=self.worker_backend,
+        )
+
     def _run_codex_task(
         self,
         task_id: str,
@@ -823,7 +911,12 @@ class _CodexHostSessionWorker(threading.Thread):
             messages = self._lead_context.mailbox.pull_matching(
                 self.profile_name,
                 lambda message: message.subject
-                in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT, LEAD_STATUS_REQUEST_SUBJECT},
+                in {
+                    SESSION_CONTROL_SUBJECT,
+                    SESSION_TASK_ASSIGNMENT_SUBJECT,
+                    LEAD_STATUS_REQUEST_SUBJECT,
+                    LEAD_PLAN_REQUEST_SUBJECT,
+                },
             )
             handled_any = False
             for message in messages:
@@ -833,6 +926,9 @@ class _CodexHostSessionWorker(threading.Thread):
                     continue
                 if message.subject == LEAD_STATUS_REQUEST_SUBJECT:
                     self._reply_to_lead_status_request(message)
+                    continue
+                if message.subject == LEAD_PLAN_REQUEST_SUBJECT:
+                    self._reply_to_lead_plan_request(message)
                     continue
                 task_id = str(message.task_id or "")
                 if not self._activate_assigned_task(task_id):
@@ -1036,6 +1132,29 @@ class _ClaudeHostSessionWorker(threading.Thread):
             session_worker_backend=self.worker_backend,
         )
 
+    def _reply_to_lead_plan_request(self, message: Any) -> None:
+        payload = _build_host_worker_plan_reply_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            session_id=self._session_id,
+            transport_backend=self.worker_backend,
+            current_task_id=str(self._assigned_task_id or ""),
+            status="running" if self._assigned_task_active else "ready",
+        )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=message.sender,
+            subject=LEAD_PLAN_REPLY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(message.task_id or "") or None,
+        )
+        self._lead_context.logger.log(
+            "lead_plan_reply_sent",
+            agent=self.profile_name,
+            recipient=message.sender,
+            session_worker_backend=self.worker_backend,
+        )
+
     def _run_claude_task(
         self,
         task_id: str,
@@ -1175,7 +1294,12 @@ class _ClaudeHostSessionWorker(threading.Thread):
             messages = self._lead_context.mailbox.pull_matching(
                 self.profile_name,
                 lambda message: message.subject
-                in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT, LEAD_STATUS_REQUEST_SUBJECT},
+                in {
+                    SESSION_CONTROL_SUBJECT,
+                    SESSION_TASK_ASSIGNMENT_SUBJECT,
+                    LEAD_STATUS_REQUEST_SUBJECT,
+                    LEAD_PLAN_REQUEST_SUBJECT,
+                },
             )
             handled_any = False
             for message in messages:
@@ -1185,6 +1309,9 @@ class _ClaudeHostSessionWorker(threading.Thread):
                     continue
                 if message.subject == LEAD_STATUS_REQUEST_SUBJECT:
                     self._reply_to_lead_status_request(message)
+                    continue
+                if message.subject == LEAD_PLAN_REQUEST_SUBJECT:
+                    self._reply_to_lead_plan_request(message)
                     continue
                 task_id = str(message.task_id or "")
                 if not self._activate_assigned_task(task_id):

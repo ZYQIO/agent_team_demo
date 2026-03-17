@@ -10,6 +10,8 @@ from .task_mutations import proposed_task_mutation_summary
 
 LEAD_INTERACTION_STATE_KEY = "lead_interaction"
 LEAD_COMMANDS_FILENAME = "lead_commands.jsonl"
+LEAD_PLAN_REPLY_SUBJECT = "lead_plan_reply"
+LEAD_PLAN_REQUEST_SUBJECT = "lead_plan_request"
 LEAD_STATUS_REQUEST_SUBJECT = "lead_status_request"
 LEAD_STATUS_REPLY_SUBJECT = "lead_status_reply"
 PLAN_APPROVAL_STATUS_PENDING = "pending"
@@ -173,6 +175,7 @@ def consume_lead_commands(
     recent_commands = list(state.get("recent_commands", []))
     approve_task_ids: List[str] = []
     reject_task_ids: List[str] = []
+    plan_request_agents: List[str] = []
     status_request_agents: List[str] = []
     approve_all_pending = False
     consumed_count = 0
@@ -249,6 +252,18 @@ def consume_lead_commands(
                     command=command,
                 )
                 continue
+        elif command == "request_teammate_plan":
+            if agent:
+                plan_request_agents.append(agent)
+            else:
+                command_record["valid"] = False
+                logger.log(
+                    "lead_command_invalid",
+                    line_index=line_index,
+                    error="missing_agent",
+                    command=command,
+                )
+                continue
         else:
             command_record["valid"] = False
             logger.log(
@@ -274,6 +289,7 @@ def consume_lead_commands(
     return {
         "approve_task_ids": approve_task_ids,
         "reject_task_ids": reject_task_ids,
+        "plan_request_agents": plan_request_agents,
         "status_request_agents": status_request_agents,
         "approve_all_pending_plans": approve_all_pending,
         "consumed_count": consumed_count,

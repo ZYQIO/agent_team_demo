@@ -43,6 +43,12 @@ def parse_args() -> argparse.Namespace:
         help="Request a live status reply from a teammate by agent name. Can be specified multiple times.",
     )
     parser.add_argument(
+        "--request-plan",
+        action="append",
+        default=[],
+        help="Request a live plan/next-step reply from a teammate by agent name. Can be specified multiple times.",
+    )
+    parser.add_argument(
         "--watch",
         action="store_true",
         help="Continuously print the current lead interaction snapshot until interrupted.",
@@ -268,6 +274,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
     command_path = resolve_command_path(output_dir=output_dir, snapshot=snapshot)
     approve_task_ids = [str(task_id) for task_id in args.approve_plan if str(task_id)]
     reject_task_ids = [str(task_id) for task_id in args.reject_plan if str(task_id)]
+    request_plan_agents = [str(agent) for agent in args.request_plan if str(agent)]
     request_status_agents = [str(agent) for agent in args.request_status if str(agent)]
     overlap = sorted(set(approve_task_ids) & set(reject_task_ids))
     if overlap:
@@ -290,6 +297,9 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
     for agent in request_status_agents:
         append_command(command_path, {"command": "request_teammate_status", "agent": agent})
         wrote_any = True
+    for agent in request_plan_agents:
+        append_command(command_path, {"command": "request_teammate_plan", "agent": agent})
+        wrote_any = True
     if not wrote_any:
         return 0
     print(f"[lead-console] wrote commands to {command_path}")
@@ -298,7 +308,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | show <task_id> | status <agent> | approve <task_id> | reject <task_id> | approve-all | quit"
+        "Commands: refresh | show <task_id> | status <agent> | plan <agent> | approve <task_id> | reject <task_id> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -331,6 +341,14 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 append_command(
                     resolve_command_path(output_dir=output_dir, snapshot=snapshot),
                     {"command": "request_teammate_status", "agent": agent},
+                )
+                continue
+        if raw.startswith("plan "):
+            agent = raw.split(" ", 1)[1].strip()
+            if agent:
+                append_command(
+                    resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                    {"command": "request_teammate_plan", "agent": agent},
                 )
                 continue
         if raw.startswith("approve "):
