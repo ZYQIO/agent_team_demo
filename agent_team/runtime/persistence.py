@@ -1309,6 +1309,16 @@ def append_host_enforcement_to_final_report(report_path: pathlib.Path, snapshot:
             f"independent_sessions={host.get('capabilities', {}).get('independent_sessions', False)} "
             f"workspace_isolation={host.get('capabilities', {}).get('workspace_isolation', False)}"
         )
+        environment = host.get("environment", {})
+        if isinstance(environment, dict) and environment:
+            lines.append(
+                f"- Host environment: cli_installed={environment.get('cli_installed', False)} "
+                f"relay={environment.get('relay_host', '')} "
+                f"relay_source={environment.get('relay_source', '')} "
+                f"subscription_available={environment.get('subscription_available', '')} "
+                f"native_prerequisites_ready={environment.get('native_session_prerequisites_ready', False)} "
+                f"prerequisite_reason={environment.get('native_session_prerequisite_reason', '')}"
+            )
     lines.append(
         f"- Enforcement: requested_teammate_mode={snapshot.get('requested_teammate_mode', '')} "
         f"session={snapshot.get('session_enforcement', '')} "

@@ -20,7 +20,7 @@ Official parity review (2026-03-11):
 - the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` inspection inside the live console and embedded stdin prompt, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, and a true host-backed `codex` session backend, so the remaining gap is richer embedded in-run interaction plus a trustworthy `claude-code` host backend rather than total absence of approval flow or host-backed sessions
+- latest runtime slices now add live-updating lead interaction snapshots, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` inspection inside the live console and embedded stdin prompt, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, a true host-backed `codex` session backend, and explicit local `claude-code` relay/subscription prerequisite reporting in host enforcement, so the remaining gap is richer embedded in-run interaction plus a trustworthy `claude-code` host backend rather than total absence of approval flow or host-backed sessions
 
 ## 2. Target Architecture
 

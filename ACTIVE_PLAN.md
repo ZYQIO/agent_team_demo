@@ -10,7 +10,7 @@ The priority is execution isolation and real teammate transport behavior.
 Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
-Priority 4 is in progress: host mode now has a true host-backed `codex` session backend, but the parity-critical `claude-code` path in this environment still falls back to the transport-backed `external_process` worker backend.
+Priority 4 is in progress: host mode now has a true host-backed `codex` session backend, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical `claude-code` path in this environment still falls back to the transport-backed `external_process` worker backend.
 Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, and both live control surfaces can inspect one pending request in detail with `show <task_id>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
 
 Direction review (2026-03-10):
@@ -131,12 +131,13 @@ Recent completed outcomes:
 - lead-side `task_context_prepared` logging now stays accurate for assigned host tasks, keeping `context_boundaries.json` valid under full teammate offload
 - host-mode enforcement and boundary artifacts now record the current `external_process` backend explicitly instead of treating transport-backed host workers as true host-native sessions
 - `host_kind=codex` now uses a real host-backed `codex_exec` session backend with persisted Codex thread ids, while preserving the existing lead-owned assignment/result/telemetry contracts through a one-shot host session task entrypoint
+- `host_kind=claude-code` host metadata now probes local CLI/relay/subscription prerequisites and records them in `host_enforcement.json`, so blocked local environments are visible as explicit runtime state instead of implicit operator knowledge
 
 Acceptance criteria:
 - built-in workflow teammate task paths remain off the lead-inline executor
 - artifacts and event logs continue to describe the real boundary used for each task path
 - host task-mutation flows stay on explicit lead-applied contracts instead of regressing to direct shared-state or board mutation from worker contexts
-- the remaining `claude-code` backend swap does not hide whether a task ran through `external_process` versus a true host-backed session such as `codex_exec`
+- the remaining `claude-code` backend swap does not hide whether a task ran through `external_process` versus a true host-backed session such as `codex_exec`, and does not erase local prerequisite state such as relay selection or subscription availability
 
 ### 5. Add lead-facing team interaction and plan approval
 Status: In Progress

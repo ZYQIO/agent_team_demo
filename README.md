@@ -23,6 +23,7 @@ This folder now contains two layers:
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
+  - host enforcement artifacts that now also surface local `claude-code` relay/subscription prerequisite state when `--host-kind claude-code` is used
   - teammate execution mode toggle (`in-process` / `subprocess` / `tmux` / `host`, with subprocess fallback when tmux binary is unavailable, reviewer planning/report/llm_synthesis offload in subprocess mode while mailbox-driven reviewer tasks stay on the parent mailbox path, and host mode now launching external session-worker subprocesses for built-in workflow analyst tasks plus reviewer mailbox/planning/report/llm tasks via explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox contracts)
   - file lock registry
   - pluggable provider (`heuristic` / `openai`)
@@ -170,6 +171,8 @@ python3 agent_team_demo/agent_team_runtime.py \
 ```
 
 With `--host-kind codex`, assigned host-mode teammate tasks now use a persistent Codex-backed session backend (`host_session_backend=codex_exec`) that reuses `codex exec` / `codex exec resume` thread ids. Session isolation is host-backed on that path; workspace isolation is still unavailable.
+
+With `--host-kind claude-code`, host enforcement artifacts now also record the detected Claude Code relay source/host and whether native-session prerequisites are locally ready, so blocked environments are visible even though runtime execution still falls back to `external_process`.
 
 Run the second built-in workflow pack:
 

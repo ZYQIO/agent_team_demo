@@ -1319,6 +1319,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertEqual(host_enforcement.get("host_session_backend"), "external_process")
             self.assertTrue(host_enforcement.get("host_session_backend_session_isolation_active"))
             self.assertFalse(host_enforcement.get("host_session_backend_workspace_isolation_active"))
+            host_environment = host_enforcement.get("host", {}).get("environment", {})
+            self.assertEqual(host_environment.get("kind"), "claude-code")
+            self.assertIn("native_session_prerequisite_reason", host_environment)
 
             session_boundaries = json.loads(
                 (output_dir / runtime.SESSION_BOUNDARY_FILENAME).read_text(encoding="utf-8")

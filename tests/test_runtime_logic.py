@@ -18,6 +18,7 @@ if str(MODULE_DIR) not in sys.path:
     sys.path.insert(0, str(MODULE_DIR))
 
 import agent_team_runtime as runtime
+from agent_team.host import build_host_adapter
 from agent_team.runtime.engine import run_lead_tasks_once
 from agent_team.workflows import build_workflow_lead_task_order, build_workflow_runtime_metadata
 
@@ -4710,6 +4711,81 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertIn("host_independent_sessions_advertised_only", snapshot["notes"])
         self.assertIn("host_workspace_isolation_advertised_only", snapshot["notes"])
         self.assertIn("host_managed_context_not_bound_to_runtime", snapshot["notes"])
+
+    def test_build_host_runtime_metadata_records_claude_environment_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home_dir = pathlib.Path(tmp)
+            claudecode_dir = home_dir / ".claudecode"
+            claudecode_dir.mkdir(parents=True, exist_ok=True)
+            (claudecode_dir / "relay").write_text(
+                json.dumps({"host": "relay07.example.com"}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            (home_dir / ".claude.json").write_text(
+                json.dumps({"hasAvailableSubscription": False}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+
+            with mock.patch("agent_team.host.pathlib.Path.home", return_value=home_dir):
+                with mock.patch("agent_team.host.shutil.which", return_value="C:\\tools\\claude.cmd"):
+                    with mock.patch.dict("agent_team.host.os.environ", {}, clear=True):
+                        metadata = build_host_adapter(
+                            runtime.default_host_config("claude-code")
+                        ).runtime_metadata()
+
+        environment = metadata.get("environment", {})
+        self.assertEqual(environment.get("kind"), "claude-code")
+        self.assertTrue(environment.get("cli_installed"))
+        self.assertEqual(environment.get("relay_host"), "relay07.example.com")
+        self.assertEqual(environment.get("relay_source"), "relay_file")
+        self.assertFalse(environment.get("subscription_available"))
+        self.assertFalse(environment.get("native_session_prerequisites_ready"))
+        self.assertEqual(
+            environment.get("native_session_prerequisite_reason"),
+            "subscription_unavailable",
+        )
+        self.assertIn("claude_code_prerequisites_subscription_unavailable", metadata.get("limits", []))
+
+    def test_build_host_enforcement_snapshot_includes_claude_environment_probe(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home_dir = pathlib.Path(tmp)
+            claudecode_dir = home_dir / ".claudecode"
+            claudecode_dir.mkdir(parents=True, exist_ok=True)
+            (home_dir / ".claude.json").write_text(
+                json.dumps({"hasAvailableSubscription": False}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            runtime_config = runtime.RuntimeConfig(teammate_mode="host")
+            adapter = build_host_adapter(runtime.default_host_config("claude-code"))
+
+            with mock.patch("agent_team.host.pathlib.Path.home", return_value=home_dir):
+                with mock.patch("agent_team.host.shutil.which", return_value="C:\\tools\\claude.cmd"):
+                    with mock.patch.dict("agent_team.host.os.environ", {}, clear=True):
+                        host_metadata = adapter.runtime_metadata()
+                        host_enforcement = adapter.runtime_enforcement(
+                            runtime_config=runtime_config,
+                            policies={"allow_host_managed_context": True},
+                        )
+
+            shared_state = runtime.SharedState()
+            shared_state.set("host", host_metadata)
+            shared_state.set("runtime_config", runtime_config.to_dict())
+            shared_state.set("policies", {"allow_host_managed_context": True})
+            shared_state.set("host_runtime_enforcement", host_enforcement)
+
+            snapshot = runtime.build_host_enforcement_snapshot(shared_state=shared_state)
+
+        environment = snapshot.get("host", {}).get("environment", {})
+        self.assertEqual(environment.get("kind"), "claude-code")
+        self.assertEqual(environment.get("relay_host"), "gaccode.com")
+        self.assertEqual(environment.get("relay_source"), "canonical_default")
+        self.assertFalse(environment.get("native_session_prerequisites_ready"))
+        self.assertEqual(
+            environment.get("native_session_prerequisite_reason"),
+            "subscription_unavailable",
+        )
+        self.assertIn("claude_code_canonical_relay_defaulted", snapshot["notes"])
+        self.assertIn("claude_code_prerequisites_subscription_unavailable", snapshot["notes"])
 
     def test_build_host_enforcement_snapshot_downgrades_external_process_host_backend(self) -> None:
         shared_state = runtime.SharedState()

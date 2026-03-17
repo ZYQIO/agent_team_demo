@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Claude host prerequisite visibility checkpoint
+- Goal: stop treating the local `claude-code` host gap as a vague transport issue when the actual blocker can be relay or subscription state on the machine
+- Changes:
+  - added host-environment probing for `claude-code` and `codex` host kinds inside runtime metadata so host artifacts can describe local CLI and native-session prerequisites
+  - taught `claude-code` host metadata to record current relay source/host plus whether native-session prerequisites are ready, including the common blocked reasons `subscription_unavailable`, `cli_missing`, and `auth_unknown`
+  - carried that host environment state into `host_enforcement.json` and the final report host-enforcement section so host-mode runs expose why `claude-code` still stays on `external_process`
+  - added regression coverage for relay-file detection, canonical-relay fallback, subscription-unavailable blocking, and host-mode artifact shape
+- Validation:
+  - `python -m py_compile agent_team\\host.py agent_team\\runtime\\persistence.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted tests passed for Claude host environment probe and host-mode CLI artifacts
+  - full suite: `132/132` tests passed
+- Commit: pending current round
+- Next implication: the next host slice should either wire a trustworthy native `claude-code` backend or make the fallback/selection policy explicit, but it no longer needs to rediscover local relay and subscription state first
+
 ### 2026-03-17 - Detailed pending-plan inspection checkpoint
 - Goal: let lead inspect one pending teammate plan in detail from the live control surfaces instead of only seeing a summary list
 - Changes:

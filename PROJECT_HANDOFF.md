@@ -46,12 +46,12 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - analyst worker payloads now return lead-applied `state_updates`, and assigned host tasks still emit lead-side `task_context_prepared` events so `context_boundaries.json` remains accurate under full teammate offload
   - teammate auto-replies in the mailbox-driven reviewer flows now also come from external session-worker subprocesses rather than parent-runtime threads
   - `host_kind=codex` now uses a true host-backed `codex_exec` session backend with persisted Codex thread ids plus a one-shot `--host-session-task-file` runtime entrypoint behind the existing lead-owned assignment/result/telemetry contracts
-  - `host_kind=claude-code` still remains on the transport-backed `external_process` worker backend in this environment, so Claude-parity host execution is still not complete
+  - `host_kind=claude-code` still remains on the transport-backed `external_process` worker backend in this environment, but host enforcement now also records the detected Claude relay source/host and native-session prerequisite status, so Claude-parity host execution is still not complete but its blocker is visible
 
 ## Main Remaining Gaps
 
 1. Claude Code parity for host teammate mode is still incomplete.
-   The runtime now has a true host-backed `codex_exec` backend, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment.
+   The runtime now has a true host-backed `codex_exec` backend, and host enforcement now exposes local Claude relay/subscription prerequisite state, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment.
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction is still not a richer embedded in-run surface.
