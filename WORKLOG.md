@@ -13,6 +13,19 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Lead approval preview checkpoint
+- Goal: make pending teammate plans readable before approval instead of only showing task ids and mutation counts
+- Changes:
+  - extended queued plan-approval records with structured previews of proposed inserted tasks and dependency additions
+  - updated `lead_interaction.json`, `lead_interaction.md`, `lead_console.py`, and the embedded `--lead-interactive` prompt to show those previews while approvals are pending
+  - direction review: the last three rounds improved execution semantics and in-run control rather than adding artifact-only layers; the runtime now has one true host-backed session backend plus readable approval previews, so the next highest-value parity slice should lean toward a richer embedded lead control surface while trustworthy `claude-code` backend work remains environment-dependent
+- Validation:
+  - `python -m py_compile agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\persistence.py agent_team\\runtime\\engine.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted tests passed for live lead interaction artifact previews, live `lead_console.py` preview output, and embedded interactive preview output
+  - full suite: `129/129` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the lead-facing parity gap is now less about basic approve/reject availability and more about upgrading the current preview-capable terminal/stdin workflow into a richer embedded in-run control surface
+
 ### 2026-03-17 - Codex host session backend
 - Goal: add a real host-backed teammate session backend without weakening the existing mailbox/result/telemetry contracts
 - Changes:

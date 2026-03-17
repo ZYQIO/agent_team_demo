@@ -139,6 +139,8 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --approve-plan dynamic_planning
 ```
 
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied.
+
 Use an embedded lead prompt inside the runtime process:
 
 ```bash

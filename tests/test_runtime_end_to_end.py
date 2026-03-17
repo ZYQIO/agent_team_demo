@@ -515,6 +515,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 )
                 self.assertIn("Pending approvals: 1", status.stdout)
                 self.assertIn("dynamic_planning", status.stdout)
+                self.assertIn("heading_structure_followup", status.stdout)
                 command = subprocess.run(
                     [
                         sys.executable,
@@ -651,6 +652,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
             )
             self.assertIn("interactive_pending_approvals", stdout)
             self.assertIn("lead-approval>", stdout)
+            self.assertIn("heading_structure_followup", stdout)
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("interrupted_reason"), "")
             self.assertEqual(summary.get("pending_plan_approval_count"), 0)

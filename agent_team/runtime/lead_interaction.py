@@ -26,6 +26,62 @@ def _empty_state() -> Dict[str, Any]:
     }
 
 
+def _task_mutation_preview(task_mutations: Any) -> Dict[str, List[Dict[str, Any]]]:
+    normalized_mutations = task_mutations if isinstance(task_mutations, Mapping) else {}
+    proposed_tasks_preview: List[Dict[str, Any]] = []
+    raw_insert_tasks = normalized_mutations.get("insert_tasks", [])
+    if isinstance(raw_insert_tasks, list):
+        for item in raw_insert_tasks:
+            if not isinstance(item, Mapping):
+                continue
+            task_id = str(item.get("task_id", "") or "")
+            if not task_id:
+                continue
+            proposed_tasks_preview.append(
+                {
+                    "task_id": task_id,
+                    "task_type": str(item.get("task_type", "") or ""),
+                    "title": str(item.get("title", "") or ""),
+                    "allowed_agent_types": [
+                        str(agent_type)
+                        for agent_type in item.get("allowed_agent_types", [])
+                        if str(agent_type)
+                    ]
+                    if isinstance(item.get("allowed_agent_types", []), list)
+                    else [],
+                    "dependencies": [
+                        str(dep_id)
+                        for dep_id in item.get("dependencies", [])
+                        if str(dep_id)
+                    ]
+                    if isinstance(item.get("dependencies", []), list)
+                    else [],
+                }
+            )
+
+    proposed_dependencies_preview: List[Dict[str, Any]] = []
+    raw_dependencies = normalized_mutations.get("add_dependencies", [])
+    if isinstance(raw_dependencies, list):
+        for item in raw_dependencies:
+            if not isinstance(item, Mapping):
+                continue
+            task_id = str(item.get("task_id", "") or "")
+            dependency_id = str(item.get("dependency_id", "") or "")
+            if not task_id or not dependency_id:
+                continue
+            proposed_dependencies_preview.append(
+                {
+                    "task_id": task_id,
+                    "dependency_id": dependency_id,
+                }
+            )
+
+    return {
+        "proposed_tasks_preview": proposed_tasks_preview,
+        "proposed_dependencies_preview": proposed_dependencies_preview,
+    }
+
+
 def _normalized_state(value: Any) -> Dict[str, Any]:
     if not isinstance(value, Mapping):
         return _empty_state()
@@ -227,6 +283,7 @@ def queue_plan_approval_request(
     state = get_lead_interaction_state(shared_state)
     requests = state.setdefault("plan_approval_requests", {})
     mutation_summary = proposed_task_mutation_summary(task_mutations)
+    mutation_preview = _task_mutation_preview(task_mutations)
     record = {
         "task_id": str(task_id or ""),
         "task_type": str(task_type or ""),
@@ -241,6 +298,8 @@ def queue_plan_approval_request(
         "task_mutations": dict(task_mutations) if isinstance(task_mutations, Mapping) else {},
         "proposed_task_ids": list(mutation_summary.get("proposed_task_ids", [])),
         "proposed_dependency_ids": list(mutation_summary.get("proposed_dependency_ids", [])),
+        "proposed_tasks_preview": list(mutation_preview.get("proposed_tasks_preview", [])),
+        "proposed_dependencies_preview": list(mutation_preview.get("proposed_dependencies_preview", [])),
         "applied_task_ids": [],
         "applied_dependency_ids": [],
     }

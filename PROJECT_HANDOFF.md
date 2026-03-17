@@ -29,6 +29,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - host-mode mailbox reviewer/request-reply flows now use external session-worker subprocesses plus explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox messages so workflow state and teammate session ledger updates are applied on the lead side
   - dynamic task insertion
   - progress artifacts and session ledgers
+  - live lead interaction snapshots plus preview-capable teammate plan approval through resume CLI, file-backed commands, `lead_console.py`, and embedded stdin prompt
   - task-scoped context boundaries
   - checkpoint resume / rewind / replay reports
   - `in-process`, `subprocess`, `tmux`, and `host` teammate modes

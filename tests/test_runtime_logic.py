@@ -772,9 +772,15 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
             self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
             self.assertEqual(snapshot.get("recent_team_message_count"), 2)
+            pending_request = snapshot.get("plan_approval_requests", [])[0]
+            self.assertEqual(
+                pending_request.get("proposed_tasks_preview", [])[0].get("task_id"),
+                "heading_structure_followup",
+            )
             report_text = (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).read_text(encoding="utf-8")
             self.assertIn("## Pending Approvals", report_text)
             self.assertIn("dynamic_planning", report_text)
+            self.assertIn("heading_structure_followup", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)
 

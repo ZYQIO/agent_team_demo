@@ -250,6 +250,22 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
 def _print_interactive_plan_approval_status(
     pending_plan_approvals: Sequence[Dict[str, Any]],
 ) -> None:
+    def _task_preview_text(item: Mapping[str, Any]) -> str:
+        task_id = str(item.get("task_id", "") or "")
+        task_type = str(item.get("task_type", "") or "")
+        title = str(item.get("title", "") or "")
+        agent_types = ",".join(item.get("allowed_agent_types", [])) if isinstance(item.get("allowed_agent_types", []), list) else ""
+        dependencies = ",".join(item.get("dependencies", [])) if isinstance(item.get("dependencies", []), list) else ""
+        return (
+            f"{task_id}[{task_type or 'unknown'}]"
+            + (f" title={title}" if title else "")
+            + (f" agents={agent_types}" if agent_types else "")
+            + (f" deps={dependencies}" if dependencies else "")
+        )
+
+    def _dependency_preview_text(item: Mapping[str, Any]) -> str:
+        return f"{str(item.get('task_id', '') or '')}+={str(item.get('dependency_id', '') or '')}"
+
     print("[lead] interactive_pending_approvals:", flush=True)
     for item in pending_plan_approvals:
         if not isinstance(item, Mapping):
@@ -262,6 +278,20 @@ def _print_interactive_plan_approval_status(
             f"proposed_dependencies={','.join(item.get('proposed_dependency_ids', [])) or 'none'}",
             flush=True,
         )
+        task_preview = [
+            _task_preview_text(preview)
+            for preview in item.get("proposed_tasks_preview", [])
+            if isinstance(preview, Mapping)
+        ]
+        dependency_preview = [
+            _dependency_preview_text(preview)
+            for preview in item.get("proposed_dependencies_preview", [])
+            if isinstance(preview, Mapping)
+        ]
+        if task_preview:
+            print("[lead]   task_preview=" + "; ".join(task_preview), flush=True)
+        if dependency_preview:
+            print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
         "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | pause",
         flush=True,

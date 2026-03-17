@@ -94,6 +94,24 @@ def resolve_command_path(output_dir: pathlib.Path, snapshot: Dict[str, Any]) -> 
     return (output_dir / LEAD_COMMANDS_FILENAME).resolve()
 
 
+def _task_preview_text(item: Dict[str, Any]) -> str:
+    task_id = str(item.get("task_id", "") or "")
+    task_type = str(item.get("task_type", "") or "")
+    title = str(item.get("title", "") or "")
+    agent_types = ",".join(item.get("allowed_agent_types", [])) if isinstance(item.get("allowed_agent_types", []), list) else ""
+    dependencies = ",".join(item.get("dependencies", [])) if isinstance(item.get("dependencies", []), list) else ""
+    return (
+        f"{task_id}[{task_type or 'unknown'}]"
+        + (f" title={title}" if title else "")
+        + (f" agents={agent_types}" if agent_types else "")
+        + (f" deps={dependencies}" if dependencies else "")
+    )
+
+
+def _dependency_preview_text(item: Dict[str, Any]) -> str:
+    return f"{str(item.get('task_id', '') or '')}+={str(item.get('dependency_id', '') or '')}"
+
+
 def build_status_lines(
     output_dir: pathlib.Path,
     snapshot: Dict[str, Any],
@@ -140,6 +158,20 @@ def build_status_lines(
                 f"proposed_tasks={','.join(item.get('proposed_task_ids', [])) or 'none'} "
                 f"proposed_dependencies={','.join(item.get('proposed_dependency_ids', [])) or 'none'}"
             )
+            task_preview = [
+                _task_preview_text(preview)
+                for preview in item.get("proposed_tasks_preview", [])
+                if isinstance(preview, dict)
+            ]
+            dependency_preview = [
+                _dependency_preview_text(preview)
+                for preview in item.get("proposed_dependencies_preview", [])
+                if isinstance(preview, dict)
+            ]
+            if task_preview:
+                lines.append(f"  task_preview: {'; '.join(task_preview)}")
+            if dependency_preview:
+                lines.append(f"  dependency_preview: {'; '.join(dependency_preview)}")
 
     lines.append("")
     lines.append("Recent team messages:")
