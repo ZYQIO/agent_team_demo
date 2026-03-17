@@ -77,6 +77,12 @@ def parse_args() -> argparse.Namespace:
         help="Print detailed live session information for a teammate by agent name. Can be specified multiple times.",
     )
     parser.add_argument(
+        "--review-teammate",
+        action="append",
+        default=[],
+        help="Print a combined teammate review with session, recent lead-visible messages, and pending approvals.",
+    )
+    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=1.0,
@@ -250,6 +256,99 @@ def describe_teammate_session(snapshot: Dict[str, Any], agent_name: str) -> List
                 if isinstance(item, dict)
             )
         )
+    pending_task_ids = matched.get("pending_plan_request_task_ids", [])
+    if isinstance(pending_task_ids, list) and pending_task_ids:
+        lines.append(
+            f"pending_approvals={int(matched.get('pending_plan_request_count', len(pending_task_ids)) or 0)} "
+            + "task_ids="
+            + ",".join(str(task_id) for task_id in pending_task_ids if str(task_id))
+        )
+    recent_lead_messages = matched.get("recent_lead_messages", [])
+    if isinstance(recent_lead_messages, list) and recent_lead_messages:
+        lines.append(
+            "recent_lead_messages="
+            + "; ".join(
+                (
+                    f"{str(item.get('sender', '') or '')}"
+                    f"->{str(item.get('recipient', '') or '')}:"
+                    f"{str(item.get('subject', '') or '')}"
+                    f" task_id={str(item.get('task_id', '') or 'n/a')}"
+                )
+                + (
+                    f" body={str(item.get('body_preview', '') or '')}"
+                    if str(item.get("body_preview", "") or "")
+                    else ""
+                )
+                for item in recent_lead_messages
+                if isinstance(item, dict)
+            )
+        )
+    return lines
+
+
+def describe_teammate_review(snapshot: Dict[str, Any], agent_name: str) -> List[str]:
+    teammate_sessions = snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list):
+        teammate_sessions = []
+    matched = next(
+        (
+            item
+            for item in teammate_sessions
+            if isinstance(item, dict) and str(item.get("agent", "") or "") == str(agent_name or "")
+        ),
+        None,
+    )
+    if matched is None:
+        return [f"unknown teammate: {agent_name}"]
+
+    pending_requests = [
+        item
+        for item in snapshot.get("plan_approval_requests", [])
+        if isinstance(item, dict)
+        and str(item.get("status", "") or "") == "pending"
+        and str(item.get("requested_by", "") or "") == str(agent_name or "")
+    ]
+    pending_task_ids = [
+        str(item.get("task_id", "") or "")
+        for item in pending_requests
+        if str(item.get("task_id", "") or "")
+    ]
+    lines = describe_teammate_session(snapshot=snapshot, agent_name=agent_name)
+    if pending_task_ids:
+        lines.append(f"review_pending_approvals={len(pending_task_ids)} task_ids={','.join(pending_task_ids)}")
+        for item in pending_requests:
+            proposed_task_ids = item.get("proposed_task_ids", [])
+            proposed_dependency_ids = item.get("proposed_dependency_ids", [])
+            lines.append(
+                f"pending_request={str(item.get('task_id', '') or '')}"
+                f"[{str(item.get('task_type', '') or 'unknown')}]"
+                + " proposed_tasks="
+                + (
+                    ",".join(str(task_id) for task_id in proposed_task_ids if str(task_id))
+                    if isinstance(proposed_task_ids, list) and proposed_task_ids
+                    else "none"
+                )
+                + " proposed_dependencies="
+                + (
+                    ",".join(str(task_id) for task_id in proposed_dependency_ids if str(task_id))
+                    if isinstance(proposed_dependency_ids, list) and proposed_dependency_ids
+                    else "none"
+                )
+            )
+    else:
+        lines.append("review_pending_approvals=none")
+    recent_lead_messages = matched.get("recent_lead_messages", [])
+    if not isinstance(recent_lead_messages, list) or not recent_lead_messages:
+        lines.append("review_recent_lead_messages=none")
+    action_hints = [f"status {agent_name}", f"plan {agent_name}"]
+    action_hints.extend(f"show {task_id}" for task_id in pending_task_ids[:3])
+    action_hints.extend(
+        [
+            f"approve teammate {agent_name}",
+            f"reject teammate {agent_name}",
+        ]
+    )
+    lines.append("suggested_actions=" + " | ".join(action_hints))
     return lines
 
 
@@ -422,7 +521,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | review teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -459,6 +558,12 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
             agent = raw.split(" ", 1)[1].strip()
             if agent:
                 for line in describe_teammate_session(snapshot=snapshot, agent_name=agent):
+                    print(f"[lead-console] {line}")
+                continue
+        if raw.startswith("review teammate "):
+            agent = raw.split(" ", 2)[2].strip()
+            if agent:
+                for line in describe_teammate_review(snapshot=snapshot, agent_name=agent):
                     print(f"[lead-console] {line}")
                 continue
         if raw.startswith("status "):
@@ -551,6 +656,13 @@ def main() -> int:
         lines.append("Requested teammate details:")
         for agent in requested_teammates:
             for line in describe_teammate_session(snapshot=snapshot, agent_name=agent):
+                lines.append(f"- {line}")
+    reviewed_teammates = [str(agent) for agent in args.review_teammate if str(agent)]
+    if reviewed_teammates:
+        lines.append("")
+        lines.append("Requested teammate reviews:")
+        for agent in reviewed_teammates:
+            for line in describe_teammate_review(snapshot=snapshot, agent_name=agent):
                 lines.append(f"- {line}")
     print(
         "\n".join(

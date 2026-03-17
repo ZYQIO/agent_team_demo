@@ -20,7 +20,7 @@ Benchmark review (2026-03-11):
 - the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions that are useful inside Codex
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slices now add live-updating lead interaction snapshots, teammate session summaries inside those lead-facing surfaces, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` and teammate inspection inside the live console and embedded stdin prompt, live teammate status/plan requests from lead command surfaces, teammate-scoped approval commands in those same control surfaces, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, a true host-backed `codex` session backend, a guarded `claude_exec` backend, and explicit local `claude-code` relay/subscription prerequisite reporting in host enforcement, so the remaining gap is richer embedded in-run interaction plus host hardening that materially improves Codex usage rather than total absence of approval flow or host-backed sessions
+- latest runtime slices now add live-updating lead interaction snapshots, teammate session summaries inside those lead-facing surfaces, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` and teammate inspection inside the live console and embedded stdin prompt, combined teammate review output in those same lead surfaces, live teammate status/plan requests from lead command surfaces, teammate-scoped approval commands in those same control surfaces, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, a true host-backed `codex` session backend, a guarded `claude_exec` backend, and explicit local `claude-code` relay/subscription prerequisite reporting in host enforcement, so the remaining gap is richer embedded in-run interaction plus host hardening that materially improves Codex usage rather than total absence of approval flow or host-backed sessions
 
 ## 2. Target Architecture
 
@@ -428,7 +428,7 @@ Evidence review:
 Priority order for the next work:
 
 1. Upgrade the current lead-facing interaction plus preview-capable plan approval workflow into a richer embedded in-run control surface
-   Goal: build past live snapshots, teammate session summaries, teammate detail inspection, teammate-scoped approval actions, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a more coherent Codex-usable interaction model.
+   Goal: build past live snapshots, teammate session summaries, teammate detail inspection, teammate review output, teammate-scoped approval actions, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a more coherent Codex-usable interaction model.
 2. Validate and harden host-backed session paths that materially improve Codex usage
    Goal: preserve the explicit mailbox/result/telemetry contracts while improving real host-backed execution, including the guarded `claude_exec` path when an official-ready Claude environment is available.
 3. Add true event-level state replay

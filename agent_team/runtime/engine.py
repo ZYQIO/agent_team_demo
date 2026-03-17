@@ -402,6 +402,10 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
     }:
         return {"action": "approve_all_pending_plans", "raw": text, "task_id": ""}
     parts = text.split()
+    if len(parts) == 3 and parts[0].strip().lower() == "review" and parts[1].strip().lower() in {"teammate", "agent"}:
+        task_id = parts[2].strip()
+        if task_id:
+            return {"action": "review_teammate", "raw": text, "task_id": task_id}
     if len(parts) == 3 and parts[0].strip().lower() == "show" and parts[1].strip().lower() in {"teammate", "agent"}:
         task_id = parts[2].strip()
         if task_id:
@@ -491,6 +495,101 @@ def _describe_teammate_session(interaction_snapshot: Mapping[str, Any], agent_na
                 if isinstance(item, Mapping)
             )
         )
+    pending_task_ids = matched.get("pending_plan_request_task_ids", [])
+    if isinstance(pending_task_ids, list) and pending_task_ids:
+        lines.append(
+            f"pending_approvals={int(matched.get('pending_plan_request_count', len(pending_task_ids)) or 0)} "
+            + "task_ids="
+            + ",".join(str(task_id) for task_id in pending_task_ids if str(task_id))
+        )
+    recent_lead_messages = matched.get("recent_lead_messages", [])
+    if isinstance(recent_lead_messages, list) and recent_lead_messages:
+        lines.append(
+            "recent_lead_messages="
+            + "; ".join(
+                (
+                    f"{str(item.get('sender', '') or '')}"
+                    f"->{str(item.get('recipient', '') or '')}:"
+                    f"{str(item.get('subject', '') or '')}"
+                    f" task_id={str(item.get('task_id', '') or 'n/a')}"
+                )
+                + (
+                    f" body={str(item.get('body_preview', '') or '')}"
+                    if str(item.get("body_preview", "") or "")
+                    else ""
+                )
+                for item in recent_lead_messages
+                if isinstance(item, Mapping)
+            )
+        )
+    return lines
+
+
+def _describe_teammate_review(interaction_snapshot: Mapping[str, Any], agent_name: str) -> List[str]:
+    teammate_sessions = interaction_snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list):
+        teammate_sessions = []
+    matched = next(
+        (
+            item
+            for item in teammate_sessions
+            if isinstance(item, Mapping) and str(item.get("agent", "") or "") == str(agent_name or "")
+        ),
+        None,
+    )
+    if matched is None:
+        return [f"unknown teammate: {agent_name}"]
+
+    pending_requests = [
+        item
+        for item in interaction_snapshot.get("plan_approval_requests", [])
+        if isinstance(item, Mapping)
+        and str(item.get("status", "") or "") == PLAN_APPROVAL_STATUS_PENDING
+        and str(item.get("requested_by", "") or "") == str(agent_name or "")
+    ]
+    pending_task_ids = [
+        str(item.get("task_id", "") or "")
+        for item in pending_requests
+        if str(item.get("task_id", "") or "")
+    ]
+    lines = _describe_teammate_session(interaction_snapshot=interaction_snapshot, agent_name=agent_name)
+    if pending_task_ids:
+        lines.append(
+            f"review_pending_approvals={len(pending_task_ids)} task_ids={','.join(pending_task_ids)}"
+        )
+        for item in pending_requests:
+            proposed_task_ids = item.get("proposed_task_ids", [])
+            proposed_dependency_ids = item.get("proposed_dependency_ids", [])
+            lines.append(
+                f"pending_request={str(item.get('task_id', '') or '')}"
+                f"[{str(item.get('task_type', '') or 'unknown')}]"
+                + " proposed_tasks="
+                + (
+                    ",".join(str(task_id) for task_id in proposed_task_ids if str(task_id))
+                    if isinstance(proposed_task_ids, list) and proposed_task_ids
+                    else "none"
+                )
+                + " proposed_dependencies="
+                + (
+                    ",".join(str(task_id) for task_id in proposed_dependency_ids if str(task_id))
+                    if isinstance(proposed_dependency_ids, list) and proposed_dependency_ids
+                    else "none"
+                )
+            )
+    else:
+        lines.append("review_pending_approvals=none")
+    recent_lead_messages = matched.get("recent_lead_messages", [])
+    if not isinstance(recent_lead_messages, list) or not recent_lead_messages:
+        lines.append("review_recent_lead_messages=none")
+    action_hints = [f"status {agent_name}", f"plan {agent_name}"]
+    action_hints.extend(f"show {task_id}" for task_id in pending_task_ids[:3])
+    action_hints.extend(
+        [
+            f"approve teammate {agent_name}",
+            f"reject teammate {agent_name}",
+        ]
+    )
+    lines.append("suggested_actions=" + " | ".join(action_hints))
     return lines
 
 
@@ -558,7 +657,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review teammate <agent> | status <agent> | plan <agent> | pause",
         flush=True,
     )
 
@@ -631,7 +730,7 @@ def run_interactive_plan_approval_prompt(
                 shared_state=lead_context.shared_state,
                 command=action,
                 task_ids=task_ids,
-                agent=task_id if action in {"request_teammate_status", "request_teammate_plan", "show_teammate", "approve_teammate_plans", "reject_teammate_plans"} else "",
+                agent=task_id if action in {"request_teammate_status", "request_teammate_plan", "show_teammate", "review_teammate", "approve_teammate_plans", "reject_teammate_plans"} else "",
                 raw=str(raw_command or ""),
                 valid=action not in {"invalid"},
                 source="interactive",
@@ -666,9 +765,16 @@ def run_interactive_plan_approval_prompt(
             ):
                 print("[lead] " + line, flush=True)
             continue
+        if action == "review_teammate":
+            for line in _describe_teammate_review(
+                interaction_snapshot=interaction.get("snapshot", {}),
+                agent_name=task_id,
+            ):
+                print("[lead] " + line, flush=True)
+            continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve teammate <agent> | reject teammate <agent> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | review teammate <agent> | status <agent> | plan <agent> | pause",
                 flush=True,
             )
             continue

@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Teammate review checkpoint
+- Goal: unify teammate inspection, recent lead-visible message context, pending approvals, and likely next actions into one Codex-friendly review output
+- Changes:
+  - extended `lead_interaction.json` / `lead_interaction.md` teammate session summaries with per-agent pending approval counts/task ids plus recent lead-visible message excerpts
+  - updated the embedded stdin approval prompt to support `review teammate <agent>` so lead can inspect one teammate's current state, open approvals, and likely next actions from one command
+  - updated `lead_console.py` with `--review-teammate <agent>` plus interactive `review teammate <agent>` support for the same combined review output
+  - added regression coverage for enriched lead-interaction snapshots, embedded review-command parsing, and the live console teammate review path
+  - direction review: the last three Codex-first lead-control rounds stayed aligned with the target by tightening the runtime control loop rather than adding report-only surface area, so the next slice should keep collapsing embedded control fragmentation instead of adding more standalone verbs
+- Validation:
+  - `python -m py_compile agent_team/runtime/persistence.py agent_team/runtime/engine.py skills/agent-team-runtime/scripts/lead_console.py tests/test_runtime_logic.py tests/test_runtime_end_to_end.py`
+  - `python -m unittest tests.test_runtime_logic.RuntimeLogicTests.test_parse_interactive_plan_command_supports_embedded_lead_prompt tests.test_runtime_logic.RuntimeLogicTests.test_write_live_lead_interaction_artifacts_persists_current_snapshot tests.test_runtime_end_to_end.RuntimeEndToEndTests.test_cli_live_lead_status_request_records_teammate_reply -v`
+  - full suite: `142/142` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should reduce embedded control-surface fragmentation further, likely by turning teammate review plus approval actions into a tighter default interaction flow inside the runtime prompt
+
 ### 2026-03-17 - Teammate-scoped approval control checkpoint
 - Goal: let lead move directly from inspecting a teammate to approving or rejecting that teammate's pending plans without manually copying task ids
 - Changes:

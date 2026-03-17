@@ -77,7 +77,11 @@ def _lead_message_body_preview(subject: str, body: Any) -> str:
     return ""
 
 
-def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str, Any]:
+def _build_lead_teammate_session_summary(
+    session: Mapping[str, Any],
+    pending_requests: Optional[Sequence[Mapping[str, Any]]] = None,
+    recent_team_messages: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
     task_history = session.get("task_history", [])
     if not isinstance(task_history, list):
         task_history = []
@@ -98,6 +102,7 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
     current_task_label = current_task_id or "none"
     if current_task_id and current_task_type:
         current_task_label = f"{current_task_id}[{current_task_type}]"
+    agent_name = str(session.get("agent", "") or "")
     last_task_id = str(last_task.get("task_id", "") or "")
     last_task_status = str(last_task.get("status", "") or "")
     last_task_label = "none"
@@ -108,8 +113,35 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
     last_reply_excerpt = str(last_memory.get("reply", "") or "").strip().replace("\n", " ")
     if len(last_reply_excerpt) > 160:
         last_reply_excerpt = last_reply_excerpt[:157] + "..."
+    pending_request_records = [
+        dict(item)
+        for item in (pending_requests or [])
+        if isinstance(item, Mapping) and str(item.get("requested_by", "") or "") == agent_name
+    ]
+    pending_request_task_ids = [
+        str(item.get("task_id", "") or "")
+        for item in pending_request_records
+        if str(item.get("task_id", "") or "")
+    ]
+    recent_lead_messages = [
+        {
+            "event_index": int(item.get("event_index", 0) or 0),
+            "sender": str(item.get("sender", "") or ""),
+            "recipient": str(item.get("recipient", "") or ""),
+            "subject": str(item.get("subject", "") or ""),
+            "task_id": str(item.get("task_id", "") or ""),
+            "body_preview": str(item.get("body_preview", "") or ""),
+        }
+        for item in (recent_team_messages or [])
+        if isinstance(item, Mapping)
+        and agent_name
+        and agent_name in {
+            str(item.get("sender", "") or ""),
+            str(item.get("recipient", "") or ""),
+        }
+    ][-4:]
     summary = (
-        f"{str(session.get('agent', '') or '')} "
+        f"{agent_name} "
         f"status={str(session.get('status', '') or 'unknown')} "
         f"current={current_task_label} "
         f"last={last_task_label} "
@@ -117,8 +149,10 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
     )
     if transport_backend:
         summary += f" backend={transport_backend}"
+    if pending_request_task_ids:
+        summary += f" pending_approvals={len(pending_request_task_ids)}"
     return {
-        "agent": str(session.get("agent", "") or ""),
+        "agent": agent_name,
         "agent_type": str(session.get("agent_type", "") or ""),
         "transport": transport,
         "transport_backend": transport_backend,
@@ -136,6 +170,14 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
         "last_provider_topic": str(last_memory.get("topic", "") or ""),
         "last_provider_reply_excerpt": last_reply_excerpt,
         "last_active_at": str(session.get("last_active_at", "") or ""),
+        "pending_plan_request_count": len(pending_request_task_ids),
+        "pending_plan_request_task_ids": pending_request_task_ids,
+        "pending_plan_request_types": [
+            str(item.get("task_type", "") or "")
+            for item in pending_request_records
+            if str(item.get("task_type", "") or "")
+        ],
+        "recent_lead_messages": recent_lead_messages,
         "recent_messages": [
             {
                 "from_agent": str(item.get("from_agent", "") or ""),
@@ -147,13 +189,21 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
             if isinstance(item, Mapping)
         ],
         "summary": summary,
-    }
+}
 
 
-def _build_lead_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any]:
+def _build_lead_teammate_sessions_snapshot(
+    shared_state: SharedState,
+    pending_requests: Optional[Sequence[Mapping[str, Any]]] = None,
+    recent_team_messages: Optional[Sequence[Mapping[str, Any]]] = None,
+) -> Dict[str, Any]:
     sessions_snapshot = build_teammate_sessions_snapshot(shared_state=shared_state)
     summaries = [
-        _build_lead_teammate_session_summary(session)
+        _build_lead_teammate_session_summary(
+            session,
+            pending_requests=pending_requests,
+            recent_team_messages=recent_team_messages,
+        )
         for session in sessions_snapshot.get("sessions", [])
         if isinstance(session, Mapping)
     ]
@@ -1157,7 +1207,11 @@ def build_lead_interaction_snapshot(
     controls = state_snapshot.get("plan_approval_controls", {})
     if not isinstance(controls, dict):
         controls = {}
-    teammate_session_snapshot = _build_lead_teammate_sessions_snapshot(shared_state=shared_state)
+    teammate_session_snapshot = _build_lead_teammate_sessions_snapshot(
+        shared_state=shared_state,
+        pending_requests=pending_requests,
+        recent_team_messages=recent_team_messages,
+    )
     return {
         "generated_at": utc_now(),
         "lead_name": lead_name,
@@ -1260,7 +1314,29 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
             )
             if str(item.get("last_provider_topic", "") or ""):
                 line += f" last_provider_topic={item.get('last_provider_topic', '')}"
+            pending_count = int(item.get("pending_plan_request_count", 0) or 0)
+            pending_task_ids = item.get("pending_plan_request_task_ids", [])
+            if pending_count:
+                line += (
+                    f" pending_approvals={pending_count}"
+                    f" pending_tasks={','.join(pending_task_ids) if isinstance(pending_task_ids, list) else 'none'}"
+                )
             lines.append(line)
+            recent_lead_messages = item.get("recent_lead_messages", [])
+            if isinstance(recent_lead_messages, list) and recent_lead_messages:
+                lines.append(
+                    "  recent_lead_messages: "
+                    + "; ".join(
+                        (
+                            f"{str(message.get('sender', '') or '')}"
+                            f"->{str(message.get('recipient', '') or '')}:"
+                            f"{str(message.get('subject', '') or '')}"
+                            f" task_id={str(message.get('task_id', '') or 'n/a')}"
+                        )
+                        for message in recent_lead_messages
+                        if isinstance(message, Mapping)
+                    )
+                )
             recent_messages = item.get("recent_messages", [])
             if isinstance(recent_messages, list) and recent_messages:
                 lines.append(

@@ -19,7 +19,7 @@ This folder now contains two layers:
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
   - optional embedded `stdin` lead prompt via `--lead-interactive` while the run is waiting on teammate plan approval
-  - a terminal `lead_console.py` helper for in-run status inspection plus teammate `status` / `plan` requests, teammate detail inspection, and `show` / approve / reject commands
+  - a terminal `lead_console.py` helper for in-run status inspection plus teammate `status` / `plan` requests, teammate detail inspection, teammate review views, and `show` / approve / reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -149,6 +149,10 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --output agent_team_demo/output \
+  --review-teammate reviewer_gamma
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
+  --output agent_team_demo/output \
   --approve-teammate reviewer_gamma
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
@@ -156,7 +160,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --approve-plan dynamic_planning
 ```
 
-The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` plus teammate detail inspection (`teammate <agent>` / `show teammate <agent>` in the interactive surfaces, `--show-teammate <agent>` in `lead_console.py`), and live command surfaces can request teammate `status <agent>` or `plan <agent>` replies and approve/reject pending teammate plans by teammate identity so lead-visible team messages and actions stay closer together.
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` plus teammate detail inspection (`teammate <agent>` / `show teammate <agent>` in the interactive surfaces, `--show-teammate <agent>` in `lead_console.py`), and the console plus embedded prompt now also support a combined teammate review view (`review teammate <agent>` / `--review-teammate <agent>`) that brings together one teammate's current session state, recent lead-visible messages, pending approvals, and likely next actions. Live command surfaces can also request teammate `status <agent>` or `plan <agent>` replies and approve/reject pending teammate plans by teammate identity so lead-visible team messages and actions stay closer together.
 
 Use an embedded lead prompt inside the runtime process:
 
@@ -171,6 +175,7 @@ python3 agent_team_demo/agent_team_runtime.py \
 When a pending teammate plan appears, the runtime will prompt:
 
 ```text
+lead-approval> review teammate reviewer_gamma
 lead-approval> show dynamic_planning
 lead-approval> approve dynamic_planning
 ```

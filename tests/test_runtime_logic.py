@@ -726,6 +726,14 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("review teammate reviewer_gamma"),
+            {
+                "action": "review_teammate",
+                "raw": "review teammate reviewer_gamma",
+                "task_id": "reviewer_gamma",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("status reviewer_gamma"),
             {
                 "action": "request_teammate_status",
@@ -1177,7 +1185,10 @@ class RuntimeLogicTests(unittest.TestCase):
                     isinstance(item, dict)
                     and item.get("agent") == "reviewer_gamma"
                     and "last=dynamic_planning(completed)" in item.get("summary", "")
+                    and item.get("pending_plan_request_count") == 1
+                    and item.get("pending_plan_request_task_ids") == ["dynamic_planning"]
                     and item.get("last_provider_topic") == "dynamic planning follow-up"
+                    and len(item.get("recent_lead_messages", [])) == 4
                     and "lead:lead_status_request" in item.get("recent_messages", [{}])[0].get("from_agent", "") + ":" + item.get("recent_messages", [{}])[0].get("subject", "")
                     for item in teammate_summaries
                 )
@@ -1197,6 +1208,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("heading_structure_followup", report_text)
             self.assertIn("analyst_alpha status=running current=discover[discover]", report_text)
             self.assertIn("dynamic planning follow-up", report_text)
+            self.assertIn("pending_approvals=1", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)
             self.assertIn("reviewer_gamma status=ready", report_text)
