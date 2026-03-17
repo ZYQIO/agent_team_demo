@@ -625,7 +625,9 @@ class RuntimeLogicTests(unittest.TestCase):
                 "\n".join(
                     [
                         json.dumps({"command": "approve_plan", "task_id": "dynamic_planning"}, ensure_ascii=False),
+                        json.dumps({"command": "approve_teammate_plans", "agent": "reviewer_gamma"}, ensure_ascii=False),
                         json.dumps({"command": "reject_plan", "task_ids": ["repo_dynamic_planning"]}, ensure_ascii=False),
+                        json.dumps({"command": "reject_teammate_plans", "agent": "analyst_alpha"}, ensure_ascii=False),
                         json.dumps({"command": "request_teammate_status", "agent": "reviewer_gamma"}, ensure_ascii=False),
                         json.dumps({"command": "request_teammate_plan", "agent": "analyst_alpha"}, ensure_ascii=False),
                     ]
@@ -646,14 +648,16 @@ class RuntimeLogicTests(unittest.TestCase):
             )
 
             self.assertEqual(first["approve_task_ids"], ["dynamic_planning"])
+            self.assertEqual(first["approve_request_agents"], ["reviewer_gamma"])
             self.assertEqual(first["reject_task_ids"], ["repo_dynamic_planning"])
+            self.assertEqual(first["reject_request_agents"], ["analyst_alpha"])
             self.assertEqual(first["plan_request_agents"], ["analyst_alpha"])
             self.assertEqual(first["status_request_agents"], ["reviewer_gamma"])
-            self.assertEqual(first["consumed_count"], 4)
+            self.assertEqual(first["consumed_count"], 6)
             self.assertEqual(second["consumed_count"], 0)
             interaction = runtime.get_lead_interaction_state(shared_state)
-            self.assertEqual(interaction.get("command_cursor"), 4)
-            self.assertEqual(len(interaction.get("recent_commands", [])), 4)
+            self.assertEqual(interaction.get("command_cursor"), 6)
+            self.assertEqual(len(interaction.get("recent_commands", [])), 6)
             self.assertEqual(interaction.get("recent_commands", [])[-1].get("agent"), "analyst_alpha")
 
     def test_parse_interactive_plan_command_supports_embedded_lead_prompt(self) -> None:
@@ -666,11 +670,27 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("approve teammate reviewer_gamma"),
+            {
+                "action": "approve_teammate_plans",
+                "raw": "approve teammate reviewer_gamma",
+                "task_id": "reviewer_gamma",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("reject repo_dynamic_planning"),
             {
                 "action": "reject_plan",
                 "raw": "reject repo_dynamic_planning",
                 "task_id": "repo_dynamic_planning",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("reject teammate analyst_alpha"),
+            {
+                "action": "reject_teammate_plans",
+                "raw": "reject teammate analyst_alpha",
+                "task_id": "analyst_alpha",
             },
         )
         self.assertEqual(
@@ -729,6 +749,112 @@ class RuntimeLogicTests(unittest.TestCase):
                 "task_id": "",
             },
         )
+
+    def test_apply_lead_commands_resolves_pending_requests_by_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            shared_state = runtime.SharedState()
+            board = runtime.TaskBoard(
+                tasks=[
+                    runtime.Task(
+                        task_id="dynamic_planning",
+                        title="Plan follow-up work",
+                        task_type="dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                    runtime.Task(
+                        task_id="repo_dynamic_planning",
+                        title="Plan repo follow-up work",
+                        task_type="repo_dynamic_planning",
+                        required_skills={"review"},
+                        dependencies=[],
+                        payload={},
+                        locked_paths=[],
+                        allowed_agent_types={"reviewer"},
+                    ),
+                ],
+                logger=logger,
+            )
+            mailbox = runtime.Mailbox(participants=["lead"], logger=logger)
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="apply lead commands by agent",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=board,
+                mailbox=mailbox,
+                file_locks=runtime.FileLockRegistry(logger=logger),
+                shared_state=shared_state,
+                logger=logger,
+            )
+            runtime.queue_plan_approval_request(
+                shared_state=shared_state,
+                logger=logger,
+                requested_by="reviewer_gamma",
+                task_id="dynamic_planning",
+                task_type="dynamic_planning",
+                transport="host",
+                result={"enabled": True},
+                state_updates={},
+                task_mutations={},
+            )
+            runtime.queue_plan_approval_request(
+                shared_state=shared_state,
+                logger=logger,
+                requested_by="analyst_alpha",
+                task_id="repo_dynamic_planning",
+                task_type="repo_dynamic_planning",
+                transport="host",
+                result={"enabled": False},
+                state_updates={},
+                task_mutations={},
+            )
+            command_path = runtime.ensure_lead_command_channel(
+                output_dir=output_dir,
+                shared_state=shared_state,
+            )
+            command_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps({"command": "approve_teammate_plans", "agent": "reviewer_gamma"}, ensure_ascii=False),
+                        json.dumps({"command": "reject_teammate_plans", "agent": "analyst_alpha"}, ensure_ascii=False),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            resolution = runtime.apply_lead_commands(
+                lead_context=lead_context,
+                decision_source="test",
+            )
+
+            self.assertEqual(resolution.get("approve_request_agents"), ["reviewer_gamma"])
+            self.assertEqual(resolution.get("reject_request_agents"), ["analyst_alpha"])
+            self.assertEqual(resolution.get("applied_task_ids"), ["dynamic_planning"])
+            self.assertEqual(resolution.get("rejected_task_ids"), ["repo_dynamic_planning"])
+            interaction = runtime.get_lead_interaction_state(shared_state)
+            requests = interaction.get("plan_approval_requests", {})
+            self.assertEqual(requests.get("dynamic_planning", {}).get("status"), runtime.PLAN_APPROVAL_STATUS_APPLIED)
+            self.assertEqual(
+                requests.get("repo_dynamic_planning", {}).get("status"),
+                runtime.PLAN_APPROVAL_STATUS_REJECTED,
+            )
 
     def test_describe_plan_approval_request_includes_preview_and_state_keys(self) -> None:
         description = runtime.describe_plan_approval_request(

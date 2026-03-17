@@ -26,10 +26,22 @@ def parse_args() -> argparse.Namespace:
         help="Approve a pending plan by task id. Can be specified multiple times.",
     )
     parser.add_argument(
+        "--approve-teammate",
+        action="append",
+        default=[],
+        help="Approve all pending plans requested by a teammate. Can be specified multiple times.",
+    )
+    parser.add_argument(
         "--reject-plan",
         action="append",
         default=[],
         help="Reject a pending plan by task id. Can be specified multiple times.",
+    )
+    parser.add_argument(
+        "--reject-teammate",
+        action="append",
+        default=[],
+        help="Reject all pending plans requested by a teammate. Can be specified multiple times.",
     )
     parser.add_argument(
         "--approve-all-pending-plans",
@@ -360,7 +372,9 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
     snapshot = load_snapshot(output_dir=output_dir)
     command_path = resolve_command_path(output_dir=output_dir, snapshot=snapshot)
     approve_task_ids = [str(task_id) for task_id in args.approve_plan if str(task_id)]
+    approve_teammates = [str(agent) for agent in args.approve_teammate if str(agent)]
     reject_task_ids = [str(task_id) for task_id in args.reject_plan if str(task_id)]
+    reject_teammates = [str(agent) for agent in args.reject_teammate if str(agent)]
     request_plan_agents = [str(agent) for agent in args.request_plan if str(agent)]
     request_status_agents = [str(agent) for agent in args.request_status if str(agent)]
     overlap = sorted(set(approve_task_ids) & set(reject_task_ids))
@@ -370,13 +384,26 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
             file=sys.stderr,
         )
         return 2
+    agent_overlap = sorted(set(approve_teammates) & set(reject_teammates))
+    if agent_overlap:
+        print(
+            "[lead-console] overlapping approve/reject teammate ids: " + ", ".join(agent_overlap),
+            file=sys.stderr,
+        )
+        return 2
 
     wrote_any = False
     for task_id in approve_task_ids:
         append_command(command_path, {"command": "approve_plan", "task_id": task_id})
         wrote_any = True
+    for agent in approve_teammates:
+        append_command(command_path, {"command": "approve_teammate_plans", "agent": agent})
+        wrote_any = True
     for task_id in reject_task_ids:
         append_command(command_path, {"command": "reject_plan", "task_id": task_id})
+        wrote_any = True
+    for agent in reject_teammates:
+        append_command(command_path, {"command": "reject_teammate_plans", "agent": agent})
         wrote_any = True
     if args.approve_all_pending_plans:
         append_command(command_path, {"command": "approve_all_pending_plans"})
@@ -395,7 +422,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | approve <task_id> | reject <task_id> | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | approve <task_id> | approve teammate <agent> | reject <task_id> | reject teammate <agent> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -451,6 +478,14 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 )
                 continue
         if raw.startswith("approve "):
+            if raw.startswith("approve teammate "):
+                agent = raw.split(" ", 2)[2].strip()
+                if agent:
+                    append_command(
+                        resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                        {"command": "approve_teammate_plans", "agent": agent},
+                    )
+                    continue
             task_id = raw.split(" ", 1)[1].strip()
             if task_id:
                 append_command(
@@ -459,6 +494,14 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 )
                 continue
         if raw.startswith("reject "):
+            if raw.startswith("reject teammate "):
+                agent = raw.split(" ", 2)[2].strip()
+                if agent:
+                    append_command(
+                        resolve_command_path(output_dir=output_dir, snapshot=snapshot),
+                        {"command": "reject_teammate_plans", "agent": agent},
+                    )
+                    continue
             task_id = raw.split(" ", 1)[1].strip()
             if task_id:
                 append_command(

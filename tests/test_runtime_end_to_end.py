@@ -836,8 +836,8 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         str(lead_console_path),
                         "--output",
                         str(output_dir),
-                        "--approve-plan",
-                        "dynamic_planning",
+                        "--approve-teammate",
+                        "reviewer_gamma",
                     ],
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -862,6 +862,14 @@ class RuntimeEndToEndTests(unittest.TestCase):
                 msg=f"stdout:\n{stdout}\n\nstderr:\n{stderr}",
             )
             lead_interaction = json.loads(lead_interaction_path.read_text(encoding="utf-8"))
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and item.get("command") == "approve_teammate_plans"
+                    and item.get("agent") == "reviewer_gamma"
+                    for item in lead_interaction.get("recent_commands", [])
+                )
+            )
             self.assertTrue(
                 any(
                     isinstance(item, dict)

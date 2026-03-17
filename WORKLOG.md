@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Teammate-scoped approval control checkpoint
+- Goal: let lead move directly from inspecting a teammate to approving or rejecting that teammate's pending plans without manually copying task ids
+- Changes:
+  - extended lead command ingestion with teammate-scoped approval commands so file-backed control can express `approve_teammate_plans` and `reject_teammate_plans`
+  - updated the embedded stdin prompt to support `approve teammate <agent>` and `reject teammate <agent>`
+  - updated `lead_console.py` and `send_lead_command.py` with `--approve-teammate <agent>` / `--reject-teammate <agent>` plus interactive console support for the same teammate-scoped actions
+  - added regression coverage for teammate-scoped command parsing, command ingestion, lead-side approval resolution, and the live console end-to-end path
+- Validation:
+  - `python -m py_compile agent_team_runtime.py agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\engine.py skills\\agent-team-runtime\\scripts\\lead_console.py skills\\agent-team-runtime\\scripts\\send_lead_command.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic/end-to-end tests passed for teammate-scoped approval control
+  - full suite: `141/141` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should reduce command-surface fragmentation further, likely by unifying teammate inspection, recent message context, and pending approval actions into a tighter single interaction flow
+
 ### 2026-03-17 - Codex-first teammate detail checkpoint
 - Goal: make lead-facing control surfaces more usable inside Codex by letting lead inspect one teammate in detail and by realigning project language around a Codex-first runtime target
 - Changes:

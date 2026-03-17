@@ -174,7 +174,9 @@ def consume_lead_commands(
     cursor = max(0, int(state.get("command_cursor", 0) or 0))
     recent_commands = list(state.get("recent_commands", []))
     approve_task_ids: List[str] = []
+    approve_request_agents: List[str] = []
     reject_task_ids: List[str] = []
+    reject_request_agents: List[str] = []
     plan_request_agents: List[str] = []
     status_request_agents: List[str] = []
     approve_all_pending = False
@@ -236,8 +238,32 @@ def consume_lead_commands(
         recent_commands.append(command_record)
         if command == "approve_plan":
             approve_task_ids.extend(task_ids)
+        elif command == "approve_teammate_plans":
+            if agent:
+                approve_request_agents.append(agent)
+            else:
+                command_record["valid"] = False
+                logger.log(
+                    "lead_command_invalid",
+                    line_index=line_index,
+                    error="missing_agent",
+                    command=command,
+                )
+                continue
         elif command == "reject_plan":
             reject_task_ids.extend(task_ids)
+        elif command == "reject_teammate_plans":
+            if agent:
+                reject_request_agents.append(agent)
+            else:
+                command_record["valid"] = False
+                logger.log(
+                    "lead_command_invalid",
+                    line_index=line_index,
+                    error="missing_agent",
+                    command=command,
+                )
+                continue
         elif command == "approve_all_pending_plans":
             approve_all_pending = True
         elif command == "request_teammate_status":
@@ -288,7 +314,9 @@ def consume_lead_commands(
     set_lead_interaction_state(shared_state=shared_state, state=state)
     return {
         "approve_task_ids": approve_task_ids,
+        "approve_request_agents": approve_request_agents,
         "reject_task_ids": reject_task_ids,
+        "reject_request_agents": reject_request_agents,
         "plan_request_agents": plan_request_agents,
         "status_request_agents": status_request_agents,
         "approve_all_pending_plans": approve_all_pending,

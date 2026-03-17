@@ -103,6 +103,7 @@ from agent_team.runtime import (
 from agent_team.runtime.engine import (
     AgentContext,
     TaskHandler,
+    apply_lead_commands,
     apply_requested_plan_approvals,
     build_profiles,
     get_lead_name,
