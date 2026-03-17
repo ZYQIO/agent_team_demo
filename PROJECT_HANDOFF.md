@@ -22,6 +22,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 - Date: 2026-03-17
 - Latest runtime checkpoint commit: see the most recent `WORKLOG.md` entry
 - Runtime shape: reusable `agent_team` package with CLI compatibility through `agent_team_runtime.py`
+- Product target: a Codex-usable agent team runtime that benchmarks itself against Claude Code Agent Teams-style functionality rather than trying to clone Claude internals exactly
 - Stable capabilities:
   - task board, mailbox, lead/reviewer flow
   - file-backed runtime mailbox delivery inside output-scoped `_mailbox/` directories
@@ -50,12 +51,12 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 
 ## Main Remaining Gaps
 
-1. Claude Code parity for host teammate mode is still incomplete.
-   The runtime now has a true host-backed `codex_exec` backend plus a guarded `claude_exec` implementation, and host enforcement exposes local Claude relay/subscription prerequisite state, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment because official prerequisites are not locally ready.
+1. Lead-facing team interaction is still not a richer embedded in-run surface.
+   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, live control surfaces can inspect one pending request in detail with `show <task_id>`, inspect one teammate in detail with teammate/session commands, see teammate session summaries, and request teammate status/plan replies during the run, but it still needs a more unified Codex-friendly control loop.
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
-3. Lead-facing team interaction is still not a richer embedded in-run surface.
-   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, live control surfaces can inspect one pending request in detail with `show <task_id>`, see teammate session summaries, and request teammate status/plan replies during the run, but it still trails Claude Code on embedded runtime ergonomics.
+3. Claude-flavored host backend coverage is still environment-dependent.
+   The runtime now has a true host-backed `codex_exec` backend plus a guarded `claude_exec` implementation, and host enforcement exposes local Claude relay/subscription prerequisite state, but `host_kind=claude-code` still uses the transport-backed `external_process` worker path in this environment because official prerequisites are not locally ready.
 4. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
@@ -63,9 +64,9 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 Keep upgrading lead-facing interaction plus plan approval into a richer embedded in-run control surface.
 
 Why this is next:
-- The last three rounds stayed aligned with Claude Code Agent Teams by improving lead-side runtime interaction rather than artifact-only reporting.
-- Lead can now see teammate session summaries plus status/plan replies during a blocked approval window, so the next high-value step is unifying those pieces into a more embedded control surface instead of adding more one-off command verbs.
-- This environment still does not have official-ready Claude prerequisites, so guarded `claude_exec` validation remains important but is not the best practical next slice on this machine.
+- The last rounds improved the Codex-facing runtime experience directly instead of only adding benchmark or artifact language.
+- Lead can now see teammate session summaries, inspect a specific teammate in detail, and request status/plan replies during a blocked approval window, so the next high-value step is unifying those pieces into a more embedded control surface instead of adding more one-off command verbs.
+- This environment still does not have official-ready Claude prerequisites, so guarded `claude_exec` validation remains useful background work but is not the best practical next slice on this machine.
 
 What that likely requires:
 - keep using the live interaction snapshot as the single source for pending approvals, teammate session summaries, and lead-visible team messages

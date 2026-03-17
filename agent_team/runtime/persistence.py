@@ -90,6 +90,9 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
     last_memory = provider_memory[-1] if provider_memory else {}
     if not isinstance(last_memory, Mapping):
         last_memory = {}
+    recent_messages = session.get("recent_messages", [])
+    if not isinstance(recent_messages, list):
+        recent_messages = []
     current_task_id = str(session.get("current_task_id", "") or "")
     current_task_type = str(session.get("current_task_type", "") or "")
     current_task_label = current_task_id or "none"
@@ -102,6 +105,9 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
         last_task_label = f"{last_task_id}({last_task_status or 'unknown'})"
     transport = str(session.get("transport", "") or "unknown")
     transport_backend = str(session.get("transport_backend", "") or "")
+    last_reply_excerpt = str(last_memory.get("reply", "") or "").strip().replace("\n", " ")
+    if len(last_reply_excerpt) > 160:
+        last_reply_excerpt = last_reply_excerpt[:157] + "..."
     summary = (
         f"{str(session.get('agent', '') or '')} "
         f"status={str(session.get('status', '') or 'unknown')} "
@@ -128,7 +134,18 @@ def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str
         "messages_seen": int(session.get("messages_seen", 0) or 0),
         "provider_replies": int(session.get("provider_replies", 0) or 0),
         "last_provider_topic": str(last_memory.get("topic", "") or ""),
+        "last_provider_reply_excerpt": last_reply_excerpt,
         "last_active_at": str(session.get("last_active_at", "") or ""),
+        "recent_messages": [
+            {
+                "from_agent": str(item.get("from_agent", "") or ""),
+                "subject": str(item.get("subject", "") or ""),
+                "task_id": str(item.get("task_id", "") or ""),
+                "recorded_at": str(item.get("recorded_at", "") or ""),
+            }
+            for item in recent_messages
+            if isinstance(item, Mapping)
+        ],
         "summary": summary,
     }
 
@@ -1234,13 +1251,30 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
         for item in teammate_sessions:
             if not isinstance(item, Mapping):
                 continue
-            lines.append(
+            line = (
                 f"- {item.get('summary', '')} "
                 f"tasks={item.get('tasks_started', 0)}/{item.get('tasks_completed', 0)}/{item.get('tasks_failed', 0)} "
                 f"messages_seen={item.get('messages_seen', 0)} "
                 f"provider_replies={item.get('provider_replies', 0)} "
                 f"last_active_at={item.get('last_active_at', '') or 'n/a'}"
             )
+            if str(item.get("last_provider_topic", "") or ""):
+                line += f" last_provider_topic={item.get('last_provider_topic', '')}"
+            lines.append(line)
+            recent_messages = item.get("recent_messages", [])
+            if isinstance(recent_messages, list) and recent_messages:
+                lines.append(
+                    "  recent_messages: "
+                    + "; ".join(
+                        (
+                            f"{str(message.get('from_agent', '') or '')}:"
+                            f"{str(message.get('subject', '') or '')}"
+                            f" task_id={str(message.get('task_id', '') or 'n/a')}"
+                        )
+                        for message in recent_messages
+                        if isinstance(message, Mapping)
+                    )
+                )
     lines.append("")
     lines.append("## Pending Approvals")
     lines.append("")

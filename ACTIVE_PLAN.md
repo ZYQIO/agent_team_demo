@@ -2,16 +2,21 @@
 
 ## Current Objective
 
-Keep moving the project from a well-instrumented local runtime toward a more execution-real Agent Teams implementation.
+Keep moving the project from a well-instrumented local runtime toward a more usable Codex-first Agent Teams implementation.
 
 The priority is no longer new artifacts or visibility layers.
-The priority is execution isolation and real teammate transport behavior.
+The priority is Codex-usable teammate coordination, execution isolation where it matters, and a lead control surface that feels coherent in practice.
 
 Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subprocesses with provider reconstruction and shared-state-compatible output.
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
 Priority 4 is in progress: host mode now has true host-backed `codex_exec` plus guarded `claude_exec` session backends, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical Claude path in this environment still falls back to the transport-backed `external_process` worker backend because official prerequisites are not locally ready.
 Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, those control surfaces now also surface teammate session summaries from the live session ledger, both live control surfaces can inspect one pending request in detail with `show <task_id>`, and live command surfaces can request teammate status/plan replies with `status <agent>` and `plan <agent>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
+
+Direction reset (2026-03-17, Codex-first target clarification):
+- the project goal is not a literal Claude Code runtime clone; it is a Codex-usable agent team runtime that benchmarks itself against Claude Code Agent Teams-style functionality
+- Claude-specific host paths are still useful reference implementations, but they are no longer the product-defining priority unless they directly improve the Codex runtime experience
+- the practical next slices should favor lead control coherence, teammate usability, and Codex-friendly runtime ergonomics over environment-specific Claude validation work
 
 Direction review (2026-03-10):
 - the last three transport-focused rounds improved execution semantics
@@ -168,6 +173,7 @@ Recent completed outcomes:
 - terminal `lead_console.py` and the embedded stdin prompt now both support `show <task_id>` to inspect one pending request in detail before approval, including result/state-update keys and task/dependency preview lines
 - live lead command surfaces can now request teammate status/plan replies with `status <agent>` / `plan <agent>` and `--request-status <agent>` / `--request-plan <agent>`, and those replies are summarized directly in `lead_interaction.json` / `lead_interaction.md`
 - the live interaction snapshot, terminal lead console, and embedded stdin prompt now also surface teammate session summaries from the runtime session ledger, so lead can see current teammate state without issuing one-off requests first
+- interactive lead surfaces now support teammate detail inspection (`teammate <agent>` / `show teammate <agent>` in the interactive prompts plus `--show-teammate <agent>` in `lead_console.py`) so lead can inspect one teammate's current/last task, activity counters, recent teammate-visible messages, and recent provider topic without leaving the runtime flow
 
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts

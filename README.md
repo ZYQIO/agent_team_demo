@@ -6,7 +6,7 @@ This folder now contains two layers:
 - Minimal 3-role demo (`Planner / Executor / Reviewer`).
 
 2. `agent_team_runtime.py`
-- A richer local MVP inspired by Claude Code Agent Teams:
+- A Codex-first local runtime inspired by Claude Code Agent Teams:
   - lead + teammates
   - shared task board with dependencies
   - mailbox messaging with output-scoped file-backed delivery in runtime runs, including transport-local mailbox views for worker/helper sessions
@@ -19,7 +19,7 @@ This folder now contains two layers:
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
   - optional embedded `stdin` lead prompt via `--lead-interactive` while the run is waiting on teammate plan approval
-  - a terminal `lead_console.py` helper for in-run status inspection plus teammate `status` requests and `show` / approve / reject commands
+  - a terminal `lead_console.py` helper for in-run status inspection plus teammate `status` / `plan` requests, teammate detail inspection, and `show` / approve / reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -54,7 +54,7 @@ The legacy entrypoint `agent_team_runtime.py` remains compatible, but now acts a
 - `OPERATING_RULES.md`: project execution rules, validation, and handoff expectations
 - `claude_agent_teams_research.md`: deep-dive notes from official docs/changelog
 - `agent_team_implementation_plan.md`: original implementation plan and milestones (archival)
-- `PARITY.md`: capability parity snapshot vs Claude Code Agent Teams
+- `PARITY.md`: Codex-first capability benchmark against Claude Code Agent Teams-style features
 
 ## Run Minimal Demo
 
@@ -145,10 +145,14 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --output agent_team_demo/output \
+  --show-teammate reviewer_gamma
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
+  --output agent_team_demo/output \
   --approve-plan dynamic_planning
 ```
 
-The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` for one pending request's detailed inspection, and live command surfaces can request teammate `status <agent>` or `plan <agent>` replies so lead-visible team messages include a current teammate summary instead of only raw mail subjects.
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` plus teammate detail inspection (`teammate <agent>` / `show teammate <agent>` in the interactive surfaces, `--show-teammate <agent>` in `lead_console.py`), and live command surfaces can request teammate `status <agent>` or `plan <agent>` replies so lead-visible team messages include a current teammate summary instead of only raw mail subjects.
 
 Use an embedded lead prompt inside the runtime process:
 

@@ -807,6 +807,29 @@ class RuntimeEndToEndTests(unittest.TestCase):
                         break
                     time.sleep(0.1)
                 self.assertTrue(saw_plan_reply, msg="runtime never recorded a teammate plan reply")
+                teammate_detail_command = subprocess.run(
+                    [
+                        sys.executable,
+                        str(lead_console_path),
+                        "--output",
+                        str(output_dir),
+                        "--show-teammate",
+                        "reviewer_gamma",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    check=False,
+                    timeout=30,
+                )
+                self.assertEqual(
+                    teammate_detail_command.returncode,
+                    0,
+                    msg=f"stdout:\n{teammate_detail_command.stdout}\n\nstderr:\n{teammate_detail_command.stderr}",
+                )
+                self.assertIn("Requested teammate details:", teammate_detail_command.stdout)
+                self.assertIn("agent=reviewer_gamma", teammate_detail_command.stdout)
+                self.assertIn("last_task=", teammate_detail_command.stdout)
                 approve_command = subprocess.run(
                     [
                         sys.executable,

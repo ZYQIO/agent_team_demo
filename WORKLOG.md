@@ -13,6 +13,21 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Codex-first teammate detail checkpoint
+- Goal: make lead-facing control surfaces more usable inside Codex by letting lead inspect one teammate in detail and by realigning project language around a Codex-first runtime target
+- Changes:
+  - extended lead-facing teammate session summaries with recent teammate-visible messages plus recent provider topic/reply excerpt data inside `lead_interaction.json` / `lead_interaction.md`
+  - added teammate detail inspection to the embedded stdin prompt with `teammate <agent>` / `show teammate <agent>`
+  - added teammate detail inspection to `lead_console.py`, including non-interactive `--show-teammate <agent>` output for Codex-friendly one-shot inspection
+  - updated `README.md`, `ACTIVE_PLAN.md`, `PARITY.md`, `PROJECT_HANDOFF.md`, and `RUNTIME_ROADMAP.md` so the project is described as a Codex-usable runtime benchmarked against Claude Code Agent Teams-style functionality instead of a literal Claude runtime clone
+  - stabilized one host session-worker regression test so it waits for both board completion and session-ledger completion, matching the existing result/telemetry split contract
+- Validation:
+  - `python -m py_compile agent_team\\runtime\\persistence.py agent_team\\runtime\\engine.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic/end-to-end tests passed for teammate detail inspection and Codex-facing lead-control changes
+  - full suite: `141/141` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the next lead-control slice should focus on unifying inspection and action into a tighter Codex-friendly control loop instead of adding more isolated commands or environment-specific backend work
+
 ### 2026-03-17 - Live teammate session summary checkpoint
 - Goal: make lead-facing runtime control surfaces show current teammate state without requiring a one-off request first
 - Changes:

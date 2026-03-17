@@ -690,6 +690,22 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("teammate reviewer_gamma"),
+            {
+                "action": "show_teammate",
+                "raw": "teammate reviewer_gamma",
+                "task_id": "reviewer_gamma",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("show teammate analyst_alpha"),
+            {
+                "action": "show_teammate",
+                "raw": "show teammate analyst_alpha",
+                "task_id": "analyst_alpha",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("status reviewer_gamma"),
             {
                 "action": "request_teammate_status",
@@ -889,6 +905,24 @@ class RuntimeLogicTests(unittest.TestCase):
                 transport="in-process",
                 status="ready",
             )
+            registry.record_message_seen(
+                "reviewer_gamma",
+                runtime.Message(
+                    message_id="msg-1",
+                    sender="lead",
+                    recipient="reviewer_gamma",
+                    subject="lead_status_request",
+                    body="",
+                    task_id="",
+                    sent_at=runtime.utc_now(),
+                ),
+            )
+            registry.record_provider_reply(
+                agent_name="reviewer_gamma",
+                topic="dynamic planning follow-up",
+                reply="I am waiting for the next assignment after reviewing the dynamic planning result.",
+                memory_turns=4,
+            )
             registry.record_task_result(
                 agent_name="reviewer_gamma",
                 task=runtime.Task(
@@ -1017,6 +1051,8 @@ class RuntimeLogicTests(unittest.TestCase):
                     isinstance(item, dict)
                     and item.get("agent") == "reviewer_gamma"
                     and "last=dynamic_planning(completed)" in item.get("summary", "")
+                    and item.get("last_provider_topic") == "dynamic planning follow-up"
+                    and "lead:lead_status_request" in item.get("recent_messages", [{}])[0].get("from_agent", "") + ":" + item.get("recent_messages", [{}])[0].get("subject", "")
                     for item in teammate_summaries
                 )
             )
@@ -1034,6 +1070,7 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertIn("dynamic_planning", report_text)
             self.assertIn("heading_structure_followup", report_text)
             self.assertIn("analyst_alpha status=running current=discover[discover]", report_text)
+            self.assertIn("dynamic planning follow-up", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)
             self.assertIn("reviewer_gamma status=ready", report_text)
@@ -6571,11 +6608,15 @@ class RuntimeLogicTests(unittest.TestCase):
                     runtime.apply_host_session_telemetry_messages(lead_context)
                     runtime.apply_host_session_result_messages(lead_context)
                     board_snapshot = {item["task_id"]: item for item in board.snapshot()["tasks"]}
-                    if board_snapshot["discover_markdown"]["status"] == "completed":
+                    session = registry.session_for("analyst_alpha")
+                    if (
+                        board_snapshot["discover_markdown"]["status"] == "completed"
+                        and session.get("tasks_completed") == 1
+                    ):
                         break
                     time.sleep(0.05)
                 else:
-                    self.fail("host discover_markdown task did not complete through session worker")
+                    self.fail("host discover_markdown task did not fully settle through session worker")
             finally:
                 stop_event.set()
                 worker.join(timeout=2.0)

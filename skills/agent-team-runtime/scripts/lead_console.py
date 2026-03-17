@@ -59,6 +59,12 @@ def parse_args() -> argparse.Namespace:
         help="Open a simple prompt that can refresh status and send approve/reject commands.",
     )
     parser.add_argument(
+        "--show-teammate",
+        action="append",
+        default=[],
+        help="Print detailed live session information for a teammate by agent name. Can be specified multiple times.",
+    )
+    parser.add_argument(
         "--refresh-seconds",
         type=float,
         default=1.0,
@@ -170,6 +176,68 @@ def describe_pending_request(snapshot: Dict[str, Any], task_id: str) -> List[str
         lines.append("task_preview=" + "; ".join(task_preview))
     if dependency_preview:
         lines.append("dependency_preview=" + "; ".join(dependency_preview))
+    return lines
+
+
+def describe_teammate_session(snapshot: Dict[str, Any], agent_name: str) -> List[str]:
+    teammate_sessions = snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list):
+        teammate_sessions = []
+    matched = next(
+        (
+            item
+            for item in teammate_sessions
+            if isinstance(item, dict) and str(item.get("agent", "") or "") == str(agent_name or "")
+        ),
+        None,
+    )
+    if matched is None:
+        return [f"unknown teammate: {agent_name}"]
+    current_task = str(matched.get("current_task_id", "") or "none")
+    if str(matched.get("current_task_type", "") or "") and current_task != "none":
+        current_task += f"[{matched.get('current_task_type', '')}]"
+    last_task = str(matched.get("last_task_id", "") or "none")
+    if last_task != "none":
+        last_task += f"({str(matched.get('last_task_status', '') or 'unknown')})"
+    lines = [
+        (
+            f"agent={matched.get('agent', '')} "
+            f"agent_type={matched.get('agent_type', '') or 'unknown'} "
+            f"transport={matched.get('transport', '') or 'unknown'} "
+            f"backend={matched.get('transport_backend', '') or 'n/a'} "
+            f"status={matched.get('status', '') or 'unknown'}"
+        ),
+        f"current_task={current_task}",
+        f"last_task={last_task}",
+        (
+            f"task_counts=started:{matched.get('tasks_started', 0)} "
+            f"completed:{matched.get('tasks_completed', 0)} "
+            f"failed:{matched.get('tasks_failed', 0)}"
+        ),
+        (
+            f"activity=messages_seen:{matched.get('messages_seen', 0)} "
+            f"provider_replies:{matched.get('provider_replies', 0)} "
+            f"last_active_at={matched.get('last_active_at', '') or 'n/a'}"
+        ),
+    ]
+    if str(matched.get("last_provider_topic", "") or ""):
+        lines.append(f"last_provider_topic={matched.get('last_provider_topic', '')}")
+    if str(matched.get("last_provider_reply_excerpt", "") or ""):
+        lines.append(f"last_provider_reply_excerpt={matched.get('last_provider_reply_excerpt', '')}")
+    recent_messages = matched.get("recent_messages", [])
+    if isinstance(recent_messages, list) and recent_messages:
+        lines.append(
+            "recent_messages="
+            + "; ".join(
+                (
+                    f"{str(item.get('from_agent', '') or '')}:"
+                    f"{str(item.get('subject', '') or '')}"
+                    f" task_id={str(item.get('task_id', '') or 'n/a')}"
+                )
+                for item in recent_messages
+                if isinstance(item, dict)
+            )
+        )
     return lines
 
 
@@ -327,7 +395,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | show <task_id> | status <agent> | plan <agent> | approve <task_id> | reject <task_id> | approve-all | quit"
+        "Commands: refresh | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | approve <task_id> | reject <task_id> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -349,9 +417,21 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
             )
             continue
         if raw.startswith("show "):
+            if raw.startswith("show teammate "):
+                agent = raw.split(" ", 2)[2].strip()
+                if agent:
+                    for line in describe_teammate_session(snapshot=snapshot, agent_name=agent):
+                        print(f"[lead-console] {line}")
+                    continue
             task_id = raw.split(" ", 1)[1].strip()
             if task_id:
                 for line in describe_pending_request(snapshot=snapshot, task_id=task_id):
+                    print(f"[lead-console] {line}")
+                continue
+        if raw.startswith("teammate "):
+            agent = raw.split(" ", 1)[1].strip()
+            if agent:
+                for line in describe_teammate_session(snapshot=snapshot, agent_name=agent):
                     print(f"[lead-console] {line}")
                 continue
         if raw.startswith("status "):
@@ -416,14 +496,22 @@ def main() -> int:
         return watch_loop(args=args, output_dir=output_dir)
 
     snapshot = load_snapshot(output_dir=output_dir)
+    lines = build_status_lines(
+        output_dir=output_dir,
+        snapshot=snapshot,
+        max_messages=args.max_messages,
+        max_commands=args.max_commands,
+    )
+    requested_teammates = [str(agent) for agent in args.show_teammate if str(agent)]
+    if requested_teammates:
+        lines.append("")
+        lines.append("Requested teammate details:")
+        for agent in requested_teammates:
+            for line in describe_teammate_session(snapshot=snapshot, agent_name=agent):
+                lines.append(f"- {line}")
     print(
         "\n".join(
-            build_status_lines(
-                output_dir=output_dir,
-                snapshot=snapshot,
-                max_messages=args.max_messages,
-                max_commands=args.max_commands,
-            )
+            lines
         )
     )
     return 0

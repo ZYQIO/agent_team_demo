@@ -12,15 +12,15 @@ The current objective is different:
 
 - Move from a runnable MVP to a reusable `Agent Team runtime`
 - Reduce the size and coupling of [agent_team_runtime.py](/Users/zouxiaoyi/Desktop/project/学习总结/agent_team_demo/agent_team_runtime.py)
-- Improve practical parity with Claude Code Agent Teams without breaking current behavior
+- Improve practical Claude-style feature parity in a way that stays usable inside Codex
 - Keep CLI, tests, artifacts, and skill scripts stable during the refactor
 
-Official parity review (2026-03-11):
+Benchmark review (2026-03-11):
 
-- the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions
+- the repo is still pointed at the right target shape: long-lived teammates, shared task coordination, messaging, and independent teammate sessions that are useful inside Codex
 - the backlog is slightly skewed toward replay/rewind depth and workflow-specific debate mechanics
 - current Claude Code Agent Teams docs make lead-facing team interaction and plan approval higher-value parity work than deeper replay
-- latest runtime slices now add live-updating lead interaction snapshots, teammate session summaries inside those lead-facing surfaces, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` inspection inside the live console and embedded stdin prompt, live teammate status/plan requests from lead command surfaces, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, a true host-backed `codex` session backend, a guarded `claude_exec` backend, and explicit local `claude-code` relay/subscription prerequisite reporting in host enforcement, so the remaining gap is richer embedded in-run interaction plus live validation of the Claude backend in an official-ready environment rather than total absence of approval flow or host-backed sessions
+- latest runtime slices now add live-updating lead interaction snapshots, teammate session summaries inside those lead-facing surfaces, resumable CLI plan approval, proposed task/dependency previews inside those approval surfaces, detailed `show <task_id>` and teammate inspection inside the live console and embedded stdin prompt, live teammate status/plan requests from lead command surfaces, file-backed live command intake, a terminal lead console, an embedded stdin approval prompt, a true host-backed `codex` session backend, a guarded `claude_exec` backend, and explicit local `claude-code` relay/subscription prerequisite reporting in host enforcement, so the remaining gap is richer embedded in-run interaction plus host hardening that materially improves Codex usage rather than total absence of approval flow or host-backed sessions
 
 ## 2. Target Architecture
 
@@ -428,9 +428,9 @@ Evidence review:
 Priority order for the next work:
 
 1. Upgrade the current lead-facing interaction plus preview-capable plan approval workflow into a richer embedded in-run control surface
-   Goal: build past live snapshots, teammate session summaries, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a closer Claude-style interaction model.
-2. Validate and harden the guarded `claude_exec` backend in an official-ready Claude environment
-   Goal: preserve the explicit mailbox/result/telemetry contracts while making Claude-parity host execution authentic without treating third-party relay configurations as official Claude-native sessions.
+   Goal: build past live snapshots, teammate session summaries, teammate detail inspection, file-backed commands, the terminal lead console, and the embedded stdin approval prompt toward a more coherent Codex-usable interaction model.
+2. Validate and harden host-backed session paths that materially improve Codex usage
+   Goal: preserve the explicit mailbox/result/telemetry contracts while improving real host-backed execution, including the guarded `claude_exec` path when an official-ready Claude environment is available.
 3. Add true event-level state replay
    Goal: move rewind/replay from checkpoint restoration plus event mapping toward stronger state reconstruction guarantees.
 

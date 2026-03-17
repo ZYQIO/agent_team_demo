@@ -354,9 +354,15 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
     }:
         return {"action": "approve_all_pending_plans", "raw": text, "task_id": ""}
     parts = text.split()
+    if len(parts) == 3 and parts[0].strip().lower() == "show" and parts[1].strip().lower() in {"teammate", "agent"}:
+        task_id = parts[2].strip()
+        if task_id:
+            return {"action": "show_teammate", "raw": text, "task_id": task_id}
     if len(parts) == 2:
         verb = parts[0].strip().lower()
         task_id = parts[1].strip()
+        if task_id and verb in {"teammate", "agent"}:
+            return {"action": "show_teammate", "raw": text, "task_id": task_id}
         if task_id and verb in {"plan", "request-plan", "request_plan"}:
             return {"action": "request_teammate_plan", "raw": text, "task_id": task_id}
         if task_id and verb in {"status", "request-status", "request_status"}:
@@ -368,6 +374,69 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
         if task_id and verb in {"reject", "reject-plan"}:
             return {"action": "reject_plan", "raw": text, "task_id": task_id}
     return {"action": "invalid", "raw": text, "task_id": ""}
+
+
+def _describe_teammate_session(interaction_snapshot: Mapping[str, Any], agent_name: str) -> List[str]:
+    teammate_sessions = interaction_snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list):
+        teammate_sessions = []
+    matched = next(
+        (
+            item
+            for item in teammate_sessions
+            if isinstance(item, Mapping) and str(item.get("agent", "") or "") == str(agent_name or "")
+        ),
+        None,
+    )
+    if matched is None:
+        return [f"unknown teammate: {agent_name}"]
+    current_task = str(matched.get("current_task_id", "") or "none")
+    current_task_type = str(matched.get("current_task_type", "") or "")
+    if current_task != "none" and current_task_type:
+        current_task = f"{current_task}[{current_task_type}]"
+    last_task = str(matched.get("last_task_id", "") or "none")
+    if last_task != "none":
+        last_task = f"{last_task}({str(matched.get('last_task_status', '') or 'unknown')})"
+    lines = [
+        (
+            f"agent={matched.get('agent', '')} "
+            f"agent_type={matched.get('agent_type', '') or 'unknown'} "
+            f"transport={matched.get('transport', '') or 'unknown'} "
+            f"backend={matched.get('transport_backend', '') or 'n/a'} "
+            f"status={matched.get('status', '') or 'unknown'}"
+        ),
+        f"current_task={current_task}",
+        f"last_task={last_task}",
+        (
+            f"task_counts=started:{matched.get('tasks_started', 0)} "
+            f"completed:{matched.get('tasks_completed', 0)} "
+            f"failed:{matched.get('tasks_failed', 0)}"
+        ),
+        (
+            f"activity=messages_seen:{matched.get('messages_seen', 0)} "
+            f"provider_replies:{matched.get('provider_replies', 0)} "
+            f"last_active_at={matched.get('last_active_at', '') or 'n/a'}"
+        ),
+    ]
+    if str(matched.get("last_provider_topic", "") or ""):
+        lines.append(f"last_provider_topic={matched.get('last_provider_topic', '')}")
+    if str(matched.get("last_provider_reply_excerpt", "") or ""):
+        lines.append(f"last_provider_reply_excerpt={matched.get('last_provider_reply_excerpt', '')}")
+    recent_messages = matched.get("recent_messages", [])
+    if isinstance(recent_messages, list) and recent_messages:
+        lines.append(
+            "recent_messages="
+            + "; ".join(
+                (
+                    f"{str(item.get('from_agent', '') or '')}:"
+                    f"{str(item.get('subject', '') or '')}"
+                    f" task_id={str(item.get('task_id', '') or 'n/a')}"
+                )
+                for item in recent_messages
+                if isinstance(item, Mapping)
+            )
+        )
+    return lines
 
 
 def _print_interactive_plan_approval_status(
@@ -434,7 +503,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | status <agent> | plan <agent> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | pause",
         flush=True,
     )
 
@@ -507,7 +576,7 @@ def run_interactive_plan_approval_prompt(
                 shared_state=lead_context.shared_state,
                 command=action,
                 task_ids=task_ids,
-                agent=task_id if action in {"request_teammate_status", "request_teammate_plan"} else "",
+                agent=task_id if action in {"request_teammate_status", "request_teammate_plan", "show_teammate"} else "",
                 raw=str(raw_command or ""),
                 valid=action not in {"invalid"},
                 source="interactive",
@@ -535,9 +604,16 @@ def run_interactive_plan_approval_prompt(
             for line in describe_plan_approval_request(matched):
                 print("[lead] " + line, flush=True)
             continue
+        if action == "show_teammate":
+            for line in _describe_teammate_session(
+                interaction_snapshot=interaction.get("snapshot", {}),
+                agent_name=task_id,
+            ):
+                print("[lead] " + line, flush=True)
+            continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | status <agent> | plan <agent> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | teammate <agent> | show teammate <agent> | status <agent> | plan <agent> | pause",
                 flush=True,
             )
             continue
