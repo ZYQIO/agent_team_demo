@@ -11,7 +11,7 @@ Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subproc
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
 Priority 4 is in progress: host mode now has true host-backed `codex_exec` plus guarded `claude_exec` session backends, and the runtime now records local `claude-code` relay/subscription prerequisites in host enforcement, but the parity-critical Claude path in this environment still falls back to the transport-backed `external_process` worker backend because official prerequisites are not locally ready.
-Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, both live control surfaces can inspect one pending request in detail with `show <task_id>`, and live command surfaces can request teammate status/plan replies with `status <agent>` and `plan <agent>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
+Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, those control surfaces now also surface teammate session summaries from the live session ledger, both live control surfaces can inspect one pending request in detail with `show <task_id>`, and live command surfaces can request teammate status/plan replies with `status <agent>` and `plan <agent>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
 
 Direction review (2026-03-10):
 - the last three transport-focused rounds improved execution semantics
@@ -62,6 +62,11 @@ Direction review (2026-03-17, guarded Claude backend checkpoint):
 - the latest three rounds still improved execution semantics instead of drifting into artifact-only work
 - the runtime now has a guarded `claude_exec` backend, but it only counts as Claude-parity execution when the local relay is canonical and native prerequisites are truly ready
 - the priority order should now tilt toward Priority 5 unless an official-ready Claude environment is available for live backend validation
+
+Direction review (2026-03-17, live teammate session summary checkpoint):
+- the latest three lead-control rounds still improved official Agent Teams behavior instead of drifting into artifact-only visibility work
+- the runtime now gives lead a live picture of teammate state through status/plan requests plus always-visible teammate session summaries in the snapshot, terminal console, and embedded stdin prompt
+- there is no meaningful drift from the Claude Code Agent Teams target; in this environment the next practical slice should keep upgrading Priority 5 into a more unified embedded control surface unless an official-ready Claude environment becomes available for backend validation
 
 ## Priority Order
 
@@ -162,6 +167,7 @@ Recent completed outcomes:
 - pending teammate plans now also expose proposed task/dependency previews through the live interaction snapshot, terminal lead console, and embedded stdin prompt before approval is applied
 - terminal `lead_console.py` and the embedded stdin prompt now both support `show <task_id>` to inspect one pending request in detail before approval, including result/state-update keys and task/dependency preview lines
 - live lead command surfaces can now request teammate status/plan replies with `status <agent>` / `plan <agent>` and `--request-status <agent>` / `--request-plan <agent>`, and those replies are summarized directly in `lead_interaction.json` / `lead_interaction.md`
+- the live interaction snapshot, terminal lead console, and embedded stdin prompt now also surface teammate session summaries from the runtime session ledger, so lead can see current teammate state without issuing one-off requests first
 
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts

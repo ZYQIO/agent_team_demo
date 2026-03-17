@@ -372,6 +372,7 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
 
 def _print_interactive_plan_approval_status(
     pending_plan_approvals: Sequence[Dict[str, Any]],
+    interaction_snapshot: Optional[Mapping[str, Any]] = None,
 ) -> None:
     def _task_preview_text(item: Mapping[str, Any]) -> str:
         task_id = str(item.get("task_id", "") or "")
@@ -389,6 +390,23 @@ def _print_interactive_plan_approval_status(
     def _dependency_preview_text(item: Mapping[str, Any]) -> str:
         return f"{str(item.get('task_id', '') or '')}+={str(item.get('dependency_id', '') or '')}"
 
+    teammate_sessions = interaction_snapshot.get("teammate_sessions", []) if isinstance(interaction_snapshot, Mapping) else []
+    print(
+        "[lead] teammate_sessions: "
+        f"{0 if not isinstance(teammate_sessions, list) else len(teammate_sessions)} "
+        f"active={interaction_snapshot.get('active_teammate_session_count', 0) if isinstance(interaction_snapshot, Mapping) else 0}",
+        flush=True,
+    )
+    if isinstance(teammate_sessions, list) and teammate_sessions:
+        for item in teammate_sessions:
+            if not isinstance(item, Mapping):
+                continue
+            print(
+                "[lead] "
+                f"  teammate={item.get('summary', '')} "
+                f"last_active_at={item.get('last_active_at', '') or 'n/a'}",
+                flush=True,
+            )
     print("[lead] interactive_pending_approvals:", flush=True)
     for item in pending_plan_approvals:
         if not isinstance(item, Mapping):
@@ -446,8 +464,11 @@ def run_interactive_plan_approval_prompt(
         pending_count=len(pending_plan_approvals),
     )
     while pending_plan_approvals:
-        refresh_live_lead_interaction(lead_context=lead_context)
-        _print_interactive_plan_approval_status(pending_plan_approvals=pending_plan_approvals)
+        interaction = refresh_live_lead_interaction(lead_context=lead_context)
+        _print_interactive_plan_approval_status(
+            pending_plan_approvals=pending_plan_approvals,
+            interaction_snapshot=interaction.get("snapshot", {}),
+        )
         try:
             raw_command = input("lead-approval> ")
         except EOFError:

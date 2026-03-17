@@ -77,6 +77,87 @@ def _lead_message_body_preview(subject: str, body: Any) -> str:
     return ""
 
 
+def _build_lead_teammate_session_summary(session: Mapping[str, Any]) -> Dict[str, Any]:
+    task_history = session.get("task_history", [])
+    if not isinstance(task_history, list):
+        task_history = []
+    last_task = task_history[-1] if task_history else {}
+    if not isinstance(last_task, Mapping):
+        last_task = {}
+    provider_memory = session.get("provider_memory", [])
+    if not isinstance(provider_memory, list):
+        provider_memory = []
+    last_memory = provider_memory[-1] if provider_memory else {}
+    if not isinstance(last_memory, Mapping):
+        last_memory = {}
+    current_task_id = str(session.get("current_task_id", "") or "")
+    current_task_type = str(session.get("current_task_type", "") or "")
+    current_task_label = current_task_id or "none"
+    if current_task_id and current_task_type:
+        current_task_label = f"{current_task_id}[{current_task_type}]"
+    last_task_id = str(last_task.get("task_id", "") or "")
+    last_task_status = str(last_task.get("status", "") or "")
+    last_task_label = "none"
+    if last_task_id:
+        last_task_label = f"{last_task_id}({last_task_status or 'unknown'})"
+    transport = str(session.get("transport", "") or "unknown")
+    transport_backend = str(session.get("transport_backend", "") or "")
+    summary = (
+        f"{str(session.get('agent', '') or '')} "
+        f"status={str(session.get('status', '') or 'unknown')} "
+        f"current={current_task_label} "
+        f"last={last_task_label} "
+        f"transport={transport}"
+    )
+    if transport_backend:
+        summary += f" backend={transport_backend}"
+    return {
+        "agent": str(session.get("agent", "") or ""),
+        "agent_type": str(session.get("agent_type", "") or ""),
+        "transport": transport,
+        "transport_backend": transport_backend,
+        "status": str(session.get("status", "") or ""),
+        "current_task_id": current_task_id,
+        "current_task_type": current_task_type,
+        "last_task_id": last_task_id,
+        "last_task_type": str(last_task.get("task_type", "") or ""),
+        "last_task_status": last_task_status,
+        "tasks_started": int(session.get("tasks_started", 0) or 0),
+        "tasks_completed": int(session.get("tasks_completed", 0) or 0),
+        "tasks_failed": int(session.get("tasks_failed", 0) or 0),
+        "messages_seen": int(session.get("messages_seen", 0) or 0),
+        "provider_replies": int(session.get("provider_replies", 0) or 0),
+        "last_provider_topic": str(last_memory.get("topic", "") or ""),
+        "last_active_at": str(session.get("last_active_at", "") or ""),
+        "summary": summary,
+    }
+
+
+def _build_lead_teammate_sessions_snapshot(shared_state: SharedState) -> Dict[str, Any]:
+    sessions_snapshot = build_teammate_sessions_snapshot(shared_state=shared_state)
+    summaries = [
+        _build_lead_teammate_session_summary(session)
+        for session in sessions_snapshot.get("sessions", [])
+        if isinstance(session, Mapping)
+    ]
+    active_count = sum(
+        1
+        for item in summaries
+        if str(item.get("status", "") or "") == "running" or str(item.get("current_task_id", "") or "")
+    )
+    return {
+        "teammate_session_count": len(summaries),
+        "active_teammate_session_count": active_count,
+        "teammate_session_status_counts": dict(sessions_snapshot.get("status_counts", {}))
+        if isinstance(sessions_snapshot.get("status_counts", {}), Mapping)
+        else {},
+        "teammate_session_transport_counts": dict(sessions_snapshot.get("transport_counts", {}))
+        if isinstance(sessions_snapshot.get("transport_counts", {}), Mapping)
+        else {},
+        "teammate_sessions": summaries,
+    }
+
+
 def checkpoint_history_dir(output_dir: pathlib.Path) -> pathlib.Path:
     return output_dir / CHECKPOINT_HISTORY_DIRNAME
 
@@ -1059,6 +1140,7 @@ def build_lead_interaction_snapshot(
     controls = state_snapshot.get("plan_approval_controls", {})
     if not isinstance(controls, dict):
         controls = {}
+    teammate_session_snapshot = _build_lead_teammate_sessions_snapshot(shared_state=shared_state)
     return {
         "generated_at": utc_now(),
         "lead_name": lead_name,
@@ -1081,6 +1163,7 @@ def build_lead_interaction_snapshot(
         "recent_team_messages": recent_team_messages,
         "recent_team_message_count": len(recent_team_messages),
         "controls": controls,
+        **teammate_session_snapshot,
     }
 
 
@@ -1125,6 +1208,39 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
         f"cursor={snapshot.get('command_cursor', 0)} "
         f"last_command_at={snapshot.get('last_command_at', '') or 'n/a'}"
     )
+    lines.append(
+        f"- Teammate sessions: {snapshot.get('teammate_session_count', 0)} "
+        f"active={snapshot.get('active_teammate_session_count', 0)}"
+    )
+    status_counts = snapshot.get("teammate_session_status_counts", {})
+    if isinstance(status_counts, dict) and status_counts:
+        lines.append(
+            "- Teammate states: "
+            + " ".join(f"{status}={count}" for status, count in sorted(status_counts.items()))
+        )
+    transport_counts = snapshot.get("teammate_session_transport_counts", {})
+    if isinstance(transport_counts, dict) and transport_counts:
+        lines.append(
+            "- Teammate transports: "
+            + " ".join(f"{transport}={count}" for transport, count in sorted(transport_counts.items()))
+        )
+    lines.append("")
+    lines.append("## Teammate Sessions")
+    lines.append("")
+    teammate_sessions = snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list) or not teammate_sessions:
+        lines.append("- none")
+    else:
+        for item in teammate_sessions:
+            if not isinstance(item, Mapping):
+                continue
+            lines.append(
+                f"- {item.get('summary', '')} "
+                f"tasks={item.get('tasks_started', 0)}/{item.get('tasks_completed', 0)}/{item.get('tasks_failed', 0)} "
+                f"messages_seen={item.get('messages_seen', 0)} "
+                f"provider_replies={item.get('provider_replies', 0)} "
+                f"last_active_at={item.get('last_active_at', '') or 'n/a'}"
+            )
     lines.append("")
     lines.append("## Pending Approvals")
     lines.append("")

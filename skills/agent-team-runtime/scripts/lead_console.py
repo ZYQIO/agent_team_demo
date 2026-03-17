@@ -207,6 +207,25 @@ def build_status_lines(
         f"(cursor={snapshot.get('command_cursor', 0)} "
         f"last_command_at={snapshot.get('last_command_at', '') or 'n/a'})"
     )
+    lines.append(
+        f"- Teammate sessions: {snapshot.get('teammate_session_count', 0)} "
+        f"active={snapshot.get('active_teammate_session_count', 0)}"
+    )
+
+    lines.append("")
+    lines.append("Teammate sessions:")
+    teammate_sessions = snapshot.get("teammate_sessions", [])
+    if not isinstance(teammate_sessions, list) or not teammate_sessions:
+        lines.append("- none")
+    else:
+        for item in teammate_sessions:
+            if not isinstance(item, dict):
+                continue
+            lines.append(
+                f"- {item.get('summary', '')} "
+                f"last_active_at={item.get('last_active_at', '') or 'n/a'}"
+            )
+
     lines.append("")
     lines.append("Pending approvals:")
     if not pending:

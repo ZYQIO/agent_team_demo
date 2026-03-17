@@ -29,7 +29,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - host-mode mailbox reviewer/request-reply flows now use external session-worker subprocesses plus explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox messages so workflow state and teammate session ledger updates are applied on the lead side
   - dynamic task insertion
   - progress artifacts and session ledgers
-  - live lead interaction snapshots plus preview-capable teammate plan approval through resume CLI, file-backed commands, `lead_console.py`, and embedded stdin prompt, with `show <task_id>` detail inspection and live teammate status/plan requests (`status <agent>`, `plan <agent>`) in the live console / command surfaces
+  - live lead interaction snapshots plus preview-capable teammate plan approval through resume CLI, file-backed commands, `lead_console.py`, and embedded stdin prompt, with teammate session summaries, `show <task_id>` detail inspection, and live teammate status/plan requests (`status <agent>`, `plan <agent>`) in the live console / command surfaces
   - task-scoped context boundaries
   - checkpoint resume / rewind / replay reports
   - `in-process`, `subprocess`, `tmux`, and `host` teammate modes
@@ -55,25 +55,23 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction is still not a richer embedded in-run surface.
-   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, live control surfaces can inspect one pending request in detail with `show <task_id>`, and lead can request teammate status/plan replies during the run, but it still trails Claude Code on embedded runtime ergonomics.
+   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, live control surfaces can inspect one pending request in detail with `show <task_id>`, see teammate session summaries, and request teammate status/plan replies during the run, but it still trails Claude Code on embedded runtime ergonomics.
 4. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
 
-Validate and harden the guarded `claude_exec` backend in an official-ready Claude environment, while keeping third-party-relay fallback explicit.
+Keep upgrading lead-facing interaction plus plan approval into a richer embedded in-run control surface.
 
 Why this is next:
-- The mailbox/request-reply boundary is now credible enough to stop treating it as purely design work.
-- Built-in workflow teammate task paths now all cross explicit assignment/result/telemetry contracts.
-- The next material gap is official-ready Claude backend validation/authenticity rather than task-path coverage.
-- It matches the updated active plan after the external session-worker round.
+- The last three rounds stayed aligned with Claude Code Agent Teams by improving lead-side runtime interaction rather than artifact-only reporting.
+- Lead can now see teammate session summaries plus status/plan replies during a blocked approval window, so the next high-value step is unifying those pieces into a more embedded control surface instead of adding more one-off command verbs.
+- This environment still does not have official-ready Claude prerequisites, so guarded `claude_exec` validation remains important but is not the best practical next slice on this machine.
 
 What that likely requires:
-- validate the guarded `claude_exec` worker backend in an official-ready Claude environment without weakening the existing explicit mailbox/result/telemetry contracts
-- keep the existing external session-worker contract explicit instead of reintroducing shared in-process state
-- improve event/report surfacing only where needed to describe real external execution, not to add artifact-only detail
-- keep tests and smoke coverage able to distinguish true host-backed backends from the remaining `external_process` fallback path
-- after backend authenticity is improved, move to lead-facing interaction and plan approval before replay-first work
+- keep using the live interaction snapshot as the single source for pending approvals, teammate session summaries, and lead-visible team messages
+- tighten the terminal/file-backed/embedded-stdin surfaces into something closer to one embedded control loop instead of a pile of adjacent helpers
+- avoid slipping back into artifact-only additions or new single-purpose commands that do not improve the overall control surface
+- keep the guarded `claude_exec` backend validation queued for the moment an official-ready Claude environment is available
 
 ## Fast Validation Commands
 

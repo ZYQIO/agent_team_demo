@@ -869,6 +869,16 @@ class RuntimeEndToEndTests(unittest.TestCase):
             ]
             self.assertTrue(plan_replies)
             self.assertIn("reviewer_gamma focus=", plan_replies[-1].get("body_preview", ""))
+            teammate_sessions = lead_interaction.get("teammate_sessions", [])
+            self.assertTrue(teammate_sessions)
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and item.get("agent") == "reviewer_gamma"
+                    and "status=" in item.get("summary", "")
+                    for item in teammate_sessions
+                )
+            )
 
     def test_cli_rejects_invalid_teammate_memory_turns(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -148,7 +148,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --approve-plan dynamic_planning
 ```
 
-The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. The terminal console and embedded prompt also support `show <task_id>` for one pending request's detailed inspection, and live command surfaces can request teammate `status <agent>` or `plan <agent>` replies so lead-visible team messages include a current teammate summary instead of only raw mail subjects.
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. Those lead-facing surfaces also include teammate session summaries from the live session ledger, the terminal console and embedded prompt support `show <task_id>` for one pending request's detailed inspection, and live command surfaces can request teammate `status <agent>` or `plan <agent>` replies so lead-visible team messages include a current teammate summary instead of only raw mail subjects.
 
 Use an embedded lead prompt inside the runtime process:
 

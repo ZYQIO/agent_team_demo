@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Live teammate session summary checkpoint
+- Goal: make lead-facing runtime control surfaces show current teammate state without requiring a one-off request first
+- Changes:
+  - extended `lead_interaction.json` / `lead_interaction.md` with teammate session summaries derived from the runtime session ledger, including transport, status, current task, last task, and last activity
+  - updated `lead_console.py` and the embedded stdin approval prompt to surface those teammate summaries alongside pending approvals and recent lead-visible messages
+  - added regression coverage for live teammate session summaries in the lead interaction artifact and in the end-to-end live console approval flow
+  - direction review: the last three rounds stayed aligned with Claude Code Agent Teams by improving lead-side runtime interaction rather than artifact-only reporting, so the next practical slice in this environment remains a more unified embedded control surface instead of additional one-off helper commands
+- Validation:
+  - `python -m py_compile agent_team\\runtime\\persistence.py agent_team\\runtime\\engine.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic/end-to-end tests passed for live teammate session summaries
+  - full suite: `141/141` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: lead-facing runtime control now has both pull and push style teammate visibility, so the next step should unify those capabilities into a tighter embedded control loop rather than adding more isolated controls
+
 ### 2026-03-17 - Live teammate plan request checkpoint
 - Goal: let lead ask a running teammate for its current focus and next step instead of inferring intent from passive mailbox traffic and status-only summaries
 - Changes:

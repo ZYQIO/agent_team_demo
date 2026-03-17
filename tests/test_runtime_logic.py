@@ -861,6 +861,7 @@ class RuntimeLogicTests(unittest.TestCase):
             output_dir = pathlib.Path(tmp)
             logger = runtime.EventLogger(output_dir=output_dir)
             shared_state = runtime.SharedState()
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
             shared_state.set("lead_name", "lead")
             shared_state.set(
                 "plan_approval_controls",
@@ -870,6 +871,39 @@ class RuntimeLogicTests(unittest.TestCase):
                     "reject_task_ids": [],
                     "lead_command_wait_seconds": 15.0,
                 },
+            )
+            registry.ensure_profile(
+                profile=runtime.AgentProfile(name="analyst_alpha", skills={"analysis"}, agent_type="analyst"),
+                transport="host",
+                status="running",
+            )
+            registry.record_status(
+                agent_name="analyst_alpha",
+                transport="host",
+                status="running",
+                current_task_id="discover",
+                current_task_type="discover",
+            )
+            registry.ensure_profile(
+                profile=runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer"),
+                transport="in-process",
+                status="ready",
+            )
+            registry.record_task_result(
+                agent_name="reviewer_gamma",
+                task=runtime.Task(
+                    task_id="dynamic_planning",
+                    title="Review dynamic planning proposal",
+                    task_type="dynamic_planning",
+                    required_skills={"review"},
+                    dependencies=[],
+                    payload={},
+                    locked_paths=[],
+                    allowed_agent_types={"reviewer"},
+                ),
+                transport="in-process",
+                success=True,
+                status="ready",
             )
 
             runtime.ensure_lead_command_channel(
@@ -969,16 +1003,37 @@ class RuntimeLogicTests(unittest.TestCase):
             self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
             self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
             self.assertEqual(snapshot.get("recent_team_message_count"), 6)
+            self.assertEqual(snapshot.get("teammate_session_count"), 2)
+            self.assertEqual(snapshot.get("active_teammate_session_count"), 1)
             pending_request = snapshot.get("plan_approval_requests", [])[0]
             self.assertEqual(
                 pending_request.get("proposed_tasks_preview", [])[0].get("task_id"),
                 "heading_structure_followup",
             )
             self.assertIn("reviewer_gamma focus=", snapshot.get("recent_team_messages", [])[-1].get("body_preview", ""))
+            teammate_summaries = snapshot.get("teammate_sessions", [])
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and item.get("agent") == "reviewer_gamma"
+                    and "last=dynamic_planning(completed)" in item.get("summary", "")
+                    for item in teammate_summaries
+                )
+            )
+            self.assertTrue(
+                any(
+                    isinstance(item, dict)
+                    and item.get("agent") == "analyst_alpha"
+                    and "current=discover[discover]" in item.get("summary", "")
+                    for item in teammate_summaries
+                )
+            )
             report_text = (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).read_text(encoding="utf-8")
+            self.assertIn("## Teammate Sessions", report_text)
             self.assertIn("## Pending Approvals", report_text)
             self.assertIn("dynamic_planning", report_text)
             self.assertIn("heading_structure_followup", report_text)
+            self.assertIn("analyst_alpha status=running current=discover[discover]", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)
             self.assertIn("reviewer_gamma status=ready", report_text)
