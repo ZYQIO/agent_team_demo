@@ -675,6 +675,14 @@ class RuntimeLogicTests(unittest.TestCase):
             },
         )
         self.assertEqual(
+            runtime.parse_interactive_plan_command("show dynamic_planning"),
+            {
+                "action": "show_task",
+                "raw": "show dynamic_planning",
+                "task_id": "dynamic_planning",
+            },
+        )
+        self.assertEqual(
             runtime.parse_interactive_plan_command("pause"),
             {
                 "action": "pause",
@@ -682,6 +690,40 @@ class RuntimeLogicTests(unittest.TestCase):
                 "task_id": "",
             },
         )
+
+    def test_describe_plan_approval_request_includes_preview_and_state_keys(self) -> None:
+        description = runtime.describe_plan_approval_request(
+            {
+                "task_id": "dynamic_planning",
+                "task_type": "dynamic_planning",
+                "requested_by": "reviewer_gamma",
+                "transport": "host",
+                "status": runtime.PLAN_APPROVAL_STATUS_PENDING,
+                "result": {"enabled": True},
+                "state_updates": {"dynamic_plan": {"enabled": True}},
+                "proposed_task_ids": ["heading_structure_followup"],
+                "proposed_dependency_ids": ["dynamic_planning"],
+                "proposed_tasks_preview": [
+                    {
+                        "task_id": "heading_structure_followup",
+                        "task_type": "heading_structure_followup",
+                        "title": "Run heading follow-up",
+                        "allowed_agent_types": ["analyst"],
+                        "dependencies": ["dynamic_planning"],
+                    }
+                ],
+                "proposed_dependencies_preview": [
+                    {"task_id": "peer_challenge", "dependency_id": "heading_structure_followup"}
+                ],
+            }
+        )
+
+        joined = "\n".join(description)
+        self.assertIn("task_id=dynamic_planning", joined)
+        self.assertIn("result_keys=enabled", joined)
+        self.assertIn("state_update_keys=dynamic_plan", joined)
+        self.assertIn("heading_structure_followup[heading_structure_followup]", joined)
+        self.assertIn("peer_challenge+=heading_structure_followup", joined)
 
     def test_record_lead_command_tracks_interactive_source(self) -> None:
         shared_state = runtime.SharedState()

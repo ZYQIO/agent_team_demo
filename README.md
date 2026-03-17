@@ -19,7 +19,7 @@ This folder now contains two layers:
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
   - optional embedded `stdin` lead prompt via `--lead-interactive` while the run is waiting on teammate plan approval
-  - a terminal `lead_console.py` helper for in-run status inspection and approve/reject commands
+  - a terminal `lead_console.py` helper for in-run status inspection plus `show` / approve / reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -139,7 +139,7 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --approve-plan dynamic_planning
 ```
 
-The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied.
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. The terminal console and embedded prompt also support `show <task_id>` for one pending request's detailed inspection.
 
 Use an embedded lead prompt inside the runtime process:
 
@@ -154,6 +154,7 @@ python3 agent_team_demo/agent_team_runtime.py \
 When a pending teammate plan appears, the runtime will prompt:
 
 ```text
+lead-approval> show dynamic_planning
 lead-approval> approve dynamic_planning
 ```
 

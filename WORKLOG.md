@@ -13,6 +13,19 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Detailed pending-plan inspection checkpoint
+- Goal: let lead inspect one pending teammate plan in detail from the live control surfaces instead of only seeing a summary list
+- Changes:
+  - added `describe_plan_approval_request(...)` so pending approvals can be rendered as stable detail lines instead of ad hoc field reads
+  - extended the embedded `--lead-interactive` prompt with `show <task_id>` so lead can inspect result keys, state update keys, proposed task ids, proposed dependency ids, and preview lines before approving
+  - extended `lead_console.py` with the same `show <task_id>` inspection flow so the terminal helper and embedded prompt expose the same approval detail shape
+  - added logic and end-to-end regression coverage for the new inspection command path
+- Validation:
+  - `python -m py_compile agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\engine.py agent_team\\runtime\\__init__.py agent_team_runtime.py skills\\agent-team-runtime\\scripts\\lead_console.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - full suite: `130/130` tests passed
+- Commit: pending current round
+- Next implication: the next lead-facing parity slice should keep pushing embedded runtime control richness instead of adding new parallel approval surfaces
+
 ### 2026-03-17 - Lead approval preview checkpoint
 - Goal: make pending teammate plans readable before approval instead of only showing task ids and mutation counts
 - Changes:

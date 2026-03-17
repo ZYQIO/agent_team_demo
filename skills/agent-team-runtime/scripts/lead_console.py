@@ -112,6 +112,55 @@ def _dependency_preview_text(item: Dict[str, Any]) -> str:
     return f"{str(item.get('task_id', '') or '')}+={str(item.get('dependency_id', '') or '')}"
 
 
+def describe_pending_request(snapshot: Dict[str, Any], task_id: str) -> List[str]:
+    pending = [
+        item
+        for item in snapshot.get("plan_approval_requests", [])
+        if isinstance(item, dict)
+        and str(item.get("status", "") or "") == "pending"
+        and str(item.get("task_id", "") or "") == str(task_id or "")
+    ]
+    if not pending:
+        return [f"unknown pending approval: {task_id}"]
+    item = pending[0]
+    lines = [
+        (
+            f"task_id={item.get('task_id', '')} "
+            f"task_type={item.get('task_type', '')} "
+            f"requested_by={item.get('requested_by', '')} "
+            f"transport={item.get('transport', '')} "
+            f"status={item.get('status', '')}"
+        ),
+        "result_keys="
+        + (
+            ",".join(sorted(str(key) for key in item.get("result", {}).keys()))
+            if isinstance(item.get("result", {}), dict)
+            else "none"
+        ),
+        "state_update_keys="
+        + (
+            ",".join(sorted(str(key) for key in item.get("state_updates", {}).keys()))
+            if isinstance(item.get("state_updates", {}), dict)
+            else "none"
+        ),
+    ]
+    task_preview = [
+        _task_preview_text(preview)
+        for preview in item.get("proposed_tasks_preview", [])
+        if isinstance(preview, dict)
+    ]
+    dependency_preview = [
+        _dependency_preview_text(preview)
+        for preview in item.get("proposed_dependencies_preview", [])
+        if isinstance(preview, dict)
+    ]
+    if task_preview:
+        lines.append("task_preview=" + "; ".join(task_preview))
+    if dependency_preview:
+        lines.append("dependency_preview=" + "; ".join(dependency_preview))
+    return lines
+
+
 def build_status_lines(
     output_dir: pathlib.Path,
     snapshot: Dict[str, Any],
@@ -236,7 +285,7 @@ def send_requested_commands(args: argparse.Namespace, output_dir: pathlib.Path) 
 
 def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
     help_text = (
-        "Commands: refresh | approve <task_id> | reject <task_id> | approve-all | quit"
+        "Commands: refresh | show <task_id> | approve <task_id> | reject <task_id> | approve-all | quit"
     )
     while True:
         snapshot = load_snapshot(output_dir=output_dir)
@@ -257,6 +306,12 @@ def interactive_loop(args: argparse.Namespace, output_dir: pathlib.Path) -> int:
                 {"command": "approve_all_pending_plans"},
             )
             continue
+        if raw.startswith("show "):
+            task_id = raw.split(" ", 1)[1].strip()
+            if task_id:
+                for line in describe_pending_request(snapshot=snapshot, task_id=task_id):
+                    print(f"[lead-console] {line}")
+                continue
         if raw.startswith("approve "):
             task_id = raw.split(" ", 1)[1].strip()
             if task_id:

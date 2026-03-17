@@ -11,7 +11,7 @@ Priority 1 is complete: reviewer `llm_synthesis` runs in isolated worker subproc
 Priority 2 is complete: `--teammate-mode host` now routes teammate work through a distinct host transport path and records host-managed session/workspace boundaries from execution.
 Priority 3 is complete: mailbox-driven reviewer/request-reply flows now cross an actual external session-worker subprocess boundary instead of staying on parent-runtime threads.
 Priority 4 is in progress: host mode now has a true host-backed `codex` session backend, but the parity-critical `claude-code` path in this environment still falls back to the transport-backed `external_process` worker backend.
-Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
+Priority 5 is also materially closer now: pending approvals expose proposed task/dependency previews through live artifacts, `lead_console.py`, and the embedded stdin prompt, and both live control surfaces can inspect one pending request in detail with `show <task_id>`, so the next lead-side gap is richer embedded control rather than bare approve/reject availability.
 
 Direction review (2026-03-10):
 - the last three transport-focused rounds improved execution semantics
@@ -153,6 +153,7 @@ Recent completed outcomes:
 - added a terminal `lead_console.py` helper so lead can inspect pending approvals and recent team messages, then send approve/reject commands without editing files by hand
 - added `--lead-interactive` so the runtime itself can prompt on stdin for approve/reject/pause commands when pending teammate plans block progress
 - pending teammate plans now also expose proposed task/dependency previews through the live interaction snapshot, terminal lead console, and embedded stdin prompt before approval is applied
+- terminal `lead_console.py` and the embedded stdin prompt now both support `show <task_id>` to inspect one pending request in detail before approval, including result/state-update keys and task/dependency preview lines
 
 Acceptance criteria:
 - lead can inspect teammate/team messages through a runtime surface, not only post-run artifacts

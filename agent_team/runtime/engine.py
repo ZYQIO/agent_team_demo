@@ -52,6 +52,7 @@ from .lead_interaction import (
     PLAN_APPROVAL_STATUS_PENDING,
     PLAN_APPROVAL_STATUS_REJECTED,
     consume_lead_commands,
+    describe_plan_approval_request,
     ensure_lead_command_channel,
     list_plan_approval_requests,
     record_lead_command,
@@ -240,6 +241,8 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
     if len(parts) == 2:
         verb = parts[0].strip().lower()
         task_id = parts[1].strip()
+        if task_id and verb in {"show", "status"}:
+            return {"action": "show_task", "raw": text, "task_id": task_id}
         if task_id and verb in {"approve", "approve-plan"}:
             return {"action": "approve_plan", "raw": text, "task_id": task_id}
         if task_id and verb in {"reject", "reject-plan"}:
@@ -293,7 +296,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | pause",
         flush=True,
     )
 
@@ -375,9 +378,24 @@ def run_interactive_plan_approval_prompt(
         )
         if action == "show":
             continue
+        if action == "show_task":
+            matched = next(
+                (
+                    item
+                    for item in pending_plan_approvals
+                    if isinstance(item, Mapping) and str(item.get("task_id", "") or "") == task_id
+                ),
+                None,
+            )
+            if matched is None:
+                print(f"[lead] unknown pending approval: {task_id}", flush=True)
+                continue
+            for line in describe_plan_approval_request(matched):
+                print("[lead] " + line, flush=True)
+            continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | pause",
                 flush=True,
             )
             continue

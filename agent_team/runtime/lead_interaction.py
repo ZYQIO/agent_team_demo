@@ -332,6 +332,77 @@ def list_plan_approval_requests(
     return items
 
 
+def describe_plan_approval_request(record: Mapping[str, Any]) -> List[str]:
+    if not isinstance(record, Mapping):
+        return ["invalid_request"]
+    lines = [
+        (
+            f"task_id={str(record.get('task_id', '') or '')} "
+            f"task_type={str(record.get('task_type', '') or '')} "
+            f"requested_by={str(record.get('requested_by', '') or '')} "
+            f"transport={str(record.get('transport', '') or '')} "
+            f"status={str(record.get('status', '') or '')}"
+        )
+    ]
+    result = record.get("result", {})
+    state_updates = record.get("state_updates", {})
+    if isinstance(result, Mapping):
+        lines.append(
+            "result_keys=" + (",".join(sorted(str(key) for key in result.keys())) or "none")
+        )
+    if isinstance(state_updates, Mapping):
+        lines.append(
+            "state_update_keys=" + (",".join(sorted(str(key) for key in state_updates.keys())) or "none")
+        )
+    proposed_task_ids = record.get("proposed_task_ids", [])
+    if isinstance(proposed_task_ids, list):
+        lines.append("proposed_task_ids=" + (",".join(str(item) for item in proposed_task_ids if str(item)) or "none"))
+    proposed_dependency_ids = record.get("proposed_dependency_ids", [])
+    if isinstance(proposed_dependency_ids, list):
+        lines.append(
+            "proposed_dependency_ids="
+            + (",".join(str(item) for item in proposed_dependency_ids if str(item)) or "none")
+        )
+    proposed_tasks_preview = record.get("proposed_tasks_preview", [])
+    if isinstance(proposed_tasks_preview, list) and proposed_tasks_preview:
+        preview_lines = []
+        for item in proposed_tasks_preview:
+            if not isinstance(item, Mapping):
+                continue
+            task_id = str(item.get("task_id", "") or "")
+            task_type = str(item.get("task_type", "") or "")
+            title = str(item.get("title", "") or "")
+            agent_types = (
+                ",".join(str(agent_type) for agent_type in item.get("allowed_agent_types", []) if str(agent_type))
+                if isinstance(item.get("allowed_agent_types", []), list)
+                else ""
+            )
+            dependencies = (
+                ",".join(str(dep_id) for dep_id in item.get("dependencies", []) if str(dep_id))
+                if isinstance(item.get("dependencies", []), list)
+                else ""
+            )
+            preview_lines.append(
+                f"{task_id}[{task_type or 'unknown'}]"
+                + (f" title={title}" if title else "")
+                + (f" agents={agent_types}" if agent_types else "")
+                + (f" deps={dependencies}" if dependencies else "")
+            )
+        lines.append("task_preview=" + ("; ".join(preview_lines) if preview_lines else "none"))
+    proposed_dependencies_preview = record.get("proposed_dependencies_preview", [])
+    if isinstance(proposed_dependencies_preview, list) and proposed_dependencies_preview:
+        preview_lines = []
+        for item in proposed_dependencies_preview:
+            if not isinstance(item, Mapping):
+                continue
+            task_id = str(item.get("task_id", "") or "")
+            dependency_id = str(item.get("dependency_id", "") or "")
+            if task_id and dependency_id:
+                preview_lines.append(f"{task_id}+={dependency_id}")
+        lines.append("dependency_preview=" + ("; ".join(preview_lines) if preview_lines else "none"))
+    return lines
+
+
 def update_plan_approval_request(
     shared_state: SharedState,
     task_id: str,

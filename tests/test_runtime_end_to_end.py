@@ -637,7 +637,7 @@ class RuntimeEndToEndTests(unittest.TestCase):
                     msg="runtime never wrote a live lead interaction snapshot with pending approvals",
                 )
                 self.assertIsNotNone(process.stdin, msg="interactive runtime stdin should be available")
-                process.stdin.write("approve dynamic_planning\n")
+                process.stdin.write("show dynamic_planning\napprove dynamic_planning\n")
                 process.stdin.flush()
                 stdout, stderr = process.communicate(timeout=90)
             finally:
@@ -653,6 +653,9 @@ class RuntimeEndToEndTests(unittest.TestCase):
             self.assertIn("interactive_pending_approvals", stdout)
             self.assertIn("lead-approval>", stdout)
             self.assertIn("heading_structure_followup", stdout)
+            self.assertIn("result_keys=", stdout)
+            self.assertIn("enabled", stdout)
+            self.assertIn("state_update_keys=dynamic_plan", stdout)
             summary = json.loads((output_dir / "run_summary.json").read_text(encoding="utf-8"))
             self.assertEqual(summary.get("interrupted_reason"), "")
             self.assertEqual(summary.get("pending_plan_approval_count"), 0)

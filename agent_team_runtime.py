@@ -77,6 +77,7 @@ from agent_team.runtime import (
     default_event_rewind_branch_output_dir,
     default_history_replay_report_path,
     default_rewind_branch_output_dir,
+    describe_plan_approval_request,
     derive_evidence_focus_areas,
     ensure_lead_command_channel,
     get_lead_interaction_state,

@@ -29,7 +29,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
   - host-mode mailbox reviewer/request-reply flows now use external session-worker subprocesses plus explicit `session_task_assignment`, `session_task_result`, and `session_telemetry` mailbox messages so workflow state and teammate session ledger updates are applied on the lead side
   - dynamic task insertion
   - progress artifacts and session ledgers
-  - live lead interaction snapshots plus preview-capable teammate plan approval through resume CLI, file-backed commands, `lead_console.py`, and embedded stdin prompt
+  - live lead interaction snapshots plus preview-capable teammate plan approval through resume CLI, file-backed commands, `lead_console.py`, and embedded stdin prompt, with `show <task_id>` detail inspection in the live console and embedded prompt
   - task-scoped context boundaries
   - checkpoint resume / rewind / replay reports
   - `in-process`, `subprocess`, `tmux`, and `host` teammate modes
@@ -55,7 +55,7 @@ Use this file as the fastest restart point when continuing `agent_team_demo` fro
 2. Event/report fidelity for external host workers is still lead-synthesized.
    External session workers now communicate only through mailbox/result/telemetry contracts, so the main `events.jsonl` intentionally replays only the lead-observed portion of worker traffic instead of every worker-local debug event.
 3. Lead-facing team interaction is still not a richer embedded in-run surface.
-   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, but it still trails Claude Code on embedded runtime ergonomics.
+   Plan approval now exists as live snapshots plus CLI/file-backed/terminal/embedded-stdin controls, and live control surfaces can inspect one pending request in detail with `show <task_id>`, but it still trails Claude Code on embedded runtime ergonomics.
 4. Replay is still checkpoint-based rather than true event-level state replay.
 
 ## Recommended Next Step
