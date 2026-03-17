@@ -28,6 +28,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Approve all pending plan requests.",
     )
+    parser.add_argument(
+        "--request-status",
+        action="append",
+        default=[],
+        help="Request a live status reply from a teammate by agent name. Can be specified multiple times.",
+    )
     return parser.parse_args()
 
 
@@ -45,6 +51,7 @@ def main() -> int:
 
     approve_task_ids = [str(task_id) for task_id in args.approve_plan if str(task_id)]
     reject_task_ids = [str(task_id) for task_id in args.reject_plan if str(task_id)]
+    request_status_agents = [str(agent) for agent in args.request_status if str(agent)]
     overlap = sorted(set(approve_task_ids) & set(reject_task_ids))
     if overlap:
         print(
@@ -62,6 +69,9 @@ def main() -> int:
         wrote_any = True
     if args.approve_all_pending_plans:
         append_command(command_path, {"command": "approve_all_pending_plans"})
+        wrote_any = True
+    for agent in request_status_agents:
+        append_command(command_path, {"command": "request_teammate_status", "agent": agent})
         wrote_any = True
 
     if not wrote_any:

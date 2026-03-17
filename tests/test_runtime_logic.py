@@ -626,6 +626,7 @@ class RuntimeLogicTests(unittest.TestCase):
                     [
                         json.dumps({"command": "approve_plan", "task_id": "dynamic_planning"}, ensure_ascii=False),
                         json.dumps({"command": "reject_plan", "task_ids": ["repo_dynamic_planning"]}, ensure_ascii=False),
+                        json.dumps({"command": "request_teammate_status", "agent": "reviewer_gamma"}, ensure_ascii=False),
                     ]
                 )
                 + "\n",
@@ -645,11 +646,13 @@ class RuntimeLogicTests(unittest.TestCase):
 
             self.assertEqual(first["approve_task_ids"], ["dynamic_planning"])
             self.assertEqual(first["reject_task_ids"], ["repo_dynamic_planning"])
-            self.assertEqual(first["consumed_count"], 2)
+            self.assertEqual(first["status_request_agents"], ["reviewer_gamma"])
+            self.assertEqual(first["consumed_count"], 3)
             self.assertEqual(second["consumed_count"], 0)
             interaction = runtime.get_lead_interaction_state(shared_state)
-            self.assertEqual(interaction.get("command_cursor"), 2)
-            self.assertEqual(len(interaction.get("recent_commands", [])), 2)
+            self.assertEqual(interaction.get("command_cursor"), 3)
+            self.assertEqual(len(interaction.get("recent_commands", [])), 3)
+            self.assertEqual(interaction.get("recent_commands", [])[-1].get("agent"), "reviewer_gamma")
 
     def test_parse_interactive_plan_command_supports_embedded_lead_prompt(self) -> None:
         self.assertEqual(
@@ -682,6 +685,14 @@ class RuntimeLogicTests(unittest.TestCase):
                 "action": "show_task",
                 "raw": "show dynamic_planning",
                 "task_id": "dynamic_planning",
+            },
+        )
+        self.assertEqual(
+            runtime.parse_interactive_plan_command("status reviewer_gamma"),
+            {
+                "action": "request_teammate_status",
+                "raw": "status reviewer_gamma",
+                "task_id": "reviewer_gamma",
             },
         )
         self.assertEqual(
@@ -745,6 +756,51 @@ class RuntimeLogicTests(unittest.TestCase):
         self.assertEqual(recent[0].get("command"), "approve_plan")
         self.assertEqual(recent[0].get("source"), "interactive")
 
+    def test_request_teammate_statuses_sends_mail_to_known_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = pathlib.Path(tmp)
+            logger = runtime.EventLogger(output_dir=output_dir)
+            mailbox = runtime.Mailbox(participants=["lead", "reviewer_gamma"], logger=logger)
+            shared_state = runtime.SharedState()
+            registry = runtime.TeammateSessionRegistry(shared_state=shared_state)
+            reviewer = runtime.AgentProfile(name="reviewer_gamma", skills={"review"}, agent_type="reviewer")
+            registry.ensure_profile(profile=reviewer, transport="in-process", status="ready")
+            provider, _ = runtime.build_provider(
+                provider_name="heuristic",
+                model="heuristic-v1",
+                openai_api_key_env="OPENAI_API_KEY",
+                openai_base_url="https://api.openai.com/v1",
+                require_llm=False,
+                timeout_sec=5,
+            )
+            lead_context = runtime.AgentContext(
+                profile=runtime.AgentProfile(name="lead", skills={"lead"}, agent_type="lead"),
+                target_dir=output_dir,
+                output_dir=output_dir,
+                goal="request teammate status",
+                provider=provider,
+                runtime_config=runtime.RuntimeConfig(),
+                board=runtime.TaskBoard(tasks=[], logger=logger),
+                mailbox=mailbox,
+                file_locks=runtime.FileLockRegistry(logger=logger),
+                shared_state=shared_state,
+                logger=logger,
+                session_registry=registry,
+            )
+
+            resolution = runtime.request_teammate_statuses(
+                lead_context=lead_context,
+                agent_names=["reviewer_gamma", "unknown_agent"],
+                decision_source="test",
+            )
+
+            self.assertEqual(resolution.get("status_request_agents"), ["reviewer_gamma"])
+            self.assertEqual(resolution.get("invalid_status_request_agents"), ["unknown_agent"])
+            reviewer_mail = mailbox.pull("reviewer_gamma")
+            self.assertEqual(len(reviewer_mail), 1)
+            self.assertEqual(reviewer_mail[0].subject, runtime.LEAD_STATUS_REQUEST_SUBJECT)
+            self.assertEqual(reviewer_mail[0].sender, "lead")
+
     def test_write_live_lead_interaction_artifacts_persists_current_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = pathlib.Path(tmp)
@@ -803,6 +859,27 @@ class RuntimeLogicTests(unittest.TestCase):
                 subject="plan_review_ack",
                 task_id="dynamic_planning",
             )
+            logger.log(
+                "mail_sent",
+                sender="lead",
+                recipient="reviewer_gamma",
+                subject=runtime.LEAD_STATUS_REQUEST_SUBJECT,
+                body=json.dumps({"requested_by": "lead"}, ensure_ascii=False),
+                task_id="",
+            )
+            logger.log(
+                "mail_sent",
+                sender="reviewer_gamma",
+                recipient="lead",
+                subject=runtime.LEAD_STATUS_REPLY_SUBJECT,
+                body=json.dumps(
+                    {
+                        "summary": "reviewer_gamma status=ready current_task=none last_task=dynamic_planning(completed) transport=in-process"
+                    },
+                    ensure_ascii=False,
+                ),
+                task_id="",
+            )
 
             written = runtime.write_live_lead_interaction_artifacts(
                 output_dir=output_dir,
@@ -815,18 +892,20 @@ class RuntimeLogicTests(unittest.TestCase):
             snapshot = written.get("snapshot", {})
             self.assertEqual(snapshot.get("pending_plan_approval_count"), 1)
             self.assertEqual(snapshot.get("pending_plan_approval_task_ids"), ["dynamic_planning"])
-            self.assertEqual(snapshot.get("recent_team_message_count"), 2)
+            self.assertEqual(snapshot.get("recent_team_message_count"), 4)
             pending_request = snapshot.get("plan_approval_requests", [])[0]
             self.assertEqual(
                 pending_request.get("proposed_tasks_preview", [])[0].get("task_id"),
                 "heading_structure_followup",
             )
+            self.assertEqual(snapshot.get("recent_team_messages", [])[-1].get("body_preview"), "reviewer_gamma status=ready current_task=none last_task=dynamic_planning(completed) transport=in-process")
             report_text = (output_dir / runtime.LEAD_INTERACTION_REPORT_FILENAME).read_text(encoding="utf-8")
             self.assertIn("## Pending Approvals", report_text)
             self.assertIn("dynamic_planning", report_text)
             self.assertIn("heading_structure_followup", report_text)
             self.assertIn("plan_review_requested", report_text)
             self.assertIn("plan_review_ack", report_text)
+            self.assertIn("reviewer_gamma status=ready", report_text)
 
     def test_run_lead_tasks_once_uses_external_runner_when_available(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

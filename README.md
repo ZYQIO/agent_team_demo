@@ -19,7 +19,7 @@ This folder now contains two layers:
   - lead interaction artifacts plus resumable teammate plan approval (`--teammate-plan-required`, `--approve-plan`, `--reject-plan`, `--approve-all-pending-plans`)
   - optional live lead command channel through `lead_commands.jsonl` while the run is waiting on teammate plan approval
   - optional embedded `stdin` lead prompt via `--lead-interactive` while the run is waiting on teammate plan approval
-  - a terminal `lead_console.py` helper for in-run status inspection plus `show` / approve / reject commands
+  - a terminal `lead_console.py` helper for in-run status inspection plus teammate `status` requests and `show` / approve / reject commands
   - explicit teammate task-context boundaries with per-run context summary artifact
   - durable teammate session ledger with per-agent task/memory/activity snapshots, explicit resume continuity markers, and worker session workspace metadata
   - explicit session-boundary posture artifact describing host-native, tmux-backed, worker-subprocess-backed, or runtime-emulated session isolation
@@ -137,10 +137,14 @@ python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
 
 python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
   --output agent_team_demo/output \
+  --request-status reviewer_gamma
+
+python3 agent_team_demo/skills/agent-team-runtime/scripts/lead_console.py \
+  --output agent_team_demo/output \
   --approve-plan dynamic_planning
 ```
 
-The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. The terminal console and embedded prompt also support `show <task_id>` for one pending request's detailed inspection.
+The live snapshot, terminal console, and embedded prompt now show previews of proposed inserted tasks and dependency additions before approval is applied. The terminal console and embedded prompt also support `show <task_id>` for one pending request's detailed inspection, and live command surfaces can request teammate status replies with `status <agent>` / `--request-status <agent>` so lead-visible team messages include a current teammate summary instead of only raw mail subjects.
 
 Use an embedded lead prompt inside the runtime process:
 

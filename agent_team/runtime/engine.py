@@ -48,6 +48,7 @@ from .persistence import (
     write_live_lead_interaction_artifacts,
 )
 from .lead_interaction import (
+    LEAD_STATUS_REQUEST_SUBJECT,
     PLAN_APPROVAL_STATUS_APPLIED,
     PLAN_APPROVAL_STATUS_PENDING,
     PLAN_APPROVAL_STATUS_REJECTED,
@@ -189,6 +190,57 @@ def apply_requested_plan_approvals(
     }
 
 
+def request_teammate_statuses(
+    lead_context: AgentContext,
+    agent_names: Sequence[str] | None = None,
+    decision_source: str = "lead_command",
+) -> Dict[str, Any]:
+    requested: List[str] = []
+    invalid: List[str] = []
+    seen: set[str] = set()
+    for raw_name in agent_names or []:
+        agent_name = str(raw_name or "").strip()
+        if not agent_name or agent_name in seen:
+            continue
+        seen.add(agent_name)
+        session = (
+            lead_context.session_registry.session_for(agent_name)
+            if lead_context.session_registry is not None
+            else {}
+        )
+        if not isinstance(session, Mapping) or str(session.get("agent", "") or "") != agent_name:
+            invalid.append(agent_name)
+            lead_context.logger.log(
+                "lead_status_request_rejected",
+                agent=agent_name,
+                reason="unknown_agent",
+                decision_source=decision_source,
+            )
+            continue
+        lead_context.mailbox.send(
+            sender=str(lead_context.profile.name or "lead"),
+            recipient=agent_name,
+            subject=LEAD_STATUS_REQUEST_SUBJECT,
+            body=json.dumps(
+                {
+                    "requested_by": str(lead_context.profile.name or "lead"),
+                    "decision_source": str(decision_source or "lead_command"),
+                },
+                ensure_ascii=False,
+            ),
+        )
+        lead_context.logger.log(
+            "lead_status_request_sent",
+            agent=agent_name,
+            decision_source=decision_source,
+        )
+        requested.append(agent_name)
+    return {
+        "status_request_agents": requested,
+        "invalid_status_request_agents": invalid,
+    }
+
+
 def apply_lead_commands(
     lead_context: AgentContext,
     decision_source: str = "lead_command",
@@ -205,9 +257,15 @@ def apply_lead_commands(
         approve_all_pending=bool(consumed.get("approve_all_pending_plans", False)),
         decision_source=decision_source,
     )
+    status_resolution = request_teammate_statuses(
+        lead_context=lead_context,
+        agent_names=consumed.get("status_request_agents", []),
+        decision_source=decision_source,
+    )
     return {
         **consumed,
         **resolution,
+        **status_resolution,
     }
 
 
@@ -241,7 +299,9 @@ def parse_interactive_plan_command(raw_command: str) -> Dict[str, Any]:
     if len(parts) == 2:
         verb = parts[0].strip().lower()
         task_id = parts[1].strip()
-        if task_id and verb in {"show", "status"}:
+        if task_id and verb in {"status", "request-status", "request_status"}:
+            return {"action": "request_teammate_status", "raw": text, "task_id": task_id}
+        if task_id and verb in {"show"}:
             return {"action": "show_task", "raw": text, "task_id": task_id}
         if task_id and verb in {"approve", "approve-plan"}:
             return {"action": "approve_plan", "raw": text, "task_id": task_id}
@@ -296,7 +356,7 @@ def _print_interactive_plan_approval_status(
         if dependency_preview:
             print("[lead]   dependency_preview=" + "; ".join(dependency_preview), flush=True)
     print(
-        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | pause",
+        "[lead] commands: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | status <agent> | pause",
         flush=True,
     )
 
@@ -366,6 +426,7 @@ def run_interactive_plan_approval_prompt(
                 shared_state=lead_context.shared_state,
                 command=action,
                 task_ids=task_ids,
+                agent=task_id if action == "request_teammate_status" else "",
                 raw=str(raw_command or ""),
                 valid=action not in {"invalid"},
                 source="interactive",
@@ -395,9 +456,24 @@ def run_interactive_plan_approval_prompt(
             continue
         if action == "help":
             print(
-                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | pause",
+                "[lead] help: approve <task_id> | reject <task_id> | approve-all | show | show <task_id> | status <agent> | pause",
                 flush=True,
             )
+            continue
+        if action == "request_teammate_status":
+            status_resolution = request_teammate_statuses(
+                lead_context=lead_context,
+                agent_names=task_ids,
+                decision_source="interactive",
+            )
+            if status_resolution.get("status_request_agents"):
+                print(
+                    "[lead] requested teammate status from "
+                    + ", ".join(status_resolution.get("status_request_agents", [])),
+                    flush=True,
+                )
+            else:
+                print(f"[lead] unknown teammate: {task_id}", flush=True)
             continue
         if action == "pause":
             lead_context.logger.log("lead_interactive_pause_requested", reason="user_command")

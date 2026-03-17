@@ -14,7 +14,12 @@ from ..config import ModelConfig, RuntimeConfig
 from ..core import AgentProfile, FileLockRegistry, Mailbox, SharedState, task_from_dict
 from ..host import probe_host_environment
 from ..models import build_provider
-from ..runtime.lead_interaction import plan_approval_required, queue_plan_approval_request
+from ..runtime.lead_interaction import (
+    LEAD_STATUS_REPLY_SUBJECT,
+    LEAD_STATUS_REQUEST_SUBJECT,
+    plan_approval_required,
+    queue_plan_approval_request,
+)
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
 from ..runtime.task_mutations import apply_task_mutation_payload
@@ -464,6 +469,59 @@ def _claude_session_prompt(
     )
 
 
+def _build_host_worker_status_reply_payload(
+    *,
+    lead_context: Any,
+    profile: AgentProfile,
+    session_id: str,
+    transport_backend: str,
+    current_task_id: str = "",
+    current_task_type: str = "",
+    status: str = "",
+) -> Dict[str, Any]:
+    session = (
+        lead_context.session_registry.session_for(profile.name)
+        if getattr(lead_context, "session_registry", None) is not None
+        else {}
+    )
+    if not isinstance(session, Mapping):
+        session = {}
+    task_history = session.get("task_history", [])
+    last_task = task_history[-1] if isinstance(task_history, list) and task_history else {}
+    effective_status = str(status or session.get("status", "") or "ready")
+    effective_current_task_id = str(current_task_id or session.get("current_task_id", "") or "")
+    effective_current_task_type = str(current_task_type or session.get("current_task_type", "") or "")
+    payload = {
+        "agent": profile.name,
+        "agent_type": profile.agent_type,
+        "transport": "host",
+        "transport_backend": str(transport_backend or ""),
+        "status": effective_status,
+        "session_id": str(session_id or session.get("session_id", "") or ""),
+        "current_task_id": effective_current_task_id,
+        "current_task_type": effective_current_task_type,
+        "last_task_id": str(last_task.get("task_id", "") or ""),
+        "last_task_type": str(last_task.get("task_type", "") or ""),
+        "last_task_status": str(last_task.get("status", "") or ""),
+        "messages_seen": int(session.get("messages_seen", 0) or 0),
+        "tasks_completed": int(session.get("tasks_completed", 0) or 0),
+        "tasks_failed": int(session.get("tasks_failed", 0) or 0),
+    }
+    current_task = payload["current_task_id"] or "none"
+    last_task_summary = (
+        f"{payload['last_task_id']}({payload['last_task_status'] or 'unknown'})"
+        if payload["last_task_id"]
+        else "none"
+    )
+    payload["summary"] = (
+        f"{profile.name} status={payload['status']} "
+        f"current_task={current_task} "
+        f"last_task={last_task_summary} "
+        f"transport=host/{payload['transport_backend'] or 'unknown'}"
+    )
+    return payload
+
+
 class _CodexHostSessionWorker(threading.Thread):
     worker_backend = HOST_SESSION_BACKEND_CODEX_EXEC
 
@@ -593,6 +651,29 @@ class _CodexHostSessionWorker(threading.Thread):
             subject=SESSION_TELEMETRY_SUBJECT,
             body=json.dumps(payload, ensure_ascii=False),
             task_id=str(task_id or ""),
+        )
+
+    def _reply_to_lead_status_request(self, message: Any) -> None:
+        payload = _build_host_worker_status_reply_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            session_id=self._session_id,
+            transport_backend=self.worker_backend,
+            current_task_id=str(self._assigned_task_id or ""),
+            status="running" if self._assigned_task_active else "ready",
+        )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=message.sender,
+            subject=LEAD_STATUS_REPLY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(message.task_id or "") or None,
+        )
+        self._lead_context.logger.log(
+            "lead_status_reply_sent",
+            agent=self.profile_name,
+            recipient=message.sender,
+            session_worker_backend=self.worker_backend,
         )
 
     def _run_codex_task(
@@ -741,13 +822,17 @@ class _CodexHostSessionWorker(threading.Thread):
         while not self._stop_event.is_set():
             messages = self._lead_context.mailbox.pull_matching(
                 self.profile_name,
-                lambda message: message.subject in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT},
+                lambda message: message.subject
+                in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT, LEAD_STATUS_REQUEST_SUBJECT},
             )
             handled_any = False
             for message in messages:
                 handled_any = True
                 if message.subject == SESSION_CONTROL_SUBJECT:
                     self._stop_event.set()
+                    continue
+                if message.subject == LEAD_STATUS_REQUEST_SUBJECT:
+                    self._reply_to_lead_status_request(message)
                     continue
                 task_id = str(message.task_id or "")
                 if not self._activate_assigned_task(task_id):
@@ -928,6 +1013,29 @@ class _ClaudeHostSessionWorker(threading.Thread):
             task_id=str(task_id or ""),
         )
 
+    def _reply_to_lead_status_request(self, message: Any) -> None:
+        payload = _build_host_worker_status_reply_payload(
+            lead_context=self._lead_context,
+            profile=self._profile,
+            session_id=self._session_id,
+            transport_backend=self.worker_backend,
+            current_task_id=str(self._assigned_task_id or ""),
+            status="running" if self._assigned_task_active else "ready",
+        )
+        self._lead_context.mailbox.send(
+            sender=self.profile_name,
+            recipient=message.sender,
+            subject=LEAD_STATUS_REPLY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(message.task_id or "") or None,
+        )
+        self._lead_context.logger.log(
+            "lead_status_reply_sent",
+            agent=self.profile_name,
+            recipient=message.sender,
+            session_worker_backend=self.worker_backend,
+        )
+
     def _run_claude_task(
         self,
         task_id: str,
@@ -1066,13 +1174,17 @@ class _ClaudeHostSessionWorker(threading.Thread):
         while not self._stop_event.is_set():
             messages = self._lead_context.mailbox.pull_matching(
                 self.profile_name,
-                lambda message: message.subject in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT},
+                lambda message: message.subject
+                in {SESSION_CONTROL_SUBJECT, SESSION_TASK_ASSIGNMENT_SUBJECT, LEAD_STATUS_REQUEST_SUBJECT},
             )
             handled_any = False
             for message in messages:
                 handled_any = True
                 if message.subject == SESSION_CONTROL_SUBJECT:
                     self._stop_event.set()
+                    continue
+                if message.subject == LEAD_STATUS_REQUEST_SUBJECT:
+                    self._reply_to_lead_status_request(message)
                     continue
                 task_id = str(message.task_id or "")
                 if not self._activate_assigned_task(task_id):

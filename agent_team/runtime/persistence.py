@@ -21,6 +21,8 @@ from ..core import (
 from ..models import ProviderMetadata
 from .lead_interaction import (
     LEAD_INTERACTION_STATE_KEY,
+    LEAD_STATUS_REPLY_SUBJECT,
+    LEAD_STATUS_REQUEST_SUBJECT,
     PLAN_APPROVAL_STATUS_PENDING,
 )
 from .session_state import (
@@ -40,6 +42,25 @@ LEAD_INTERACTION_FILENAME = "lead_interaction.json"
 LEAD_INTERACTION_REPORT_FILENAME = "lead_interaction.md"
 TEAM_PROGRESS_FILENAME = "team_progress.json"
 TEAM_PROGRESS_REPORT_FILENAME = "team_progress.md"
+
+
+def _lead_message_body_preview(subject: str, body: Any) -> str:
+    text = str(body or "").strip()
+    if not text:
+        return ""
+    if str(subject or "") == LEAD_STATUS_REPLY_SUBJECT:
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return text[:200]
+        if isinstance(payload, Mapping):
+            summary = str(payload.get("summary", "") or "").strip()
+            if summary:
+                return summary[:200]
+        return text[:200]
+    if str(subject or "") == LEAD_STATUS_REQUEST_SUBJECT:
+        return "status requested"
+    return ""
 
 
 def checkpoint_history_dir(output_dir: pathlib.Path) -> pathlib.Path:
@@ -1012,6 +1033,10 @@ def build_lead_interaction_snapshot(
                         "recipient": recipient,
                         "subject": str(payload.get("subject", "") or ""),
                         "task_id": str(payload.get("task_id", "") or ""),
+                        "body_preview": _lead_message_body_preview(
+                            subject=str(payload.get("subject", "") or ""),
+                            body=payload.get("body", ""),
+                        ),
                     }
                 )
     if recent_message_limit > 0:
@@ -1132,6 +1157,8 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
                 f"- [{item.get('event_index', '')}] {item.get('sender', '')} -> {item.get('recipient', '')}: "
                 f"{item.get('subject', '')} task_id={item.get('task_id', '') or 'n/a'} at {item.get('ts', '')}"
             )
+            if str(item.get("body_preview", "") or ""):
+                lines.append(f"  body_preview: {item.get('body_preview', '')}")
     lines.append("")
     lines.append("## Recent Commands")
     lines.append("")
@@ -1145,6 +1172,7 @@ def write_lead_interaction_report(report_path: pathlib.Path, snapshot: Dict[str,
             lines.append(
                 f"- [{item.get('line_index', '')}] source={item.get('source', 'unknown')} "
                 f"command={item.get('command', '') or 'invalid'} "
+                f"agent={item.get('agent', '') or 'n/a'} "
                 f"task_ids={','.join(item.get('task_ids', [])) or 'none'} "
                 f"valid={item.get('valid', False)} "
                 f"received_at={item.get('received_at', '') or 'n/a'}"

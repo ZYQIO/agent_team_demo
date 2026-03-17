@@ -17,7 +17,12 @@ from ..core import (
 )
 from ..runtime.session_state import SESSION_TELEMETRY_SUBJECT, apply_session_telemetry_event
 from ..runtime.task_context import ScopedSharedState, build_task_context_snapshot
-from ..runtime.lead_interaction import plan_approval_required, queue_plan_approval_request
+from ..runtime.lead_interaction import (
+    LEAD_STATUS_REPLY_SUBJECT,
+    LEAD_STATUS_REQUEST_SUBJECT,
+    plan_approval_required,
+    queue_plan_approval_request,
+)
 from ..runtime.task_mutations import apply_task_mutation_payload
 from . import tmux as tmux_transport
 
@@ -43,6 +48,7 @@ AUTO_REPLY_SUBJECTS = {
     "peer_challenge_round2_request",
     "peer_challenge_round3_request",
     "evidence_request",
+    LEAD_STATUS_REQUEST_SUBJECT,
 }
 
 
@@ -440,6 +446,56 @@ class InProcessTeammateAgent(threading.Thread):
                 agent_name=self.context.profile.name,
                 message=message,
             )
+
+    def _build_lead_status_reply_payload(self) -> Dict[str, Any]:
+        self._refresh_session_state()
+        session_state = self.context.session_state if isinstance(self.context.session_state, dict) else {}
+        task_history = session_state.get("task_history", [])
+        last_task = task_history[-1] if isinstance(task_history, list) and task_history else {}
+        payload = {
+            "agent": self.context.profile.name,
+            "agent_type": self.context.profile.agent_type,
+            "transport": str(session_state.get("transport", "") or "in-process"),
+            "status": str(session_state.get("status", "") or "ready"),
+            "session_id": str(session_state.get("session_id", "") or ""),
+            "current_task_id": str(session_state.get("current_task_id", "") or ""),
+            "current_task_type": str(session_state.get("current_task_type", "") or ""),
+            "last_task_id": str(last_task.get("task_id", "") or ""),
+            "last_task_type": str(last_task.get("task_type", "") or ""),
+            "last_task_status": str(last_task.get("status", "") or ""),
+            "messages_seen": int(session_state.get("messages_seen", 0) or 0),
+            "tasks_completed": int(session_state.get("tasks_completed", 0) or 0),
+            "tasks_failed": int(session_state.get("tasks_failed", 0) or 0),
+        }
+        current_task = payload["current_task_id"] or "none"
+        last_task_summary = (
+            f"{payload['last_task_id']}({payload['last_task_status'] or 'unknown'})"
+            if payload["last_task_id"]
+            else "none"
+        )
+        payload["summary"] = (
+            f"{self.context.profile.name} status={payload['status']} "
+            f"current_task={current_task} "
+            f"last_task={last_task_summary} "
+            f"transport={payload['transport']}"
+        )
+        return payload
+
+    def _auto_reply_lead_status_request(self, message: Message) -> None:
+        payload = self._build_lead_status_reply_payload()
+        self.context.mailbox.send(
+            sender=self.context.profile.name,
+            recipient=message.sender,
+            subject=LEAD_STATUS_REPLY_SUBJECT,
+            body=json.dumps(payload, ensure_ascii=False),
+            task_id=str(message.task_id or "") or None,
+        )
+        self.context.logger.log(
+            "lead_status_reply_sent",
+            agent=self.context.profile.name,
+            recipient=message.sender,
+            summary=str(payload.get("summary", "") or ""),
+        )
 
     def _bind_session_task(self, task: Task, transport: str, task_context: Dict[str, Any]) -> None:
         if self._uses_host_session_telemetry_contract():
@@ -1168,6 +1224,8 @@ class InProcessTeammateAgent(threading.Thread):
                     self._auto_reply_peer_challenge(message)
                 if message.subject == "evidence_request":
                     self._auto_reply_evidence_request(message)
+                if message.subject == LEAD_STATUS_REQUEST_SUBJECT:
+                    self._auto_reply_lead_status_request(message)
                 if message.subject == SESSION_TASK_ASSIGNMENT_SUBJECT:
                     assigned_task = self._assigned_task_from_message(message)
                 if message.subject == SESSION_CONTROL_SUBJECT:

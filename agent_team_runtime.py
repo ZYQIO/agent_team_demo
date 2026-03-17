@@ -54,6 +54,8 @@ from agent_team.runtime import (
     LEAD_COMMANDS_FILENAME,
     LEAD_INTERACTION_FILENAME,
     LEAD_INTERACTION_REPORT_FILENAME,
+    LEAD_STATUS_REPLY_SUBJECT,
+    LEAD_STATUS_REQUEST_SUBJECT,
     PLAN_APPROVAL_STATUS_APPLIED,
     PLAN_APPROVAL_STATUS_PENDING,
     PLAN_APPROVAL_STATUS_REJECTED,
@@ -106,6 +108,7 @@ from agent_team.runtime.engine import (
     get_team_profiles,
     parse_interactive_plan_command,
     profile_has_skill,
+    request_teammate_statuses,
     run_lead_task_once as run_lead_task_once_impl,
     run_team as run_team_impl,
 )

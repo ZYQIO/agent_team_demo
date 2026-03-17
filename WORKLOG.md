@@ -13,6 +13,20 @@ Each entry should capture:
 
 ## Recent History
 
+### 2026-03-17 - Live teammate status request checkpoint
+- Goal: let lead ask a running teammate for its current status instead of only reading passive mailbox traffic and pending-plan records
+- Changes:
+  - extended live lead commands with `request_teammate_status` so `lead_console.py`, `send_lead_command.py`, and the embedded stdin prompt can issue `status <agent>` / `--request-status <agent>` requests during a live run
+  - taught in-process teammates plus host-backed `codex_exec` / guarded `claude_exec` session workers to reply with standardized `lead_status_reply` mailbox messages that summarize current status, current task, last task, and transport identity
+  - updated `lead_interaction.json` / `lead_interaction.md` and `lead_console.py` status output to surface reply body previews, so lead-visible team messages now include a compact teammate status summary instead of only subject lines
+  - added regression coverage for lead-command parsing, status-request dispatch, live artifact rendering, and an end-to-end live-console status request during pending plan approval
+- Validation:
+  - `python -m py_compile agent_team_runtime.py agent_team\\runtime\\lead_interaction.py agent_team\\runtime\\engine.py agent_team\\runtime\\persistence.py agent_team\\transports\\inprocess.py agent_team\\transports\\host.py skills\\agent-team-runtime\\scripts\\lead_console.py skills\\agent-team-runtime\\scripts\\send_lead_command.py tests\\test_runtime_logic.py tests\\test_runtime_end_to_end.py`
+  - targeted logic/end-to-end tests passed for live teammate status requests
+  - full suite: `140/140` tests passed
+- Commit: recorded in the git history for this round
+- Next implication: the lead-facing gap is narrowing from “can lead interact at all?” to “how close can the runtime get to a truly embedded Claude-style team control surface?”
+
 ### 2026-03-17 - Guarded Claude host backend checkpoint
 - Goal: add a real `claude_exec` host-backed session backend without treating third-party relay environments as official Claude Code parity
 - Changes:

@@ -10,6 +10,8 @@ from .task_mutations import proposed_task_mutation_summary
 
 LEAD_INTERACTION_STATE_KEY = "lead_interaction"
 LEAD_COMMANDS_FILENAME = "lead_commands.jsonl"
+LEAD_STATUS_REQUEST_SUBJECT = "lead_status_request"
+LEAD_STATUS_REPLY_SUBJECT = "lead_status_reply"
 PLAN_APPROVAL_STATUS_PENDING = "pending"
 PLAN_APPROVAL_STATUS_APPLIED = "applied"
 PLAN_APPROVAL_STATUS_REJECTED = "rejected"
@@ -133,6 +135,7 @@ def record_lead_command(
     *,
     command: str,
     task_ids: List[str] | None = None,
+    agent: str = "",
     raw: str = "",
     valid: bool = True,
     source: str = "interactive",
@@ -148,6 +151,7 @@ def record_lead_command(
         "valid": bool(valid),
         "command": str(command or ""),
         "task_ids": [str(task_id) for task_id in (task_ids or []) if str(task_id)],
+        "agent": str(agent or ""),
         "source": str(source or "interactive"),
     }
     recent_commands.append(record)
@@ -169,6 +173,7 @@ def consume_lead_commands(
     recent_commands = list(state.get("recent_commands", []))
     approve_task_ids: List[str] = []
     reject_task_ids: List[str] = []
+    status_request_agents: List[str] = []
     approve_all_pending = False
     consumed_count = 0
 
@@ -219,8 +224,12 @@ def consume_lead_commands(
                 "valid": True,
                 "command": command,
                 "task_ids": list(task_ids),
+                "agent": "",
             }
         )
+        agent = str(payload.get("agent", "") or payload.get("recipient", "") or "").strip()
+        if agent:
+            command_record["agent"] = agent
         recent_commands.append(command_record)
         if command == "approve_plan":
             approve_task_ids.extend(task_ids)
@@ -228,6 +237,18 @@ def consume_lead_commands(
             reject_task_ids.extend(task_ids)
         elif command == "approve_all_pending_plans":
             approve_all_pending = True
+        elif command == "request_teammate_status":
+            if agent:
+                status_request_agents.append(agent)
+            else:
+                command_record["valid"] = False
+                logger.log(
+                    "lead_command_invalid",
+                    line_index=line_index,
+                    error="missing_agent",
+                    command=command,
+                )
+                continue
         else:
             command_record["valid"] = False
             logger.log(
@@ -242,6 +263,7 @@ def consume_lead_commands(
             line_index=line_index,
             command=command,
             task_ids=task_ids,
+            agent=agent,
         )
 
     state["command_cursor"] = len(lines)
@@ -252,6 +274,7 @@ def consume_lead_commands(
     return {
         "approve_task_ids": approve_task_ids,
         "reject_task_ids": reject_task_ids,
+        "status_request_agents": status_request_agents,
         "approve_all_pending_plans": approve_all_pending,
         "consumed_count": consumed_count,
         "command_path": str(command_path),
